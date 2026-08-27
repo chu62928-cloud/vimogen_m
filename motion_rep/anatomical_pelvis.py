@@ -39,6 +39,7 @@ class PelvisCalibration:
     model_path: str
     marker_vertex_groups: Mapping[str, tuple[int, ...]]
     marker_local_points: Mapping[str, tuple[float, float, float]]
+    root_rest_joint: tuple[float, float, float] = (0.0, 0.0, 0.0)
     up_axis: int = 2
     local_forward_description: str = "A-P (posterior to anterior)"
     reviewed_image: str | None = None
@@ -60,6 +61,8 @@ class PelvisCalibration:
             group = tuple(int(v) for v in self.marker_vertex_groups[name])
             if not group or any(v < 0 for v in group):
                 raise ValueError(f"marker {name} vertex group must be non-empty and non-negative")
+        if len(self.root_rest_joint) != 3 or not all(math.isfinite(float(v)) for v in self.root_rest_joint):
+            raise ValueError("root_rest_joint must contain 3 finite values")
         if self.up_axis not in (0, 1, 2):
             raise ValueError("up_axis must be 0, 1, or 2")
 
@@ -84,6 +87,7 @@ class PelvisCalibration:
             "marker_local_points": {
                 name: list(self.marker_local_points[name]) for name in MARKER_NAMES
             },
+            "root_rest_joint": list(self.root_rest_joint),
             "up_axis": self.up_axis,
             "local_forward_description": self.local_forward_description,
             "reviewed_image": self.reviewed_image,
@@ -98,6 +102,7 @@ class PelvisCalibration:
             model_path=str(value.get("model_path", "")),
             marker_vertex_groups={name: tuple(int(v) for v in groups[name]) for name in MARKER_NAMES},
             marker_local_points={name: tuple(float(v) for v in points[name]) for name in MARKER_NAMES},
+            root_rest_joint=tuple(float(v) for v in value.get("root_rest_joint", (0.0, 0.0, 0.0))),
             up_axis=int(value.get("up_axis", 2)),
             local_forward_description=str(value.get("local_forward_description", "A-P (posterior to anterior)")),
             reviewed_image=(None if value.get("reviewed_image") is None else str(value["reviewed_image"])),
@@ -174,7 +179,12 @@ def anatomical_pelvis_geometry(
     if not math.isfinite(eps) or eps <= 0:
         raise ValueError("eps must be a finite positive number")
     points = calibration.local_points.to(device=root_rotation.device, dtype=root_rotation.dtype)
+    root_rest = torch.tensor(calibration.root_rest_joint, dtype=root_rotation.dtype, device=root_rotation.device)
+    # Points are stored as offsets from the SMPL-X pelvis rest joint.  The
+    # global orientation rotates about that joint, then root translation is
+    # added, matching the authoritative FK convention.
     world = torch.matmul(points, root_rotation.transpose(-1, -2))
+    world = world + root_rest
     # The row-vector form above is equivalent to R @ p for column vectors.
     anterior = 0.5 * (world[..., 0, :] + world[..., 1, :])
     posterior = 0.5 * (world[..., 2, :] + world[..., 3, :])
@@ -320,6 +330,32 @@ def anti_cheat_penalty(
     return (values * mask).sum() / mask.sum().clamp_min(1.0)
 
 
+def local_dominance_penalty(
+    delta_pelvis_deg: torch.Tensor,
+    delta_trunk_deg: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    minimum_share: float = 0.5,
+    low_signal_deg: float = 0.5,
+) -> torch.Tensor:
+    """Penalize pelvis changes that are not locally dominant over the trunk.
+
+    This is a fixed, dimensionless safety term rather than a tunable gate.  It
+    is zero for low-signal pelvis changes and otherwise requires the signed
+    local change ``delta_pelvis - delta_trunk`` to explain at least half of the
+    absolute pelvis change in the same direction.
+    """
+
+    if delta_pelvis_deg.shape != delta_trunk_deg.shape or valid_mask.shape != delta_pelvis_deg.shape:
+        raise ValueError("pelvis/trunk deltas and valid_mask must have the same shape")
+    signal = delta_pelvis_deg.abs() >= float(low_signal_deg)
+    signed_local = torch.sign(delta_pelvis_deg.detach()) * (delta_pelvis_deg - delta_trunk_deg)
+    required = float(minimum_share) * delta_pelvis_deg.abs()
+    values = torch.relu(required - signed_local).square() * signal.to(delta_pelvis_deg.dtype)
+    mask = valid_mask.to(values.dtype)
+    return (values * mask).sum() / mask.sum().clamp_min(1.0)
+
+
 def anti_cheat_metrics(
     pelvis_m0_deg: torch.Tensor,
     pelvis_g_deg: torch.Tensor,
@@ -384,5 +420,5 @@ __all__ = [
     "JOINT_INDEX", "MARKER_NAMES", "V4_PROTOCOL", "PelvisCalibration", "PelvisGeometry",
     "anatomical_pelvis_angle_degrees", "anatomical_pelvis_geometry", "anti_cheat_metrics",
     "anti_cheat_penalty", "apply_anatomical_pelvis_delta", "calibration_sha256",
-    "load_pelvis_calibration", "trunk_and_thigh_angles",
+    "load_pelvis_calibration", "local_dominance_penalty", "trunk_and_thigh_angles",
 ]

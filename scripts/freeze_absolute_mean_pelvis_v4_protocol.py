@@ -7,12 +7,16 @@ import argparse
 import hashlib
 import json
 import shutil
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from motion_rep.anatomical_pelvis import V4_PROTOCOL, calibration_sha256, load_pelvis_calibration
 
 
-ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "results/phase6/absolute_mean_pelvis_v3"
 DEST = ROOT / "results/phase6/absolute_mean_pelvis_v4"
 

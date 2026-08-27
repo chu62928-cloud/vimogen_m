@@ -18,6 +18,7 @@ from motion_rep.anatomical_pelvis import (
     anatomical_pelvis_geometry,
     anti_cheat_penalty,
     load_pelvis_calibration,
+    local_dominance_penalty,
     trunk_and_thigh_angles,
 )
 from motion_rep.consistency_v2 import load_smplx_neutral_22_skeleton
@@ -242,7 +243,8 @@ class AbsoluteMeanPelvisGuidanceV4:
         dleft = candidate_angles["thigh_left_deg"] - baseline_angles["thigh_left_deg"]
         dright = candidate_angles["thigh_right_deg"] - baseline_angles["thigh_right_deg"]
         anti_loss = anti_cheat_penalty(dtrunk, dleft, dright, mask, soft_limit_deg=cfg.soft_limit_deg)
-        total = cfg.mean_weight * mean_loss + cfg.shape_weight * shape_loss + cfg.motion_weight * motion_loss + anti_loss
+        local_loss = local_dominance_penalty(pelvis - pelvis0, dtrunk, mask, low_signal_deg=cfg.low_signal_deg)
+        total = cfg.mean_weight * mean_loss + cfg.shape_weight * shape_loss + cfg.motion_weight * motion_loss + anti_loss + local_loss
         return total, {
             "mean_angle": mean_angle,
             "baseline_mean": baseline_mean,
@@ -250,6 +252,7 @@ class AbsoluteMeanPelvisGuidanceV4:
             "shape_loss": shape_loss,
             "motion_loss": motion_loss,
             "anti_cheat_loss": anti_loss,
+            "local_dominance_loss": local_loss,
             "delta_trunk": dtrunk,
             "delta_thigh_left": dleft,
             "delta_thigh_right": dright,
@@ -326,6 +329,7 @@ class AbsoluteMeanPelvisGuidanceV4:
                 "shape_loss": float(after["shape_loss"].detach().cpu()),
                 "motion_loss": float(after["motion_loss"].detach().cpu()),
                 "anti_cheat_loss": float(after["anti_cheat_loss"].detach().cpu()),
+                "local_dominance_loss": float(after["local_dominance_loss"].detach().cpu()),
                 "gradient_rms": float(torch.sqrt((gradient.square() * mask_f).sum() / (count * x0_norm.shape[-1])).detach().cpu()),
                 "correction_rms_before_cap": float(correction_rms_before_cap.detach().cpu()),
                 "correction_rms": float(correction_rms.detach().cpu()),

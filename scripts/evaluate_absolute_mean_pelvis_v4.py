@@ -6,7 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import sys
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
@@ -15,9 +20,6 @@ from evaluation.absolute_mean_pelvis_v4 import evaluate_single, summarize_rows
 from motion_rep.anatomical_pelvis import load_pelvis_calibration
 from motion_rep.consistency_v3 import reconcile_motion_tensor_v3
 from sampling.absolute_mean_pelvis_guidance_v4 import anatomical_angle_curves
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def _batch_dirs(root: Path) -> list[Path]:

@@ -8,6 +8,7 @@ from motion_rep.anatomical_pelvis import (
     anti_cheat_metrics,
     anti_cheat_penalty,
     apply_anatomical_pelvis_delta,
+    local_dominance_penalty,
     trunk_and_thigh_angles,
 )
 
@@ -70,12 +71,12 @@ def test_trunk_thigh_and_anti_cheat_metrics():
     cal = calibration()
     pelvis = anatomical_pelvis_geometry(torch.eye(3, dtype=torch.float64), cal)
     joints = torch.zeros(22, 3, dtype=torch.float64)
-    joints[3] = (0.0, 0.0, 1.0)  # spine1
-    joints[12] = (0.0, 0.2, 2.0)  # neck forward by 0.2
-    joints[1] = (-0.2, 0.0, 0.0)
-    joints[2] = (0.2, 0.0, 0.0)
-    joints[4] = (-0.2, 0.0, -1.0)
-    joints[5] = (0.2, 0.0, -1.0)
+    joints[3] = torch.tensor((0.0, 0.0, 1.0), dtype=joints.dtype)  # spine1
+    joints[12] = torch.tensor((0.0, 0.2, 2.0), dtype=joints.dtype)  # neck forward by 0.2
+    joints[1] = torch.tensor((-0.2, 0.0, 0.0), dtype=joints.dtype)
+    joints[2] = torch.tensor((0.2, 0.0, 0.0), dtype=joints.dtype)
+    joints[4] = torch.tensor((-0.2, 0.0, -1.0), dtype=joints.dtype)
+    joints[5] = torch.tensor((0.2, 0.0, -1.0), dtype=joints.dtype)
     values = trunk_and_thigh_angles(joints, pelvis)
     assert values["trunk_deg"] > 0
     penalty = anti_cheat_penalty(torch.tensor([1.0, 2.0]), torch.tensor([1.0, 2.0]), torch.tensor([1.0, 2.0]), torch.tensor([True, True]))
@@ -91,3 +92,5 @@ def test_trunk_thigh_and_anti_cheat_metrics():
     assert metrics["local_change_same_sign"]
     assert float(metrics["local_change_share"]) > 0.5
     assert float(metrics["trunk_abs_p95_deg"]) <= 2.0
+    assert local_dominance_penalty(torch.tensor([4.0]), torch.tensor([0.0]), torch.tensor([True])) == 0
+    assert local_dominance_penalty(torch.tensor([4.0]), torch.tensor([4.0]), torch.tensor([True])) > 0
