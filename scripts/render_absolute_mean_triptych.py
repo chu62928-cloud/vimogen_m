@@ -97,15 +97,22 @@ def fixed_sagittal_side_camera(
     The camera is estimated once from M0 and reused for every method/frame.
     """
 
-    if joints.ndim != 3 or joints.shape[-1] != 3:
+    if joints.ndim != 3 or joints.shape[-1] != 3 or joints.shape[1] < 1:
         raise ValueError(f"joints must have shape [T,J,3], got {tuple(joints.shape)}")
+    if joints.shape[0] < 1:
+        raise ValueError("joints must contain at least one frame")
     roots = joints[:, 0]
     if motion_heading is None:
         motion_heading = estimate_motion_heading(joints)
     motion_heading = motion_heading.to(device=joints.device, dtype=joints.dtype)
     if motion_heading.shape != (3,):
         raise ValueError("motion_heading must have shape [3]")
-    motion_heading = motion_heading / torch.linalg.vector_norm(motion_heading)
+    if not bool(torch.isfinite(motion_heading).all()):
+        raise ValueError("motion_heading must be finite")
+    motion_norm = torch.linalg.vector_norm(motion_heading)
+    if float(motion_norm) < 1e-8:
+        raise ValueError("motion_heading must have a non-zero norm")
+    motion_heading = motion_heading / motion_norm
     up = torch.zeros(3, dtype=joints.dtype, device=joints.device)
     up[2] = 1.0
     root_min = roots.amin(dim=0)
