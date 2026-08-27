@@ -44,36 +44,85 @@ COLORS = {"M0": (60, 60, 60), "G0": (220, 110, 20), "G1": (30, 150, 30)}
 SMPLX_22_PARENTS = (-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19)
 
 
-def fixed_sagittal_side_camera(joints: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return one fixed camera looking from the person's side.
+def estimate_motion_heading(
+    joints: torch.Tensor,
+    *,
+    fallback_heading: torch.Tensor | None = None,
+    min_displacement: float = 1e-4,
+) -> torch.Tensor:
+    """Estimate one horizontal display heading from the M0 root trajectory.
 
-    ViMoGen uses a z-up world.  The former renderer used ``x`` as image
-    horizontal, which is a frontal view for this convention.  Here image
-    horizontal is world ``y`` (the walking/forward direction), image vertical
-    is world ``z``, and camera depth is world ``x``.  The camera is fixed for
-    all three methods and all frames; only its framing is derived from M0.
+    The heading is a display convention, not a replacement for the
+    anatomical angle definition.  Using one robust sequence-level direction
+    avoids mirroring mesh and skeleton videos or changing the camera on every
+    frame.  A nearly stationary sequence has no observable travel direction;
+    in that case callers may provide the mean anatomical heading as a
+    deterministic fallback.
+    """
+
+    if joints.ndim != 3 or joints.shape[-1] != 3 or joints.shape[1] < 1:
+        raise ValueError(f"joints must have shape [T,J,3], got {tuple(joints.shape)}")
+    if joints.shape[0] < 1:
+        raise ValueError("joints must contain at least one frame")
+    displacement = joints[-1, 0, :2] - joints[0, 0, :2]
+    norm = torch.linalg.vector_norm(displacement)
+    if float(norm) >= float(min_displacement):
+        return torch.nn.functional.pad(displacement / norm, (0, 1))
+    if fallback_heading is None:
+        fallback_heading = torch.tensor(
+            [0.0, 1.0, 0.0], dtype=joints.dtype, device=joints.device
+        )
+    fallback_heading = fallback_heading.to(device=joints.device, dtype=joints.dtype)
+    if fallback_heading.shape != (3,):
+        raise ValueError("fallback_heading must have shape [3]")
+    fallback_heading = fallback_heading.clone()
+    fallback_heading[2] = 0.0
+    fallback_norm = torch.linalg.vector_norm(fallback_heading)
+    if float(fallback_norm) < float(min_displacement):
+        raise ValueError("fallback_heading must have a non-zero horizontal component")
+    return fallback_heading / fallback_norm
+
+
+def fixed_sagittal_side_camera(
+    joints: torch.Tensor,
+    *,
+    motion_heading: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return one fixed, motion-oriented side camera for all render styles.
+
+    ViMoGen uses a z-up world.  PyTorch3D maps positive camera-x to the left
+    on screen, so the camera x-axis is deliberately ``-motion_heading``.
+    Consequently the observed travel direction is displayed to the right for
+    a positive heading in both the mesh and hand-projected skeleton paths.
+    The camera is estimated once from M0 and reused for every method/frame.
     """
 
     if joints.ndim != 3 or joints.shape[-1] != 3:
         raise ValueError(f"joints must have shape [T,J,3], got {tuple(joints.shape)}")
     roots = joints[:, 0]
+    if motion_heading is None:
+        motion_heading = estimate_motion_heading(joints)
+    motion_heading = motion_heading.to(device=joints.device, dtype=joints.dtype)
+    if motion_heading.shape != (3,):
+        raise ValueError("motion_heading must have shape [3]")
+    motion_heading = motion_heading / torch.linalg.vector_norm(motion_heading)
+    up = torch.zeros(3, dtype=joints.dtype, device=joints.device)
+    up[2] = 1.0
     root_min = roots.amin(dim=0)
     root_max = roots.amax(dim=0)
     root_move = root_max - root_min
-    # ``render_depth_maps`` multiplies row-vectors on the left, so the
-    # columns below implement x_cam <- y_world, y_cam <- z_world,
-    # z_cam <- x_world.  This is a true sagittal side projection.
-    R_one = torch.tensor(
-        [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-        dtype=joints.dtype,
-        device=joints.device,
-    )
-    # Keep the same framing scale as the legacy camera: use root-motion
-    # ranges, not the subject's full body height, for the depth offset.
-    depth_offset = 2.5 + 1.0 * root_move[1] + 2.0 * root_move[2] + root_max[0]
+    # Columns map row-vectors to camera x/y/z.  The cross product keeps a
+    # proper right-handed frame while viewing the subject from the side.
+    camera_x = -motion_heading
+    camera_z = torch.linalg.cross(camera_x, up)
+    R_one = torch.stack((camera_x, up, camera_z), dim=1)
+    # Keep the subject in front of the camera for either travel direction.
+    root_depth = torch.matmul(roots, camera_z)
+    depth_offset = 2.5 - root_depth.amin() + 0.5 * torch.linalg.vector_norm(root_move)
     T_one = torch.zeros(3, dtype=joints.dtype, device=joints.device)
     # Center the walking direction so the fixed view keeps the whole motion.
-    T_one[0] = -0.5 * (root_min[1] + root_max[1])
+    root_center = 0.5 * (root_min + root_max)
+    T_one[0] = torch.dot(root_center, motion_heading)
     T_one[1] = -roots[0, 2]
     T_one[2] = depth_offset
     seq_len = joints.shape[0]
@@ -105,13 +154,22 @@ def render_sources(
         root_rotations[method] = decode_rot6d_safe(
             motion[:, MOTION_LAYOUT.root_rotation]
         ).float()
-    camera_r, camera_t = fixed_sagittal_side_camera(joints["M0"])
+    anatomical_headings, _ = person_forward_horizontal_axis(root_rotations["M0"])
+    fallback_heading = anatomical_headings.mean(dim=0)
+    display_heading = estimate_motion_heading(
+        joints["M0"], fallback_heading=fallback_heading
+    )
+    camera_r, camera_t = fixed_sagittal_side_camera(
+        joints["M0"], motion_heading=display_heading
+    )
     audit_labels = None
     if calibration is not None:
         audit_labels = _v4_audit_labels(joints, root_rotations, calibration)
     if render_style == "skeleton":
         return _render_skeleton_sources(
-            joints, root_rotations, camera_r, camera_t, output_dir, calibration=calibration, audit_labels=audit_labels
+            joints, root_rotations, camera_r, camera_t, output_dir,
+            display_heading=display_heading,
+            calibration=calibration, audit_labels=audit_labels
         )
     if render_style != "mesh":
         raise ValueError(f"unsupported render_style {render_style!r}")
@@ -149,6 +207,7 @@ def render_sources(
             camera_r,
             camera_t,
             calibration=calibration,
+            display_heading=display_heading,
             audit_labels=audit_labels[method] if audit_labels is not None else None,
         )
         outputs[method] = annotated_path
@@ -161,22 +220,24 @@ def _render_skeleton_sources(
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
     output_dir: Path,
+    display_heading: torch.Tensor,
     calibration: PelvisCalibration | None = None,
     audit_labels: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Path]:
     """Render joints plus an explicit, non-exaggerated pelvis-angle marker.
 
-    The red arrow is the pelvis local forward axis after removing the current
-    person heading; the cyan arrow is that frame's horizontal heading.  The
-    angle between them is exactly the angle used by the v3 evaluator.
+    The red arrow is the measured anatomical P->A line; the cyan arrow is
+    the sequence-level motion heading shared with the mesh renderer.  The
+    numerical angle remains the v4 anatomical evaluator's angle.
     """
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, Path] = {}
     for method in ("M0", "G0", "G1"):
         world = joints[method].float()
-        projected, projected_heading, projected_sagittal, tilt_values = _pelvis_marker_projections(
-            world, root_rotations[method], camera_r, camera_t, calibration=calibration
+        projected, projected_heading, projected_sagittal, projected_motion, tilt_values = _pelvis_marker_projections(
+            world, root_rotations[method], camera_r, camera_t,
+            display_heading=display_heading, calibration=calibration
         )
         path = output_dir / f"{method.lower()}_fixed_sagittal_side_skeleton.mp4"
         command = [
@@ -202,6 +263,7 @@ def _render_skeleton_sources(
                     points[0],
                     projected_heading,
                     projected_sagittal,
+                    projected_motion,
                     tilt_values,
                     calibration=calibration,
                     audit_values=(None if audit_labels is None else {key: value[frame_index] for key, value in audit_labels[method].items()}),
@@ -224,9 +286,15 @@ def _pelvis_marker_projections(
     root_rotation: torch.Tensor,
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
+    display_heading: torch.Tensor | None = None,
     calibration: PelvisCalibration | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Project the exact measured pelvis direction and its local horizontal reference."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Project pelvis endpoints and the shared motion direction.
+
+    The explicit minus sign in screen-x matches PyTorch3D's camera convention
+    used by the mesh renderer.  Without it, the hand-rendered skeleton is a
+    horizontal mirror of the shaded mesh.
+    """
 
     focal = estimate_focal_length(PANEL_WIDTH, PANEL_HEIGHT)
 
@@ -235,7 +303,7 @@ def _pelvis_marker_projections(
         depth = camera[..., 2].clamp_min(1e-3)
         return torch.stack(
             (
-                focal * camera[..., 0] / depth + PANEL_WIDTH / 2.0,
+                -focal * camera[..., 0] / depth + PANEL_WIDTH / 2.0,
                 PANEL_HEIGHT / 2.0 - focal * camera[..., 1] / depth,
             ),
             dim=-1,
@@ -247,7 +315,20 @@ def _pelvis_marker_projections(
         geometry = anatomical_pelvis_geometry(root_rotation, calibration, root_translation=root[:, 0])
         projected_posterior = project(geometry.posterior_point[:, None])[:, 0]
         projected_anterior = project(geometry.anterior_point[:, None])[:, 0]
-        return projected, projected_posterior, projected_anterior, geometry.angle_degrees.detach().cpu().numpy()
+        if display_heading is None:
+            display_heading = estimate_motion_heading(world)
+        marker_length = 0.75
+        projected_motion = project(
+            geometry.posterior_point[:, None]
+            + marker_length * display_heading[None, None, :]
+        )[:, 0]
+        return (
+            projected,
+            projected_posterior,
+            projected_anterior,
+            projected_motion,
+            geometry.angle_degrees.detach().cpu().numpy(),
+        )
     heading, _ = person_forward_horizontal_axis(root_rotation)
     tilt = pelvis_sagittal_tilt_degrees(root_rotation)
     up = torch.zeros_like(heading)
@@ -256,9 +337,13 @@ def _pelvis_marker_projections(
     sagittal_forward = heading * torch.cos(tilt_radians)[..., None] + up * torch.sin(tilt_radians)[..., None]
     # The longer marker improves visual legibility without changing the angle.
     marker_length = 0.75
+    if display_heading is None:
+        display_heading = heading.mean(dim=0)
+        display_heading = display_heading / torch.linalg.vector_norm(display_heading)
     projected_heading = project(root + marker_length * heading[:, None])[:, 0]
     projected_sagittal = project(root + marker_length * sagittal_forward[:, None])[:, 0]
-    return projected, projected_heading, projected_sagittal, tilt.detach().cpu().numpy()
+    projected_motion = project(root + marker_length * display_heading[None, None, :])[:, 0]
+    return projected, projected_heading, projected_sagittal, projected_motion, tilt.detach().cpu().numpy()
 
 
 def _v4_audit_labels(
@@ -294,6 +379,7 @@ def _draw_pelvis_marker(
     root_point: np.ndarray | tuple[int, int],
     projected_heading: np.ndarray,
     projected_sagittal: np.ndarray,
+    projected_motion: np.ndarray,
     tilt_values: np.ndarray,
     calibration: PelvisCalibration | None = None,
     audit_values: dict[str, float | bool] | None = None,
@@ -302,30 +388,41 @@ def _draw_pelvis_marker(
 
     heading_xy = tuple(np.rint(projected_heading[frame_index]).astype(np.int32))
     sagittal_xy = tuple(np.rint(projected_sagittal[frame_index]).astype(np.int32))
+    motion_xy = tuple(np.rint(projected_motion[frame_index]).astype(np.int32))
     if calibration is not None:
         # For v4 the exact anatomical line is P -> A; do not substitute the
-        # pelvis joint as its origin.  The local inset makes anterior-right
-        # and anterior-down-positive unambiguous even in a turning sequence.
+        # pelvis joint as its origin.  The cyan arrow is the sequence-level
+        # motion direction used by the shared camera, so its screen direction
+        # is identical in mesh and skeleton videos.
         root_xy = heading_xy
         cv2.circle(image, heading_xy, 8, (255, 210, 40), -1, cv2.LINE_AA)
         cv2.circle(image, sagittal_xy, 8, (30, 70, 255), -1, cv2.LINE_AA)
         cv2.arrowedLine(image, root_xy, sagittal_xy, (30, 70, 255), 6, cv2.LINE_AA, tipLength=0.16)
+        cv2.arrowedLine(image, root_xy, motion_xy, (255, 210, 40), 4, cv2.LINE_AA, tipLength=0.16)
         angle = float(tilt_values[frame_index])
         label = f"Pelvis {'anterior' if angle >= 0 else 'posterior'} tilt {angle:+.1f} deg"
         cv2.putText(image, label, (18, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (30, 70, 255), 2, cv2.LINE_AA)
-        cv2.putText(image, "yellow P posterior | red A anterior | P -> A", (18, PANEL_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.49, (235, 235, 235), 1, cv2.LINE_AA)
-        # Fixed local sagittal inset: x=anterior, y=up.  The vector points
-        # down for positive anterior tilt, independent of world camera yaw.
+        cv2.putText(image, "P posterior | A anterior | cyan motion ->", (18, PANEL_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.49, (235, 235, 235), 1, cv2.LINE_AA)
+        # The inset is oriented by the observed motion: right is the same
+        # sequence-level heading used by the camera.  The red line is the
+        # actual projected P->A segment, rather than a hard-coded front arrow.
         x0, y0, iw, ih = PANEL_WIDTH - 190, 58, 170, 150
         cv2.rectangle(image, (x0, y0), (x0 + iw, y0 + ih), (245, 245, 245), -1)
         cv2.rectangle(image, (x0, y0), (x0 + iw, y0 + ih), (60, 60, 60), 1)
         center = (x0 + iw // 2, y0 + ih // 2)
         cv2.arrowedLine(image, center, (x0 + iw - 18, center[1]), (100, 100, 100), 2, cv2.LINE_AA, tipLength=0.15)
-        scale = 58
-        endpoint = (int(center[0] + scale * np.cos(np.deg2rad(angle))), int(center[1] + scale * np.sin(np.deg2rad(angle))))
+        cv2.putText(image, "motion ->", (x0 + 76, y0 + ih - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (70, 70, 70), 1, cv2.LINE_AA)
+        delta = np.asarray(sagittal_xy, dtype=np.float64) - np.asarray(heading_xy, dtype=np.float64)
+        delta_norm = float(np.linalg.norm(delta))
+        if delta_norm < 1e-6:
+            delta = np.array([1.0, 0.0], dtype=np.float64)
+            delta_norm = 1.0
+        endpoint = tuple(
+            np.rint(np.asarray(center, dtype=np.float64) + 58.0 * delta / delta_norm).astype(np.int32)
+        )
         cv2.arrowedLine(image, center, endpoint, (30, 70, 255), 4, cv2.LINE_AA, tipLength=0.18)
         cv2.putText(image, "local sagittal", (x0 + 8, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (30, 30, 30), 1, cv2.LINE_AA)
-        cv2.putText(image, "front ->", (x0 + 76, y0 + ih - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (70, 70, 70), 1, cv2.LINE_AA)
+        cv2.putText(image, "red P -> A", (x0 + 8, y0 + ih - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (70, 70, 70), 1, cv2.LINE_AA)
         if audit_values is not None:
             dt = float(audit_values["delta_trunk"])
             dl = float(audit_values["delta_local"])
@@ -334,9 +431,9 @@ def _draw_pelvis_marker(
             cv2.putText(image, f"pelvis-trunk {dl:+.1f} deg | anti {status}", (18, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (245, 245, 245), 1, cv2.LINE_AA)
         return
     root_xy = tuple(np.rint(root_point).astype(np.int32))
-    # Cyan is the local horizontal heading; red is the exact heading-removed
-    # pelvis-forward direction used for theta.
-    cv2.arrowedLine(image, root_xy, heading_xy, (255, 210, 40), 5, cv2.LINE_AA, tipLength=0.16)
+    # Cyan is the shared motion direction; red is the exact
+    # heading-removed pelvis-forward direction used for theta.
+    cv2.arrowedLine(image, root_xy, motion_xy, (255, 210, 40), 5, cv2.LINE_AA, tipLength=0.16)
     cv2.arrowedLine(image, root_xy, sagittal_xy, (30, 70, 255), 6, cv2.LINE_AA, tipLength=0.16)
     cv2.putText(
         image,
@@ -350,7 +447,7 @@ def _draw_pelvis_marker(
     )
     cv2.putText(
         image,
-        "red: pelvis forward | cyan: horizontal heading",
+        "red: pelvis forward | cyan: motion heading",
         (18, PANEL_HEIGHT - 20),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.49,
@@ -367,13 +464,15 @@ def _annotate_mesh_source(
     root_rotation: torch.Tensor,
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
+    display_heading: torch.Tensor,
     calibration: PelvisCalibration | None = None,
     audit_labels: dict[str, np.ndarray] | None = None,
 ) -> None:
     """Overlay the same pelvis marker on a shaded mesh source video."""
 
-    projected, projected_heading, projected_sagittal, tilt_values = _pelvis_marker_projections(
-        world.float(), root_rotation, camera_r, camera_t, calibration=calibration
+    projected, projected_heading, projected_sagittal, projected_motion, tilt_values = _pelvis_marker_projections(
+        world.float(), root_rotation, camera_r, camera_t,
+        display_heading=display_heading, calibration=calibration
     )
     capture = cv2.VideoCapture(str(source_path))
     if not capture.isOpened():
@@ -398,6 +497,7 @@ def _annotate_mesh_source(
                 projected[frame_index, 0],
                 projected_heading,
                 projected_sagittal,
+                projected_motion,
                 tilt_values,
                 calibration=calibration,
                 audit_values=(None if audit_labels is None else {key: value[frame_index] for key, value in audit_labels.items()}),
