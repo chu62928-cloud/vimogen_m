@@ -365,7 +365,7 @@ class AbsoluteMeanPelvisGuidanceV4:
                 initial = self._reconcile(x_item, output_standardized=False)
                 initial_loss, _ = self._objective(initial.motion, baseline_item, mask_item & initial.valid_mask)
             best_loss = initial_loss
-            for _ in range(8 if self.config.terminal_enabled else 0):
+            for _ in range(8 if (self.config.enabled and self.config.terminal_enabled) else 0):
                 with torch.enable_grad():
                     variable = x_item.detach().requires_grad_(True)
                     candidate = self._reconcile(variable, output_standardized=False)
