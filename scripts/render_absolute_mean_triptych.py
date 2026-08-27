@@ -34,6 +34,7 @@ from motion_rep.sagittal_pelvis_angle import (  # noqa: E402
 from motion_rep.anatomical_pelvis import (  # noqa: E402
     PelvisCalibration,
     anatomical_pelvis_geometry,
+    trunk_and_thigh_angles,
 )
 
 
@@ -105,9 +106,12 @@ def render_sources(
             motion[:, MOTION_LAYOUT.root_rotation]
         ).float()
     camera_r, camera_t = fixed_sagittal_side_camera(joints["M0"])
+    audit_labels = None
+    if calibration is not None:
+        audit_labels = _v4_audit_labels(joints, root_rotations, calibration)
     if render_style == "skeleton":
         return _render_skeleton_sources(
-            joints, root_rotations, camera_r, camera_t, output_dir, calibration=calibration
+            joints, root_rotations, camera_r, camera_t, output_dir, calibration=calibration, audit_labels=audit_labels
         )
     if render_style != "mesh":
         raise ValueError(f"unsupported render_style {render_style!r}")
@@ -145,6 +149,7 @@ def render_sources(
             camera_r,
             camera_t,
             calibration=calibration,
+            audit_labels=audit_labels[method] if audit_labels is not None else None,
         )
         outputs[method] = annotated_path
     return outputs
@@ -157,6 +162,7 @@ def _render_skeleton_sources(
     camera_t: torch.Tensor,
     output_dir: Path,
     calibration: PelvisCalibration | None = None,
+    audit_labels: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Path]:
     """Render joints plus an explicit, non-exaggerated pelvis-angle marker.
 
@@ -198,6 +204,7 @@ def _render_skeleton_sources(
                     projected_sagittal,
                     tilt_values,
                     calibration=calibration,
+                    audit_values=(None if audit_labels is None else {key: value[frame_index] for key, value in audit_labels[method].items()}),
                 )
                 for index, point in enumerate(points):
                     color = (40, 210, 255) if index in (0, 1, 2, 3) else (245, 245, 245)
@@ -254,6 +261,33 @@ def _pelvis_marker_projections(
     return projected, projected_heading, projected_sagittal, tilt.detach().cpu().numpy()
 
 
+def _v4_audit_labels(
+    joints: dict[str, torch.Tensor],
+    root_rotations: dict[str, torch.Tensor],
+    calibration: PelvisCalibration,
+) -> dict[str, dict[str, np.ndarray]]:
+    """Build per-frame torso/local-change labels shared by mesh and skeleton."""
+
+    curves = {}
+    for method in ("M0", "G0", "G1"):
+        pelvis = anatomical_pelvis_geometry(root_rotations[method], calibration)
+        segments = trunk_and_thigh_angles(joints[method].float(), pelvis)
+        curves[method] = {
+            "pelvis": pelvis.angle_degrees.detach().cpu().numpy(),
+            "trunk": segments["trunk_deg"].detach().cpu().numpy(),
+        }
+    result = {}
+    for method in ("M0", "G0", "G1"):
+        delta_trunk = curves[method]["trunk"] - curves["M0"]["trunk"]
+        delta_pelvis = curves[method]["pelvis"] - curves["M0"]["pelvis"]
+        result[method] = {
+            "delta_trunk": delta_trunk,
+            "delta_local": delta_pelvis - delta_trunk,
+            "anti_pass": ((np.abs(delta_trunk) <= 3.0) & np.isfinite(delta_trunk)),
+        }
+    return result
+
+
 def _draw_pelvis_marker(
     image: np.ndarray,
     frame_index: int,
@@ -262,6 +296,7 @@ def _draw_pelvis_marker(
     projected_sagittal: np.ndarray,
     tilt_values: np.ndarray,
     calibration: PelvisCalibration | None = None,
+    audit_values: dict[str, float | bool] | None = None,
 ) -> None:
     """Draw the angle marker and label on one source frame."""
 
@@ -276,9 +311,9 @@ def _draw_pelvis_marker(
         cv2.circle(image, sagittal_xy, 8, (30, 70, 255), -1, cv2.LINE_AA)
         cv2.arrowedLine(image, root_xy, sagittal_xy, (30, 70, 255), 6, cv2.LINE_AA, tipLength=0.16)
         angle = float(tilt_values[frame_index])
-        label = f"骨盆{'前倾' if angle >= 0 else '后倾'} {angle:+.1f}°"
+        label = f"Pelvis {'anterior' if angle >= 0 else 'posterior'} tilt {angle:+.1f} deg"
         cv2.putText(image, label, (18, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (30, 70, 255), 2, cv2.LINE_AA)
-        cv2.putText(image, "黄色 P 后侧 | 红色 A 前侧 | P→A", (18, PANEL_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.49, (235, 235, 235), 1, cv2.LINE_AA)
+        cv2.putText(image, "yellow P posterior | red A anterior | P -> A", (18, PANEL_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.49, (235, 235, 235), 1, cv2.LINE_AA)
         # Fixed local sagittal inset: x=anterior, y=up.  The vector points
         # down for positive anterior tilt, independent of world camera yaw.
         x0, y0, iw, ih = PANEL_WIDTH - 190, 58, 170, 150
@@ -289,8 +324,14 @@ def _draw_pelvis_marker(
         scale = 58
         endpoint = (int(center[0] + scale * np.cos(np.deg2rad(angle))), int(center[1] + scale * np.sin(np.deg2rad(angle))))
         cv2.arrowedLine(image, center, endpoint, (30, 70, 255), 4, cv2.LINE_AA, tipLength=0.18)
-        cv2.putText(image, "局部矢状面", (x0 + 8, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (30, 30, 30), 1, cv2.LINE_AA)
-        cv2.putText(image, "前方 →", (x0 + 76, y0 + ih - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (70, 70, 70), 1, cv2.LINE_AA)
+        cv2.putText(image, "local sagittal", (x0 + 8, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (30, 30, 30), 1, cv2.LINE_AA)
+        cv2.putText(image, "front ->", (x0 + 76, y0 + ih - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (70, 70, 70), 1, cv2.LINE_AA)
+        if audit_values is not None:
+            dt = float(audit_values["delta_trunk"])
+            dl = float(audit_values["delta_local"])
+            status = "PASS" if bool(audit_values["anti_pass"]) else "REVIEW"
+            cv2.putText(image, f"trunk vs M0 {dt:+.1f} deg", (18, 122), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (245, 245, 245), 1, cv2.LINE_AA)
+            cv2.putText(image, f"pelvis-trunk {dl:+.1f} deg | anti {status}", (18, 145), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (245, 245, 245), 1, cv2.LINE_AA)
         return
     root_xy = tuple(np.rint(root_point).astype(np.int32))
     # Cyan is the local horizontal heading; red is the exact heading-removed
@@ -327,6 +368,7 @@ def _annotate_mesh_source(
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
     calibration: PelvisCalibration | None = None,
+    audit_labels: dict[str, np.ndarray] | None = None,
 ) -> None:
     """Overlay the same pelvis marker on a shaded mesh source video."""
 
@@ -358,6 +400,7 @@ def _annotate_mesh_source(
                 projected_sagittal,
                 tilt_values,
                 calibration=calibration,
+                audit_values=(None if audit_labels is None else {key: value[frame_index] for key, value in audit_labels.items()}),
             )
             process.stdin.write(image.tobytes())
     finally:
