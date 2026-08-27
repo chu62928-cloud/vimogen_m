@@ -1,0 +1,28 @@
+# ViMoGen incremental requirements for the existing mdm5090 environment.
+#
+# The environment already provides Python 3.10, PyTorch 2.7.0+cu128,
+# transformers, safetensors, ftfy, tokenizers, opencv-python, imageio,
+# smplx, numpy, and tqdm. Keep the existing CUDA/PyTorch stack unchanged.
+
+# Configuration
+omegaconf
+easydict
+
+# Diffusion and experiment logging
+diffusers>=0.31.0
+tensorboard
+
+# File utilities
+natsort
+
+# Body-model rendering
+torchgeometry
+pyrender
+imageio[ffmpeg]
+# PyTorch3D is installed separately from source because it must compile
+# against the environment's PyTorch 2.7.0+cu128 and RTX 5090 toolchain.
+# Install command:
+# python -m pip install --no-build-isolation "git+https://github.com/facebookresearch/pytorch3d.git"
+
+# MBench VLM evaluation
+google-genai
