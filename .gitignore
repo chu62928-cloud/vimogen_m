@@ -1,0 +1,43 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Model, dataset, and generated binary artifacts
+checkpoints/
+data/body_models/
+*.pt
+*.pth
+*.ckpt
+*.tar
+*.npz
+*.npy
+*.mp4
+*.avi
+*.mov
+
+# Experiment outputs and local diagnostics
+diagnostics/
+results/
+remote_edit/
+remote_work/
+.tmp*/
+.tmp*
+
+# Local continuity documents and machine-specific helpers
+PROJECT_MEMORY*.md
+_PROJECT_MEMORY*.md
+RESULTS_REPORT*.md
+_RESULTS_REPORT*.md
+connect_server.py
+ssh_server.sh
+
+# Local scratch files retained outside the public archive
+_*.py
+_*.json
+*.log
+
