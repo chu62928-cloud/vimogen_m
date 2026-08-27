@@ -2,7 +2,9 @@
 
 本仓库保存基于 [MotrixLab/ViMoGen](https://github.com/MotrixLab/ViMoGen) 开展的骨盆姿态控制、276 维动作表示一致性、评价与可视化研究代码。
 
-当前首个基线快照对应 `vimogen_absolute_mean_pelvis_v3_tail_safe`：它保留完整前向运动学重建和末端安全融合，用于下一版解剖骨盆前倾控制的可追溯起点。
+当前主线新增独立协议 `vimogen_absolute_mean_pelvis_v4_anatomical_local`：它在 v3 完整前向运动学和末端安全融合基础上，使用冻结的项目专用 LASI/RASI/LPSI/RPSI 标志，并提供局部骨盆主导与防作弊审计。v3 仍是只读历史基线。
+
+主要提交顺序：`a052bd0` 归档保护 → `11e8fe0` 表示/评价基线 → `a2cb7e5` 脚本/测试 → `9bf94af` 解剖几何 → `55bc0d0` v4 引导/评价/标定 → `592cd30` 局部主导安全项 → `7544acc` 占比统计修正 → `65ee191` 视频标记 → `00d5e66` 训练入口 → `5dcd795` 配置边界修正。
 
 ## 存档原则
 
