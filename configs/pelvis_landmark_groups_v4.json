@@ -1,0 +1,19 @@
+{
+  "marker_vertex_groups": {
+    "LASI": [
+      6189, 6192, 6194, 6235, 6278, 6579, 6580, 7142, 7143, 7144, 7145,
+      8219, 8220, 8227, 8358, 8362, 8372, 8373, 8380, 8381, 8382, 8384
+    ],
+    "RASI": [
+      3428, 3431, 3433, 3474, 3517, 3822, 3823, 4406, 4407, 4408, 4409,
+      5490, 5491, 5505, 5664, 5668, 5678, 5679, 5686, 5687, 5688, 5690
+    ],
+    "LPSI": [
+      6055, 6058, 6071, 6827, 6859, 6863, 7157, 8237, 8421
+    ],
+    "RPSI": [
+      3292, 3295, 3308, 4083, 4115, 4119, 4421, 5515, 5727
+    ]
+  },
+  "selection_note": "Project-specific neutral-template groups selected from a reviewed z-up sagittal mesh: negative local z is anterior (person faces local -z); positive local z is posterior. They are not official SMPL-X ASIS/PSIS vertex definitions."
+}

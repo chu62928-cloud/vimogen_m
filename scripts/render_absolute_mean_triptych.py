@@ -31,6 +31,10 @@ from motion_rep.sagittal_pelvis_angle import (  # noqa: E402
     pelvis_sagittal_tilt_degrees,
     person_forward_horizontal_axis,
 )
+from motion_rep.anatomical_pelvis import (  # noqa: E402
+    PelvisCalibration,
+    anatomical_pelvis_geometry,
+)
 
 
 WIDTH, HEIGHT, FPS = 1920, 1080, 20
@@ -86,7 +90,8 @@ def _load_motion(path: Path, device: str) -> torch.Tensor:
 
 @torch.no_grad()
 def render_sources(
-    motions: dict[str, torch.Tensor], output_dir: Path, device: str, render_style: str = "mesh"
+    motions: dict[str, torch.Tensor], output_dir: Path, device: str, render_style: str = "mesh",
+    calibration: PelvisCalibration | None = None,
 ) -> dict[str, Path]:
     """Render all methods with the exact same fixed sagittal side camera."""
 
@@ -102,7 +107,7 @@ def render_sources(
     camera_r, camera_t = fixed_sagittal_side_camera(joints["M0"])
     if render_style == "skeleton":
         return _render_skeleton_sources(
-            joints, root_rotations, camera_r, camera_t, output_dir
+            joints, root_rotations, camera_r, camera_t, output_dir, calibration=calibration
         )
     if render_style != "mesh":
         raise ValueError(f"unsupported render_style {render_style!r}")
@@ -139,6 +144,7 @@ def render_sources(
             root_rotations[method],
             camera_r,
             camera_t,
+            calibration=calibration,
         )
         outputs[method] = annotated_path
     return outputs
@@ -150,6 +156,7 @@ def _render_skeleton_sources(
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
     output_dir: Path,
+    calibration: PelvisCalibration | None = None,
 ) -> dict[str, Path]:
     """Render joints plus an explicit, non-exaggerated pelvis-angle marker.
 
@@ -163,7 +170,7 @@ def _render_skeleton_sources(
     for method in ("M0", "G0", "G1"):
         world = joints[method].float()
         projected, projected_heading, projected_sagittal, tilt_values = _pelvis_marker_projections(
-            world, root_rotations[method], camera_r, camera_t
+            world, root_rotations[method], camera_r, camera_t, calibration=calibration
         )
         path = output_dir / f"{method.lower()}_fixed_sagittal_side_skeleton.mp4"
         command = [
@@ -190,6 +197,7 @@ def _render_skeleton_sources(
                     projected_heading,
                     projected_sagittal,
                     tilt_values,
+                    calibration=calibration,
                 )
                 for index, point in enumerate(points):
                     color = (40, 210, 255) if index in (0, 1, 2, 3) else (245, 245, 245)
@@ -209,6 +217,7 @@ def _pelvis_marker_projections(
     root_rotation: torch.Tensor,
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
+    calibration: PelvisCalibration | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Project the exact measured pelvis direction and its local horizontal reference."""
 
@@ -227,6 +236,11 @@ def _pelvis_marker_projections(
 
     projected = project(world)
     root = world[:, :1]
+    if calibration is not None:
+        geometry = anatomical_pelvis_geometry(root_rotation, calibration, root_translation=root[:, 0])
+        projected_posterior = project(geometry.posterior_point[:, None])[:, 0]
+        projected_anterior = project(geometry.anterior_point[:, None])[:, 0]
+        return projected, projected_posterior, projected_anterior, geometry.angle_degrees.detach().cpu().numpy()
     heading, _ = person_forward_horizontal_axis(root_rotation)
     tilt = pelvis_sagittal_tilt_degrees(root_rotation)
     up = torch.zeros_like(heading)
@@ -247,12 +261,38 @@ def _draw_pelvis_marker(
     projected_heading: np.ndarray,
     projected_sagittal: np.ndarray,
     tilt_values: np.ndarray,
+    calibration: PelvisCalibration | None = None,
 ) -> None:
     """Draw the angle marker and label on one source frame."""
 
-    root_xy = tuple(np.rint(root_point).astype(np.int32))
     heading_xy = tuple(np.rint(projected_heading[frame_index]).astype(np.int32))
     sagittal_xy = tuple(np.rint(projected_sagittal[frame_index]).astype(np.int32))
+    if calibration is not None:
+        # For v4 the exact anatomical line is P -> A; do not substitute the
+        # pelvis joint as its origin.  The local inset makes anterior-right
+        # and anterior-down-positive unambiguous even in a turning sequence.
+        root_xy = heading_xy
+        cv2.circle(image, heading_xy, 8, (255, 210, 40), -1, cv2.LINE_AA)
+        cv2.circle(image, sagittal_xy, 8, (30, 70, 255), -1, cv2.LINE_AA)
+        cv2.arrowedLine(image, root_xy, sagittal_xy, (30, 70, 255), 6, cv2.LINE_AA, tipLength=0.16)
+        angle = float(tilt_values[frame_index])
+        label = f"骨盆{'前倾' if angle >= 0 else '后倾'} {angle:+.1f}°"
+        cv2.putText(image, label, (18, 92), cv2.FONT_HERSHEY_SIMPLEX, 0.72, (30, 70, 255), 2, cv2.LINE_AA)
+        cv2.putText(image, "黄色 P 后侧 | 红色 A 前侧 | P→A", (18, PANEL_HEIGHT - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.49, (235, 235, 235), 1, cv2.LINE_AA)
+        # Fixed local sagittal inset: x=anterior, y=up.  The vector points
+        # down for positive anterior tilt, independent of world camera yaw.
+        x0, y0, iw, ih = PANEL_WIDTH - 190, 58, 170, 150
+        cv2.rectangle(image, (x0, y0), (x0 + iw, y0 + ih), (245, 245, 245), -1)
+        cv2.rectangle(image, (x0, y0), (x0 + iw, y0 + ih), (60, 60, 60), 1)
+        center = (x0 + iw // 2, y0 + ih // 2)
+        cv2.arrowedLine(image, center, (x0 + iw - 18, center[1]), (100, 100, 100), 2, cv2.LINE_AA, tipLength=0.15)
+        scale = 58
+        endpoint = (int(center[0] + scale * np.cos(np.deg2rad(angle))), int(center[1] + scale * np.sin(np.deg2rad(angle))))
+        cv2.arrowedLine(image, center, endpoint, (30, 70, 255), 4, cv2.LINE_AA, tipLength=0.18)
+        cv2.putText(image, "局部矢状面", (x0 + 8, y0 + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (30, 30, 30), 1, cv2.LINE_AA)
+        cv2.putText(image, "前方 →", (x0 + 76, y0 + ih - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (70, 70, 70), 1, cv2.LINE_AA)
+        return
+    root_xy = tuple(np.rint(root_point).astype(np.int32))
     # Cyan is the local horizontal heading; red is the exact heading-removed
     # pelvis-forward direction used for theta.
     cv2.arrowedLine(image, root_xy, heading_xy, (255, 210, 40), 5, cv2.LINE_AA, tipLength=0.16)
@@ -286,11 +326,12 @@ def _annotate_mesh_source(
     root_rotation: torch.Tensor,
     camera_r: torch.Tensor,
     camera_t: torch.Tensor,
+    calibration: PelvisCalibration | None = None,
 ) -> None:
     """Overlay the same pelvis marker on a shaded mesh source video."""
 
     projected, projected_heading, projected_sagittal, tilt_values = _pelvis_marker_projections(
-        world.float(), root_rotation, camera_r, camera_t
+        world.float(), root_rotation, camera_r, camera_t, calibration=calibration
     )
     capture = cv2.VideoCapture(str(source_path))
     if not capture.isOpened():
@@ -316,6 +357,7 @@ def _annotate_mesh_source(
                 projected_heading,
                 projected_sagittal,
                 tilt_values,
+                calibration=calibration,
             )
             process.stdin.write(image.tobytes())
     finally:
@@ -464,13 +506,18 @@ def main() -> None:
         help="Frozen display camera; v2 uses a true z-up sagittal side view.",
     )
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--calibration", type=Path, default=None, help="v4 frozen LASI/RASI/LPSI/RPSI calibration JSON")
     args = parser.parse_args()
     motions = {
         "M0": _load_motion(args.m0_motion, args.device),
         "G0": _load_motion(args.g0_motion, args.device),
         "G1": _load_motion(args.g1_motion, args.device),
     }
-    videos = render_sources(motions, args.source_dir, args.device, args.render_style)
+    calibration = None
+    if args.calibration is not None:
+        from motion_rep.anatomical_pelvis import load_pelvis_calibration
+        calibration = load_pelvis_calibration(args.calibration)
+    videos = render_sources(motions, args.source_dir, args.device, args.render_style, calibration=calibration)
     curves = _read_angles(args.angles_csv, args.sample_id)
     print(json.dumps(compose(
         videos=videos,
