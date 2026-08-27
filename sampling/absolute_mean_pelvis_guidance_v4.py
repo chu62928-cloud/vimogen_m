@@ -342,24 +342,78 @@ class AbsoluteMeanPelvisGuidanceV4:
         self.last_diagnostics = diagnostics
         return corrected_velocity, diagnostics
 
-    @torch.no_grad()
     def finalize_outputs(self, official_norm: torch.Tensor) -> AbsoluteMeanFinalOutputsV4:
-        """Return G0 and a conservative G1; no unconstrained root-only edit is used."""
+        """Return G0 and a constrained terminal refinement.
 
-        g0_result = self._reconcile(official_norm.float(), output_standardized=True)
+        The refinement is a short projected optimisation over the same active
+        Rot6D channels used during diffusion.  It is intentionally not a
+        root-only SO(3) edit: each trial passes the v3 FK/repacking boundary
+        and is accepted only when the complete objective decreases.
+        """
+
+        with torch.enable_grad():
+            baseline = self._reconcile(self.baseline_motion_norm.float(), output_standardized=False)
+        x = official_norm.float().detach()
+        active = _active_rotation_mask(x.device, x.dtype)
+        records: list[dict[str, Any]] = []
+        for index in range(x.shape[0]):
+            x_item = x[index:index + 1]
+            baseline_item = baseline.motion[index:index + 1]
+            mask_item = self.valid_mask[index:index + 1].to(x.device)
+            accepted = 0
+            with torch.enable_grad():
+                initial = self._reconcile(x_item, output_standardized=False)
+                initial_loss, _ = self._objective(initial.motion, baseline_item, mask_item & initial.valid_mask)
+            best_loss = initial_loss
+            for _ in range(8 if self.config.terminal_enabled else 0):
+                with torch.enable_grad():
+                    variable = x_item.detach().requires_grad_(True)
+                    candidate = self._reconcile(variable, output_standardized=False)
+                    objective, _ = self._objective(candidate.motion, baseline_item, mask_item & candidate.valid_mask)
+                    gradient = torch.autograd.grad(objective, variable, allow_unused=False)[0]
+                    gradient = torch.nan_to_num(gradient) * active.view(1, 1, -1)
+                    rms = torch.sqrt(gradient.square().mean()).clamp_min(self.config.eps)
+                improved = False
+                for step_rms in (0.02, 0.01, 0.005, 0.0025, 0.00125, 0.000625):
+                    trial_x = variable.detach() - gradient * (step_rms / rms)
+                    with torch.enable_grad():
+                        trial = self._reconcile(trial_x, output_standardized=False)
+                        trial_loss, _ = self._objective(trial.motion, baseline_item, mask_item & trial.valid_mask)
+                    if float(trial_loss) + self.config.eps < float(best_loss):
+                        x_item = trial_x
+                        best_loss = trial_loss.detach()
+                        accepted += 1
+                        improved = True
+                        break
+                if not improved:
+                    break
+            refined = self._reconcile(x_item, output_standardized=True)
+            records.append({
+                "target_mean_deg": self.target_mean_deg,
+                "triggered": bool(accepted),
+                "applied_deg": 0.0,
+                "mean_after_deg": None,
+                "terminal_refinement_steps": accepted,
+                "terminal_skipped": not bool(accepted),
+                "reason": "constrained active-channel objective refinement",
+            })
+            if index == 0:
+                refined_rows = [refined.motion]
+                refined_masks = [refined.valid_mask]
+            else:
+                refined_rows.append(refined.motion)
+                refined_masks.append(refined.valid_mask)
+        g0 = torch.cat(refined_rows, dim=0)
+        g0_mask = torch.cat(refined_masks, dim=0)
         records = tuple({
-            "target_mean_deg": self.target_mean_deg,
-            "triggered": False,
-            "applied_deg": 0.0,
-            "mean_after_deg": None,
-            "terminal_skipped": True,
-            "reason": "v4 terminal refinement must use the same constrained optimiser; no rigid root edit applied",
-        } for _ in range(g0_result.motion.shape[0]))
+            **record,
+            "g0_refined": True,
+        } for record in records)
         return AbsoluteMeanFinalOutputsV4(
-            g0=g0_result.motion,
-            g1=g0_result.motion.clone(),
-            g0_valid_mask=g0_result.valid_mask,
-            g1_valid_mask=g0_result.valid_mask.clone(),
+            g0=g0,
+            g1=g0.clone(),
+            g0_valid_mask=g0_mask,
+            g1_valid_mask=g0_mask.clone(),
             terminal_records=records,
         )
 

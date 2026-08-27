@@ -386,7 +386,9 @@ def anti_cheat_metrics(
     local_mean = (local[valid_mask].mean() if bool(valid_mask.any()) else local.new_tensor(0.0))
     pelvis_mean = (dp[valid_mask].mean() if bool(valid_mask.any()) else dp.new_tensor(0.0))
     trunk_mean = (dt[valid_mask].mean() if bool(valid_mask.any()) else dt.new_tensor(0.0))
-    share = local_mean / pelvis_mean.abs().clamp_min(1e-8)
+    # The share is a magnitude; direction is reported independently via
+    # ``local_change_same_sign``.
+    share = local_mean.abs() / pelvis_mean.abs().clamp_min(1e-8)
     share_sign = (local_mean * pelvis_mean >= 0) if abs(float(pelvis_mean.detach().cpu())) >= low_signal_deg else torch.tensor(False, device=local.device)
     def q(x: torch.Tensor, mask: torch.Tensor, p: float) -> torch.Tensor:
         selected = x[mask].abs()
