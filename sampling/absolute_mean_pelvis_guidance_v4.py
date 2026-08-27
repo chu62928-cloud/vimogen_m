@@ -193,7 +193,12 @@ class AbsoluteMeanPelvisGuidanceV4:
             "angle_definition": "atan2(-dot(A-P,up), dot(A-P,heading))",
             "positive_direction": "anterior_side_down",
             "active_rotation_channels": {name: [span.start, span.stop] for name, span in ACTIVE_ROTATION_SLICES.items()},
-            "anti_cheat": {"soft_limit_deg": self.config.soft_limit_deg, "p95_limit_deg": self.config.p95_limit_deg, "coefficient": 1.0},
+            "anti_cheat": {
+                "soft_limit_deg": self.config.soft_limit_deg,
+                "p95_limit_deg": self.config.p95_limit_deg,
+                "coefficient": 1.0,
+                "local_dominance": "fixed hinge requiring abs(delta_pelvis-trunk)/abs(delta_pelvis) >= 0.5 and same sign above 0.5deg signal",
+            },
             "calibration": self.calibration.to_mapping(),
             "config": asdict(self.config),
         }

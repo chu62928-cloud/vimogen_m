@@ -68,6 +68,7 @@ def main() -> None:
             "p95_limit_deg": 3.0,
             "loss": "mean(ReLU(abs(delta_trunk/thigh)-2deg)^2 over three segments)",
             "coefficient": 1.0,
+            "local_dominance": "fixed hinge requiring absolute local pelvis-trunk change >= 0.5 of pelvis change and same sign above 0.5deg signal",
             "local_share_gate": ">0.5 and same sign when absolute pelvis change is at least 0.5deg",
             "ratio": "audit only; no standalone pass threshold",
         },
