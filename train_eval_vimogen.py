@@ -32,6 +32,11 @@ from utils import maybe_corrupt_ref_motion, smooth_motion_rep
 from sampling.flow_sampler import FlowSampler, FlowSampleResult
 from sampling.noise_protocol import SampleNoiseProtocol
 from sampling.m1_guidance import M1Config, M1Guidance
+from sampling.relative_root_forward_guidance import (
+    PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_PROTOCOL,
+    RelativeRootForwardConfig,
+    RelativeRootForwardGuidance,
+)
 from sampling.absolute_mean_pelvis_guidance import (
     AbsoluteMeanPelvisConfig,
     AbsoluteMeanPelvisGuidance,
@@ -465,18 +470,45 @@ def main(args):
         raise ValueError('absolute_mean_pelvis target_mean_deg must be +5 or +10')
     if absolute_enabled and absolute_artifact_dir is None:
         raise ValueError('absolute_mean_pelvis.enabled requires artifact_dir')
-    control_enabled = m1_enabled or absolute_enabled
+
+    # Root-forward v1 is deliberately independent of the historical M1 and
+    # absolute pelvis protocols.  Its M0 baseline is projected once from the
+    # official FP32 endpoint, then frozen inside the guidance object.
+    relative_cfg = args.get('relative_root_forward', {})
+    relative_protocol_requested = str(relative_cfg.get('protocol', RELATIVE_ROOT_FORWARD_PROTOCOL))
+    if relative_protocol_requested not in {
+        RELATIVE_ROOT_FORWARD_PROTOCOL,
+        'v1',
+    }:
+        raise ValueError(
+            'relative_root_forward.protocol must be '
+            f'{RELATIVE_ROOT_FORWARD_PROTOCOL}'
+        )
+    relative_strategy_config = RelativeRootForwardConfig.from_mapping(relative_cfg)
+    relative_enabled = bool(relative_strategy_config.enabled)
+    relative_artifact_dir = (
+        relative_cfg.get('artifact_dir', os.path.join('results', 'phase7', 'relative_root_forward_v1'))
+        if relative_enabled else None
+    )
+    relative_target_delta_deg = float(relative_cfg.get('target_delta_deg', 5.0))
+    if relative_enabled and not -10.0 <= relative_target_delta_deg <= 10.0:
+        raise ValueError('relative_root_forward target_delta_deg must lie in [-10,10]')
+    if sum((m1_enabled, absolute_enabled, relative_enabled)) > 1:
+        raise ValueError(
+            'm1, absolute_mean_pelvis, and relative_root_forward are mutually exclusive'
+        )
+    control_enabled = m1_enabled or absolute_enabled or relative_enabled
 
     # Explicitly opt-in control-aware 276D reconciliation.  The default
     # configuration has no ``representation`` section, so historical M0/M1
     # outputs and their audit artifacts remain unchanged.
     representation_cfg = args.get('representation', {})
     if (
-        absolute_enabled
+        (absolute_enabled or relative_enabled)
         and bool(representation_cfg.get('reconciliation', {}).get('enabled', False))
     ):
         raise ValueError(
-            'absolute_mean_pelvis owns the final reconciliation boundary; '
+            'guided protocol owns the final reconciliation boundary; '
             'disable representation.reconciliation'
         )
 
@@ -542,6 +574,7 @@ def main(args):
         batch_invariant: bool = False,
         m1_guidance=None,
         absolute_mean_guidance=None,
+        relative_root_forward_guidance=None,
         trace_enabled: bool = False,
         motion_mean: torch.Tensor | None = None,
         motion_std: torch.Tensor | None = None,
@@ -575,6 +608,7 @@ def main(args):
             batch_invariant=batch_invariant,
             m1_guidance=m1_guidance,
             absolute_mean_guidance=absolute_mean_guidance,
+            relative_root_forward_guidance=relative_root_forward_guidance,
             trace_enabled=trace_enabled,
             reconciliation_config=(
                 None
@@ -839,6 +873,15 @@ def main(args):
                         absolute_artifact_dir_current,
                         f'batch_{test_batch_idx:03d}',
                     )
+                relative_artifact_dir_current = relative_artifact_dir
+                if (
+                    relative_artifact_dir_current is not None
+                    and m0_sample_noise_protocol is not None
+                ):
+                    relative_artifact_dir_current = os.path.join(
+                        relative_artifact_dir_current,
+                        f'batch_{test_batch_idx:03d}',
+                    )
 
                 raw_latents_full = (
                     torch.zeros_like(latents, dtype=torch.float32)
@@ -877,6 +920,23 @@ def main(args):
                     if absolute_enabled else None
                 )
                 absolute_summary_records = []
+                relative_raw_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if relative_enabled else None
+                )
+                relative_official_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if relative_enabled else None
+                )
+                relative_g0_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if relative_enabled else None
+                )
+                relative_m0_consistent_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if relative_enabled else None
+                )
+                relative_summary_records = []
 
                 attend_to_text_mask_bool = attend_to_text_mask.bool()
                 text_mask = attend_to_text_mask_bool
@@ -885,7 +945,7 @@ def main(args):
 
                 gen_latents_full = torch.zeros_like(
                     latents,
-                    dtype=torch.float32 if absolute_enabled else latents.dtype,
+                    dtype=torch.float32 if (absolute_enabled or relative_enabled) else latents.dtype,
                 )
                 for condition_name, sample_mask in (('text', text_mask), ('motion', motion_mask)):
                     if not sample_mask.any().item():
@@ -984,6 +1044,7 @@ def main(args):
                         )
                         condition_result = m1_result
                     absolute_result = None
+                    relative_result = None
                     if absolute_enabled:
                         if not isinstance(m0_result, FlowSampleResult):
                             raise RuntimeError(
@@ -1031,10 +1092,56 @@ def main(args):
                             absolute_mean_guidance=absolute_strategy,
                         )
                         condition_result = absolute_result
+                    if relative_enabled:
+                        if not isinstance(m0_result, FlowSampleResult):
+                            raise RuntimeError(
+                                'relative root-forward guidance requires FlowSampleResult from the M0 pass'
+                            )
+                        condition_mean = motion_mean[sample_mask]
+                        condition_std = motion_std[sample_mask]
+                        relative_strategy = RelativeRootForwardGuidance(
+                            baseline_motion_norm=m0_result.official_pre_cast.float(),
+                            valid_mask=latents_mask[sample_mask].bool(),
+                            mean=condition_mean,
+                            std=condition_std,
+                            target_delta_deg=relative_target_delta_deg,
+                            config=relative_strategy_config,
+                        )
+                        relative_result = generate_pipe(
+                            model=model,
+                            prompt_emb=prompt_emb[sample_mask],
+                            prompt_emb_null=prompt_emb_null[sample_mask],
+                            latents=latents[sample_mask],
+                            latents_mask=latents_mask[sample_mask],
+                            ref_latents=condition_ref_latents,
+                            ref_latents_mask=ref_latents_visual_mask[sample_mask],
+                            num_inference_steps=args.experiment.get('validation_steps', 50),
+                            cfg_scale=args.experiment.get('cfg_scale', 5.0),
+                            use_ema=False,
+                            device=device,
+                            dtype=dtype,
+                            scheduler=wan_scheduler,
+                            seed=seed,
+                            logger=logger,
+                            condition_on_text=(condition_name == 'text'),
+                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                            initial_noise=condition_initial_noise,
+                            motion_mean=condition_mean,
+                            motion_std=condition_std,
+                            return_artifacts=True,
+                            batch_invariant=(
+                                m0_sample_noise_protocol is not None
+                                and bool(m0_cfg.get('batch_invariant', False))
+                            ),
+                            relative_root_forward_guidance=relative_strategy,
+                            trace_enabled=relative_strategy_config.trace_enabled,
+                        )
+                        relative_m0_consistent_latents_full[sample_mask] = relative_strategy.baseline_motion_norm
+                        condition_result = relative_result
                     if isinstance(condition_result, FlowSampleResult):
                         condition_gen_latents = (
                             condition_result.g0
-                            if absolute_result is not None
+                            if absolute_result is not None or relative_result is not None
                             else condition_result.reconciled
                             if condition_result.reconciled is not None
                             else condition_result.official
@@ -1053,6 +1160,11 @@ def main(args):
                             absolute_summary_records.append(
                                 absolute_result.guidance_summary
                             )
+                        if relative_result is not None:
+                            relative_raw_latents_full[sample_mask] = relative_result.raw
+                            relative_official_latents_full[sample_mask] = relative_result.official_pre_cast
+                            relative_g0_latents_full[sample_mask] = relative_result.g0
+                            relative_summary_records.append(relative_result.guidance_summary)
                     else:
                         condition_gen_latents = condition_result
                     gen_latents_full[sample_mask] = condition_gen_latents.to(gen_latents_full.dtype)
@@ -1156,6 +1268,43 @@ def main(args):
                             guidance_file,
                             indent=2,
                             sort_keys=True,
+                        )
+
+                if relative_artifact_dir_current is not None and global_rank == 0:
+                    os.makedirs(relative_artifact_dir_current, exist_ok=True)
+                    for filename, tensor in (
+                        ('guided_raw_norm_batch.pt', relative_raw_latents_full),
+                        ('guided_official_norm_batch.pt', relative_official_latents_full),
+                        ('g0_norm_batch.pt', relative_g0_latents_full),
+                        ('m0_consistent_norm_batch.pt', relative_m0_consistent_latents_full),
+                    ):
+                        torch.save(
+                            tensor.detach().cpu(),
+                            os.path.join(relative_artifact_dir_current, filename),
+                        )
+                    with open(
+                        os.path.join(relative_artifact_dir_current, 'guidance_summary.json'),
+                        'w',
+                        encoding='utf-8',
+                    ) as guidance_file:
+                        json.dump(
+                            {
+                                'protocol': RELATIVE_ROOT_FORWARD_PROTOCOL,
+                                'target_delta_deg': relative_target_delta_deg,
+                                'records': relative_summary_records,
+                            },
+                            guidance_file,
+                            indent=2,
+                            sort_keys=True,
+                        )
+                    if (
+                        relative_strategy_config.trace_enabled
+                        and isinstance(relative_result, FlowSampleResult)
+                        and relative_result.trace is not None
+                    ):
+                        torch.save(
+                            {key: value.detach().cpu() for key, value in relative_result.trace.items()},
+                            os.path.join(relative_artifact_dir_current, 'relative_root_forward_trace.pt'),
                         )
                 
                 # Visualization

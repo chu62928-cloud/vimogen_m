@@ -34,8 +34,8 @@ class FlowSampleResult:
     # M0/M1 callers leave this as None and retain bitwise-compatible outputs.
     reconciled: Optional[torch.Tensor] = None
     representation_protocol: Optional[str] = None
-    # Opt-in outputs for ``vimogen_absolute_mean_pelvis_v1``.  They remain
-    # None for every historical M0/M1 call.
+    # Opt-in authoritative outputs for absolute-pelvis and relative-root
+    # protocols.  They remain None for every historical M0/M1 call.
     g0: Optional[torch.Tensor] = None
     g1: Optional[torch.Tensor] = None
     guidance_summary: Optional[dict] = None
@@ -105,6 +105,7 @@ class FlowSampler:
         batch_invariant: bool = False,
         m1_guidance=None,
         absolute_mean_guidance=None,
+        relative_root_forward_guidance=None,
         trace_enabled: bool = False,
         reconciliation_config: Optional[dict] = None,
         motion_mean: Optional[torch.Tensor] = None,
@@ -119,11 +120,25 @@ class FlowSampler:
         self._validate_inputs(
             initial_noise, valid_mask, ref_motion, ref_motion_mask
         )
-        if m1_guidance is not None and absolute_mean_guidance is not None:
-            raise ValueError("m1_guidance and absolute_mean_guidance are mutually exclusive")
+        guidance_count = sum(
+            item is not None
+            for item in (m1_guidance, absolute_mean_guidance, relative_root_forward_guidance)
+        )
+        if guidance_count > 1:
+            raise ValueError(
+                "m1_guidance, absolute_mean_guidance, and "
+                "relative_root_forward_guidance are mutually exclusive"
+            )
+        if guidance_count and reconciliation_config and bool(reconciliation_config.get("enabled", False)):
+            raise ValueError(
+                "guided protocol owns the final reconciliation boundary; "
+                "do not also pass reconciliation_config"
+            )
         guidance_hook = (
             absolute_mean_guidance
             if absolute_mean_guidance is not None
+            else relative_root_forward_guidance
+            if relative_root_forward_guidance is not None
             else m1_guidance
         )
         if batch_invariant and initial_noise.shape[0] > 1:
@@ -163,6 +178,10 @@ class FlowSampler:
                             None if absolute_mean_guidance is None
                             else absolute_mean_guidance.slice(index)
                         ),
+                        relative_root_forward_guidance=(
+                            None if relative_root_forward_guidance is None
+                            else relative_root_forward_guidance.slice(index)
+                        ),
                         trace_enabled=trace_enabled,
                         reconciliation_config=reconciliation_config,
                         motion_mean=(None if motion_mean is None else motion_mean[index:index + 1]),
@@ -182,7 +201,11 @@ class FlowSampler:
                 timesteps=per_sample[-1].timesteps,
                 trace=(
                     {
-                        key: torch.cat([result.trace[key] for result in per_sample], dim=1)
+                        key: (
+                            torch.stack([result.trace[key] for result in per_sample], dim=1)
+                            if per_sample[0].trace[key].ndim == 1
+                            else torch.cat([result.trace[key] for result in per_sample], dim=1)
+                        )
                         for key in per_sample[0].trace
                     }
                     if trace_enabled and per_sample and per_sample[0].trace is not None
@@ -273,6 +296,7 @@ class FlowSampler:
 
             iterator = tqdm(timesteps, desc="M0 generation")
         trace_records: list[dict[str, torch.Tensor]] = []
+        guidance_step_records: list[dict] = []
         for timestep in iterator:
             x_sigma_trace = xt.detach().clone() if trace_enabled else None
             with autocast_ctx:
@@ -329,6 +353,11 @@ class FlowSampler:
                     velocity, guidance_diagnostics = guidance_hook.correct_velocity(
                         **guidance_kwargs
                     )
+                    if relative_root_forward_guidance is not None:
+                        guidance_step_records.append({
+                            key: value for key, value in guidance_diagnostics.items()
+                            if key != "trace" and not isinstance(value, torch.Tensor)
+                        })
                     if trace_enabled:
                         guidance_trace = guidance_diagnostics.get("trace")
                 x_next = self.scheduler.step(velocity, timestep, xt)
@@ -397,10 +426,22 @@ class FlowSampler:
                 **absolute_mean_guidance.protocol_record(),
                 "terminal_records": list(absolute_outputs.terminal_records),
             }
+        if relative_root_forward_guidance is not None:
+            relative_outputs = relative_root_forward_guidance.finalize_outputs(official.float())
+            g0 = relative_outputs.g0
+            reconciled = g0.to(dtype=dtype)
+            representation_protocol = relative_outputs.protocol
+            guidance_summary = {
+                **relative_root_forward_guidance.protocol_record(),
+                "final_projection_audits": list(relative_outputs.projection_audits),
+                "whole_body_audits": list(relative_outputs.whole_body_audits),
+                "metrics": relative_outputs.metrics,
+                "step_records": guidance_step_records,
+            }
         if reconciliation_config and bool(reconciliation_config.get("enabled", False)):
-            if absolute_mean_guidance is not None:
+            if absolute_mean_guidance is not None or relative_root_forward_guidance is not None:
                 raise ValueError(
-                    "absolute mean guidance owns the final reconciliation boundary; "
+                    "guided protocol owns the final reconciliation boundary; "
                     "do not also pass reconciliation_config"
                 )
             if motion_mean is None or motion_std is None:
