@@ -22,6 +22,11 @@ from sampling.relative_root_forward_guidance import (
     RelativeRootForwardGuidance,
     apply_root_forward_tangent,
 )
+from sampling.relative_root_forward_guidance_v1_1 import (
+    PROTOCOL_NAME as V1_1_PROTOCOL_NAME,
+    ResidualAdaptiveRootForwardConfig,
+    signed_root_forward_residual_deg,
+)
 
 
 def _tiny_skeleton():
@@ -114,3 +119,26 @@ def test_tangent_edit_is_left_multiplication_about_frozen_right_axis():
     axis_angle = __import__("motion_rep.rotation_transform", fromlist=["mat3x3_to_axis_angle"]).mat3x3_to_axis_angle(relative)
     cross = torch.cross(axis_angle, r, dim=-1)
     assert torch.linalg.vector_norm(cross, dim=-1).max() < 1e-5
+
+
+def test_residual_adaptive_signed_residual_has_correct_sign_and_dose_scale():
+    axis = torch.tensor([[[1.0, 0.0, 0.0]]])
+    current = torch.tensor([[[0.0, 0.0, 1.0]]])
+    target_5 = axis_angle_to_mat3x3(axis * (-5.0 * math.pi / 180.0)) @ current.unsqueeze(-1)
+    target_10 = axis_angle_to_mat3x3(axis * (-10.0 * math.pi / 180.0)) @ current.unsqueeze(-1)
+    target_5 = target_5.squeeze(-1)
+    target_10 = target_10.squeeze(-1)
+    mask = torch.ones(1, 1, dtype=torch.bool)
+    residual_5, valid_5 = signed_root_forward_residual_deg(current, target_5, axis, mask)
+    residual_10, valid_10 = signed_root_forward_residual_deg(current, target_10, axis, mask)
+    assert valid_5.item() and valid_10.item()
+    assert torch.allclose(residual_5, torch.tensor([[-5.0]]), atol=1e-4)
+    assert torch.allclose(residual_10, torch.tensor([[-10.0]]), atol=1e-4)
+    assert residual_10.abs().item() > residual_5.abs().item()
+
+
+def test_residual_adaptive_config_isolated_protocol():
+    cfg = ResidualAdaptiveRootForwardConfig.from_mapping({"enabled": True})
+    assert cfg.protocol == V1_1_PROTOCOL_NAME
+    assert cfg.residual_gain == 1.0
+    assert cfg.max_step_deg == 8.0

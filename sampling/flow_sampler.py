@@ -13,6 +13,8 @@ from typing import Optional
 
 import torch
 
+from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe
+from motion_rep.pose_authority import _geodesic
 from utils import smooth_motion_rep
 
 
@@ -86,6 +88,37 @@ class FlowSampler:
                 "ref_motion_mask must match initial_noise [B,T], "
                 f"got {tuple(ref_motion_mask.shape)} vs {tuple(initial_noise.shape[:2])}"
             )
+
+    @staticmethod
+    def _guidance_transfer_gain(
+        x_next_model: torch.Tensor,
+        x_next_guided: torch.Tensor,
+        motion_mean: torch.Tensor,
+        motion_std: torch.Tensor,
+        valid_mask: torch.Tensor,
+        accepted_alpha_rms_deg: float,
+    ) -> float | None:
+        """Measure root-rotation effect after one scheduler step."""
+
+        if accepted_alpha_rms_deg <= 1e-8:
+            return None
+        mean = motion_mean.to(device=x_next_guided.device, dtype=torch.float32)
+        std = motion_std.to(device=x_next_guided.device, dtype=torch.float32)
+        if mean.ndim == 1:
+            mean = mean[None, None, :]
+            std = std[None, None, :]
+        elif mean.ndim == 2:
+            mean = mean[:, None, :]
+            std = std[:, None, :]
+        model_phys = x_next_model.float() * std + mean
+        guided_phys = x_next_guided.float() * std + mean
+        model_root = decode_rot6d_safe(model_phys[..., MOTION_LAYOUT.root_rotation])
+        guided_root = decode_rot6d_safe(guided_phys[..., MOTION_LAYOUT.root_rotation])
+        delta_deg = _geodesic(guided_root, model_root) * (180.0 / torch.pi)
+        values = delta_deg[valid_mask]
+        if not values.numel() or not torch.isfinite(values).all():
+            return None
+        return float(values.mean().detach().cpu()) / float(accepted_alpha_rms_deg)
 
     @torch.no_grad()
     def generate(
@@ -319,6 +352,7 @@ class FlowSampler:
                     )
                 else:
                     velocity = velocity_cond
+                velocity_model = velocity.detach().clone()
                 sigma = None
                 x0_hat = None
                 if trace_enabled:
@@ -353,14 +387,31 @@ class FlowSampler:
                     velocity, guidance_diagnostics = guidance_hook.correct_velocity(
                         **guidance_kwargs
                     )
-                    if relative_root_forward_guidance is not None:
-                        guidance_step_records.append({
-                            key: value for key, value in guidance_diagnostics.items()
-                            if key != "trace" and not isinstance(value, torch.Tensor)
-                        })
                     if trace_enabled:
                         guidance_trace = guidance_diagnostics.get("trace")
                 x_next = self.scheduler.step(velocity, timestep, xt)
+                if (
+                    relative_root_forward_guidance is not None
+                    and guidance_diagnostics.get("accepted", False)
+                    and motion_mean is not None
+                    and motion_std is not None
+                ):
+                    x_next_model = self.scheduler.step(velocity_model, timestep, xt)
+                    transfer_gain = self._guidance_transfer_gain(
+                        x_next_model,
+                        x_next,
+                        motion_mean,
+                        motion_std,
+                        valid_mask.bool(),
+                        float(guidance_diagnostics.get("accepted_alpha_rms_deg", 0.0)),
+                    )
+                    if transfer_gain is not None:
+                        guidance_diagnostics["transfer_gain"] = transfer_gain
+                if relative_root_forward_guidance is not None:
+                    guidance_step_records.append({
+                        key: value for key, value in guidance_diagnostics.items()
+                        if key != "trace" and not isinstance(value, torch.Tensor)
+                    })
                 if trace_enabled:
                     trace_records.append(
                         {

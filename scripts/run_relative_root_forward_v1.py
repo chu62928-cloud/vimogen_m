@@ -26,6 +26,8 @@ if str(ROOT) not in sys.path:
 
 PROTOCOL_NAME = "vimogen_relative_root_forward_v1_pose_authoritative"
 PROTOCOL_ROOT = ROOT / "results/phase7/relative_root_forward_v1"
+V1_1_PROTOCOL_NAME = "vimogen_relative_root_forward_v1_1_residual_adaptive"
+V1_1_PROTOCOL_ROOT = ROOT / "results/phase7/relative_root_forward_v1_1"
 SMOKE_MANIFEST = PROTOCOL_ROOT / "data/smoke_sample94_34122.json"
 PROTOCOL_FILE = PROTOCOL_ROOT / "protocol.json"
 DEFAULT_NOISE_CACHE = ROOT / "results/phase6/absolute_mean_pelvis_v2/noise_cache"
@@ -80,12 +82,13 @@ def ensure_smoke_manifest() -> Path:
     return SMOKE_MANIFEST
 
 
-def ensure_protocol(manifest: Path) -> Path:
-    if PROTOCOL_FILE.is_file():
-        return PROTOCOL_FILE
-    PROTOCOL_ROOT.mkdir(parents=True, exist_ok=True)
+def ensure_protocol(manifest: Path, *, protocol_name: str, protocol_root: Path) -> Path:
+    protocol_file = protocol_root / "protocol.json"
+    if protocol_file.is_file():
+        return protocol_file
+    protocol_root.mkdir(parents=True, exist_ok=True)
     record = {
-        "protocol": PROTOCOL_NAME,
+        "protocol": protocol_name,
         "authority": ["body_pose", "root_rotation", "root_translation"],
         "derived": ["J", "dJ", "dR", "dT"],
         "guidance": "per-frame scalar left root rotation about frozen M0 right axis",
@@ -101,10 +104,10 @@ def ensure_protocol(manifest: Path) -> Path:
             "dT_m": 1e-6,
         },
     }
-    PROTOCOL_FILE.write_text(
+    protocol_file.write_text(
         json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )
-    return PROTOCOL_FILE
+    return protocol_file
 
 
 def build_config(
@@ -115,13 +118,18 @@ def build_config(
     noise_cache: Path,
     manifest: Path,
     batch_size: int,
+    protocol_name: str,
+    residual_gain: float,
+    max_step_deg: float,
+    sigma_min: float,
+    sigma_max: float,
 ):
     if not -10.0 <= float(target_delta_deg) <= 10.0:
         raise ValueError("target_delta_deg must lie in [-10,10]")
     config = OmegaConf.load(ROOT / "configs/tm2m_infer.yaml")
     config.mode = "eval"
     config.mbench_name = (
-        f"relative_root_forward_v1_delta{target_delta_deg:g}_seed{seed}"
+        f"relative_root_forward_{'v1_1' if protocol_name == V1_1_PROTOCOL_NAME else 'v1'}_delta{target_delta_deg:g}_seed{seed}"
     )
     config.experiment.global_seed = int(seed)
     config.experiment.auto_resume = False
@@ -143,13 +151,15 @@ def build_config(
     config.absolute_mean_pelvis = {"enabled": False}
     config.relative_root_forward = {
         "enabled": True,
-        "protocol": PROTOCOL_NAME,
+        "protocol": protocol_name,
         "target_delta_deg": float(target_delta_deg),
         "guidance_strength": 1.0,
-        "sigma_min": 0.25,
-        "sigma_max": 0.65,
+        "sigma_min": float(sigma_min),
+        "sigma_max": float(sigma_max),
         "motion_weight": 0.1,
         "base_step_deg": 1.0,
+        "residual_gain": float(residual_gain),
+        "max_step_deg": float(max_step_deg),
         "max_correction_rms": 0.05,
         "max_backtracks": 11,
         "trace_enabled": True,
@@ -161,15 +171,33 @@ def build_config(
 
 def run(args) -> dict:
     manifest = ensure_smoke_manifest()
-    protocol = ensure_protocol(manifest)
+    if args.protocol == "v1":
+        protocol_name, protocol_root = PROTOCOL_NAME, PROTOCOL_ROOT
+    elif args.protocol == "v1_1":
+        protocol_name, protocol_root = V1_1_PROTOCOL_NAME, V1_1_PROTOCOL_ROOT
+    else:
+        raise ValueError("protocol must be v1 or v1_1")
+    protocol = ensure_protocol(
+        manifest, protocol_name=protocol_name, protocol_root=protocol_root
+    )
     noise_cache = args.noise_cache
     if not noise_cache.is_dir():
         raise FileNotFoundError(f"sample-noise cache is missing: {noise_cache}")
     run_parent = (
-        PROTOCOL_ROOT
+        protocol_root
         / "runs"
         / "smoke"
         / f"seed_{args.seed:03d}"
+        / (
+            f"gain_{args.residual_gain:g}_step_{args.max_step_deg:g}"
+            + (
+                f"_sigma_{args.sigma_min:g}_to_{args.sigma_max:g}"
+                if args.sigma_min != 0.25 or args.sigma_max != 0.65
+                else ""
+            )
+            if args.protocol == "v1_1"
+            else "default"
+        )
         / f"delta_{args.target_delta_deg:+g}deg"
     )
     attempt = 1
@@ -185,16 +213,25 @@ def run(args) -> dict:
         noise_cache=noise_cache,
         manifest=manifest,
         batch_size=args.batch_size,
+        protocol_name=protocol_name,
+        residual_gain=args.residual_gain,
+        max_step_deg=args.max_step_deg,
+        sigma_min=args.sigma_min,
+        sigma_max=args.sigma_max,
     )
     record = {
         "status": "RUNNING",
-        "protocol": PROTOCOL_NAME,
+        "protocol": protocol_name,
         "protocol_path": str(protocol),
         "protocol_sha256": sha256_file(protocol),
         "input_manifest": str(manifest),
         "input_manifest_sha256": sha256_file(manifest),
         "target_delta_deg": float(args.target_delta_deg),
         "seed": int(args.seed),
+        "residual_gain": float(args.residual_gain),
+        "max_step_deg": float(args.max_step_deg),
+        "sigma_min": float(args.sigma_min),
+        "sigma_max": float(args.sigma_max),
         "noise_cache": str(noise_cache),
         "run_root": str(run_base),
         "consistency_boundary": "authoritative_pose_to_fk_to_J_to_dJ_dR_dT_to_276D",
@@ -235,6 +272,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE_CACHE)
     parser.add_argument("--batch-size", type=int, default=2)
+    parser.add_argument("--protocol", choices=("v1", "v1_1"), default="v1")
+    parser.add_argument("--residual-gain", type=float, default=1.0)
+    parser.add_argument("--max-step-deg", type=float, default=8.0)
+    parser.add_argument("--sigma-min", type=float, default=0.25)
+    parser.add_argument("--sigma-max", type=float, default=0.65)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, ensure_ascii=False))
 

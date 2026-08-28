@@ -26,6 +26,11 @@ from motion_rep.pose_authority import (
 )
 
 
+RESIDUAL_ADAPTIVE_PROTOCOL_NAME = (
+    "vimogen_relative_root_forward_v1_1_residual_adaptive"
+)
+
+
 def apply_root_forward_tangent(
     root_rotation: torch.Tensor,
     frozen_right_axis: torch.Tensor,
@@ -71,6 +76,8 @@ class RelativeRootForwardConfig:
     sigma_max: float = 0.65
     motion_weight: float = 0.1
     base_step_deg: float = 1.0
+    residual_gain: float = 1.0
+    max_step_deg: float = 8.0
     max_correction_rms: float = 0.05
     max_backtracks: int = 11
     eps: float = 1e-6
@@ -79,14 +86,18 @@ class RelativeRootForwardConfig:
     trace_enabled: bool = False
 
     def __post_init__(self) -> None:
-        if self.protocol not in {PROTOCOL_NAME, "v1"}:
-            raise ValueError(f"protocol must be {PROTOCOL_NAME}")
+        if self.protocol not in {PROTOCOL_NAME, RESIDUAL_ADAPTIVE_PROTOCOL_NAME, "v1"}:
+            raise ValueError(
+                f"protocol must be {PROTOCOL_NAME} or {RESIDUAL_ADAPTIVE_PROTOCOL_NAME}"
+            )
         if self.guidance_strength < 0 or self.motion_weight < 0:
             raise ValueError("guidance_strength and motion_weight must be non-negative")
         if not 0 <= self.sigma_min <= self.sigma_max <= 1:
             raise ValueError("sigma window must satisfy 0 <= sigma_min <= sigma_max <= 1")
         if self.base_step_deg <= 0 or self.max_correction_rms <= 0:
             raise ValueError("base_step_deg and max_correction_rms must be positive")
+        if self.residual_gain <= 0 or self.max_step_deg <= 0:
+            raise ValueError("residual_gain and max_step_deg must be positive")
         if self.max_backtracks < 0:
             raise ValueError("max_backtracks must be non-negative")
 
@@ -170,7 +181,7 @@ class RelativeRootForwardGuidance:
         self.baseline_projection_audits = projection.audits
         self.targets = prepare_targets(self.baseline_physical, self.valid_mask, target_delta_deg)
         self.target_delta_deg = float(target_delta_deg)
-        self.last_diagnostics: dict[str, Any] = {"protocol": PROTOCOL_NAME, "enabled": self.enabled, "active": False}
+        self.last_diagnostics: dict[str, Any] = {"protocol": self.PROTOCOL, "enabled": self.enabled, "active": False}
 
     @classmethod
     def _from_cached(cls, source: "RelativeRootForwardGuidance", index: int) -> "RelativeRootForwardGuidance":
@@ -190,7 +201,7 @@ class RelativeRootForwardGuidance:
             targets.target_phi_deg[index:index + 1], targets.valid_mask[index:index + 1], targets.delta_deg,
         )
         obj.target_delta_deg = source.target_delta_deg
-        obj.last_diagnostics = {"protocol": PROTOCOL_NAME, "enabled": obj.enabled, "active": False}
+        obj.last_diagnostics = {"protocol": obj.PROTOCOL, "enabled": obj.enabled, "active": False}
         return obj
 
     @property
@@ -210,7 +221,7 @@ class RelativeRootForwardGuidance:
 
     def protocol_record(self) -> dict[str, Any]:
         return {
-            "protocol": PROTOCOL_NAME,
+            "protocol": self.PROTOCOL,
             "authority": "body_pose/root_rotation/root_translation",
             "derived": "J/dJ/dR/dT_from_fk_and_forward_difference",
             "guidance_degree_of_freedom": "per_frame_scalar_left_rotation_about_frozen_M0_right_axis",
@@ -241,6 +252,23 @@ class RelativeRootForwardGuidance:
         root = apply_root_forward_tangent(root, r0, alpha_deg)
         packed = _authority_from_streams(body, root, translation, pose_mask, skeleton=self.skeleton)
         return packed, pose_mask[:, :-1]
+
+    def _make_proposal(
+        self,
+        *,
+        base_phys: torch.Tensor,
+        f_base: torch.Tensor,
+        target_f: torch.Tensor,
+        grad: torch.Tensor,
+        grad_rms: torch.Tensor,
+        frame_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, Any]]:
+        """Return the v1 fixed-RMS proposal and optional diagnostics."""
+
+        del base_phys, f_base, target_f
+        proposal = -self.config.guidance_strength * self.config.base_step_deg * grad / grad_rms
+        proposal = proposal * frame_mask.to(proposal.dtype)
+        return proposal, {}
 
     @staticmethod
     def _masked_motion_loss(candidate: torch.Tensor, baseline: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -306,7 +334,7 @@ class RelativeRootForwardGuidance:
             raise ValueError("sampler valid_mask differs from the frozen guidance mask")
         sigma_value = float(torch.as_tensor(sigma).detach().cpu().item())
         cfg = self.config
-        diagnostics: dict[str, Any] = {"protocol": PROTOCOL_NAME, "enabled": cfg.enabled, "active": False, "sigma": sigma_value, "target_delta_deg": self.target_delta_deg, "accepted": False}
+        diagnostics: dict[str, Any] = {"protocol": self.PROTOCOL, "enabled": cfg.enabled, "active": False, "sigma": sigma_value, "target_delta_deg": self.target_delta_deg, "accepted": False}
         x0_hat = predict_x0(x_sigma.float(), velocity.float(), sigma_value).detach()
         inactive = (not math.isfinite(sigma_value) or not cfg.enabled or cfg.guidance_strength <= cfg.eps or abs(self.target_delta_deg) <= cfg.eps or sigma_value <= cfg.eps or sigma_value < cfg.sigma_min or sigma_value > cfg.sigma_max)
         if inactive:
@@ -339,8 +367,21 @@ class RelativeRootForwardGuidance:
             grad = torch.autograd.grad(base_total, alpha, allow_unused=False)[0]
             grad = grad * frame_mask.to(grad.dtype)
             grad_rms = torch.sqrt((grad.square() * frame_mask).sum() / frame_mask.sum().clamp_min(1)).clamp_min(cfg.eps)
-            proposal = -cfg.guidance_strength * cfg.base_step_deg * grad / grad_rms
-            proposal = proposal * frame_mask.to(proposal.dtype)
+            proposal, proposal_diagnostics = self._make_proposal(
+                base_phys=base_phys,
+                f_base=f_base,
+                target_f=target_f,
+                grad=grad,
+                grad_rms=grad_rms,
+                frame_mask=frame_mask,
+            )
+            if proposal_diagnostics.get("proposal_rejected", False):
+                diagnostics.update(proposal_diagnostics)
+                diagnostics["rejected_reason"] = proposal_diagnostics.get(
+                    "rejected_reason", "proposal_rejected"
+                )
+                self.last_diagnostics = diagnostics
+                return velocity, diagnostics
             test_phys, _ = self._build_candidate(x0_physical, proposal)
             test_norm = self._standardize(test_phys)
             correction_rms = torch.sqrt(((test_norm - base_norm).square() * frame_mask.unsqueeze(-1)).sum() / (frame_mask.sum().clamp_min(1) * 276))
@@ -375,8 +416,10 @@ class RelativeRootForwardGuidance:
                 x0_guided = candidate_norm.detach()
                 x0_reconciled = candidate_norm.detach()
                 applied_correction_rms = float(torch.sqrt(((candidate_norm - base_norm).square() * frame_mask.unsqueeze(-1)).sum() / (frame_mask.sum().clamp_min(1) * 276)).detach().cpu())
-                diagnostics.update({"accepted": True, "accepted_scale": float(scale), "forward_loss_new": float(accepted_losses[0].detach().cpu()), "motion_loss_new": float(accepted_losses[1].detach().cpu()), "total_loss_new": float(accepted_losses[2].detach().cpu())})
+                alpha_valid = candidate_alpha[frame_mask]
+                diagnostics.update({"accepted": True, "accepted_scale": float(scale), "forward_loss_new": float(accepted_losses[0].detach().cpu()), "motion_loss_new": float(accepted_losses[1].detach().cpu()), "total_loss_new": float(accepted_losses[2].detach().cpu()), "accepted_alpha_mean_deg": float(alpha_valid.mean().detach().cpu()), "accepted_alpha_rms_deg": float(torch.sqrt(alpha_valid.square().mean()).detach().cpu()), "accepted_alpha_max_deg": float(alpha_valid.abs().max().detach().cpu()), "backtrack_count": int(attempt)})
             diagnostics.update({"active": True, "forward_loss_old": float(base_forward_loss.detach().cpu()), "motion_loss_old": float(base_motion_loss.detach().cpu()), "total_loss_old": float(base_total.detach().cpu()), "gradient_rms": float(grad_rms.detach().cpu()), "proposal_rms_deg": float(torch.sqrt((proposal.square() * frame_mask).sum() / frame_mask.sum().clamp_min(1)).detach().cpu()), "correction_rms": applied_correction_rms, "valid_frames": int(frame_mask.sum().detach().cpu())})
+            diagnostics.update(proposal_diagnostics)
             if return_trace:
                 diagnostics["trace"] = {"velocity_model": velocity.detach().float().clone(), "v_cfg": velocity.detach().float().clone(), "x0_hat": x0_hat.clone(), "x0_guided": x0_guided.clone(), "x0_reconciled": x0_reconciled.clone()}
         self.last_diagnostics = diagnostics
@@ -394,6 +437,7 @@ class RelativeRootForwardGuidance:
                     whole_body_audit(self.baseline_physical[i:i + 1], self.baseline_physical[i:i + 1], self.valid_mask[i:i + 1])
                     for i in range(self.baseline_physical.shape[0])
                 ),
+                protocol=self.PROTOCOL,
             )
             from evaluation.relative_root_forward_v1 import compute_relative_root_forward_metrics
             return RelativeRootForwardFinalOutputs(
@@ -405,6 +449,7 @@ class RelativeRootForwardGuidance:
                     self.valid_mask,
                     self.target_delta_deg,
                     skeleton=self.skeleton,
+                    protocol_name=self.PROTOCOL,
                 ),
             )
         projection = authority_project(
@@ -421,15 +466,16 @@ class RelativeRootForwardGuidance:
             projection.motion,
             projection.valid_mask,
             projection.audits,
-            tuple(
+                tuple(
                 whole_body_audit(
                     self.baseline_physical[i:i + 1],
                     projection.physical_motion[i:i + 1],
                     self.valid_mask[i:i + 1].to(projection.physical_motion.device),
                 )
-                for i in range(projection.physical_motion.shape[0])
-            ),
-        )
+                    for i in range(projection.physical_motion.shape[0])
+                ),
+                protocol=self.PROTOCOL,
+            )
         from evaluation.relative_root_forward_v1 import compute_relative_root_forward_metrics
         return RelativeRootForwardFinalOutputs(
             outputs.g0, outputs.g0_valid_mask, outputs.projection_audits,
@@ -439,8 +485,9 @@ class RelativeRootForwardGuidance:
                 projection.physical_motion,
                 self.valid_mask.to(projection.physical_motion.device),
                 self.target_delta_deg,
-                skeleton=self.skeleton,
-            ),
+                    skeleton=self.skeleton,
+                    protocol_name=self.PROTOCOL,
+                ),
         )
 
 

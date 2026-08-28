@@ -37,6 +37,11 @@ from sampling.relative_root_forward_guidance import (
     RelativeRootForwardConfig,
     RelativeRootForwardGuidance,
 )
+from sampling.relative_root_forward_guidance_v1_1 import (
+    PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL,
+    ResidualAdaptiveRootForwardConfig,
+    ResidualAdaptiveRootForwardGuidance,
+)
 from sampling.absolute_mean_pelvis_guidance import (
     AbsoluteMeanPelvisConfig,
     AbsoluteMeanPelvisGuidance,
@@ -478,13 +483,19 @@ def main(args):
     relative_protocol_requested = str(relative_cfg.get('protocol', RELATIVE_ROOT_FORWARD_PROTOCOL))
     if relative_protocol_requested not in {
         RELATIVE_ROOT_FORWARD_PROTOCOL,
+        RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL,
         'v1',
     }:
         raise ValueError(
             'relative_root_forward.protocol must be '
-            f'{RELATIVE_ROOT_FORWARD_PROTOCOL}'
+            f'{RELATIVE_ROOT_FORWARD_PROTOCOL} or {RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL}'
         )
-    relative_strategy_config = RelativeRootForwardConfig.from_mapping(relative_cfg)
+    if relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL:
+        relative_strategy_config = ResidualAdaptiveRootForwardConfig.from_mapping(relative_cfg)
+        relative_guidance_class = ResidualAdaptiveRootForwardGuidance
+    else:
+        relative_strategy_config = RelativeRootForwardConfig.from_mapping(relative_cfg)
+        relative_guidance_class = RelativeRootForwardGuidance
     relative_enabled = bool(relative_strategy_config.enabled)
     relative_artifact_dir = (
         relative_cfg.get('artifact_dir', os.path.join('results', 'phase7', 'relative_root_forward_v1'))
@@ -1099,7 +1110,7 @@ def main(args):
                             )
                         condition_mean = motion_mean[sample_mask]
                         condition_std = motion_std[sample_mask]
-                        relative_strategy = RelativeRootForwardGuidance(
+                        relative_strategy = relative_guidance_class(
                             baseline_motion_norm=m0_result.official_pre_cast.float(),
                             valid_mask=latents_mask[sample_mask].bool(),
                             mean=condition_mean,
@@ -1289,7 +1300,7 @@ def main(args):
                     ) as guidance_file:
                         json.dump(
                             {
-                                'protocol': RELATIVE_ROOT_FORWARD_PROTOCOL,
+                                'protocol': relative_strategy.PROTOCOL,
                                 'target_delta_deg': relative_target_delta_deg,
                                 'records': relative_summary_records,
                             },

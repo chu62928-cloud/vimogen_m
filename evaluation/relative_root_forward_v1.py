@@ -81,6 +81,7 @@ def compute_relative_root_forward_metrics(
     target_delta_deg: float,
     *,
     skeleton=None,
+    protocol_name: str = PROTOCOL_NAME,
 ) -> dict[str, Any]:
     """Return control, curve-shape, tail, and whole-body audit metrics."""
 
@@ -127,7 +128,7 @@ def compute_relative_root_forward_metrics(
             "dose_sign_correct": bool(torch.sign((phi0[index][m] - phig[index][m]).mean()) == torch.sign(torch.as_tensor(target_delta_deg))),
         })
     result = {
-        "protocol": PROTOCOL_NAME,
+        "protocol": protocol_name,
         "target_delta_deg": float(target_delta_deg),
         "per_sample": samples,
         "tail_safety": tail_safety_metrics(baseline_physical, candidate_physical, valid_mask),
