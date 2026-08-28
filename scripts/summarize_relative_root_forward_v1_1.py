@@ -28,16 +28,20 @@ DELTAS = (0, 5, -5, 10, -10)
 def _attempt(root: Path, delta: int) -> Path:
     sign = "+" if delta >= 0 else ""
     parent = root / f"delta_{sign}{delta}deg"
+    # Failed/incomplete retries remain as evidence but must not hide the
+    # latest completed artifact from the summary.
     attempts = sorted(
-        (p for p in parent.glob("attempt_*") if p.is_dir()),
+        (
+            p
+            for p in parent.glob("attempt_*")
+            if p.is_dir()
+            and (p / "guided_artifacts" / "batch_000" / "g0_norm_batch.pt").is_file()
+        ),
         key=lambda p: int(p.name.split("_")[-1]),
     )
     if not attempts:
         raise FileNotFoundError(parent)
-    path = attempts[-1] / "guided_artifacts" / "batch_000"
-    if not (path / "g0_norm_batch.pt").is_file():
-        raise FileNotFoundError(path / "g0_norm_batch.pt")
-    return path
+    return attempts[-1] / "guided_artifacts" / "batch_000"
 
 
 def _config_key(path: Path) -> tuple[float, float, float, float]:

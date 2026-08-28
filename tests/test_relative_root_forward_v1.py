@@ -27,6 +27,7 @@ from sampling.relative_root_forward_guidance_v1_1 import (
     ResidualAdaptiveRootForwardConfig,
     signed_root_forward_residual_deg,
 )
+from sampling.flow_sampler import FlowSampler
 
 
 def _tiny_skeleton():
@@ -142,3 +143,26 @@ def test_residual_adaptive_config_isolated_protocol():
     assert cfg.protocol == V1_1_PROTOCOL_NAME
     assert cfg.residual_gain == 1.0
     assert cfg.max_step_deg == 8.0
+
+
+def test_transfer_counterfactual_does_not_require_a_second_scheduler_step():
+    x_next_guided = torch.zeros(1, 2, 276)
+    velocity_model = torch.ones_like(x_next_guided)
+    velocity_guided = torch.zeros_like(x_next_guided)
+    recovered = FlowSampler._counterfactual_model_state(
+        x_next_guided,
+        velocity_model,
+        velocity_guided,
+        sigma=0.5,
+        sigma_next=0.25,
+    )
+    assert recovered is not None
+    assert torch.allclose(recovered, torch.full_like(recovered, -0.25))
+    assert FlowSampler._counterfactual_model_state(
+        x_next_guided,
+        velocity_model,
+        velocity_guided,
+        sigma=0.5,
+        sigma_next=0.25,
+        stochastic_sampling=True,
+    ) is None

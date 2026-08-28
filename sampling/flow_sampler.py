@@ -120,6 +120,42 @@ class FlowSampler:
             return None
         return float(values.mean().detach().cpu()) / float(accepted_alpha_rms_deg)
 
+    @staticmethod
+    def _counterfactual_model_state(
+        x_next_guided: torch.Tensor,
+        velocity_model: torch.Tensor,
+        velocity_guided: torch.Tensor,
+        sigma: torch.Tensor | float,
+        sigma_next: torch.Tensor | float,
+        *,
+        stochastic_sampling: bool = False,
+    ) -> torch.Tensor | None:
+        """Recover the same-step unguided Euler state without stepping twice.
+
+        ``FlowMatchEulerDiscreteScheduler.step`` mutates its internal step
+        index.  Calling it once for the guided velocity and again for the
+        counterfactual model velocity would therefore skip a scheduler step.
+        For the deterministic sampler used by ViMoGen, both states share the
+        same Euler increment and differ only by ``dt * (v_model-v_guided)``.
+        Stochastic schedulers are intentionally unsupported for this
+        diagnostic because the second call would draw a different noise.
+        """
+
+        if stochastic_sampling:
+            return None
+        sigma_value = torch.as_tensor(
+            sigma, dtype=torch.float32, device=x_next_guided.device
+        )
+        sigma_next_value = torch.as_tensor(
+            sigma_next, dtype=torch.float32, device=x_next_guided.device
+        )
+        dt = sigma_next_value - sigma_value
+        while dt.ndim < x_next_guided.ndim:
+            dt = dt.unsqueeze(-1)
+        return x_next_guided.float() + dt * (
+            velocity_model.float() - velocity_guided.float()
+        )
+
     @torch.no_grad()
     def generate(
         self,
@@ -332,6 +368,23 @@ class FlowSampler:
         guidance_step_records: list[dict] = []
         for timestep in iterator:
             x_sigma_trace = xt.detach().clone() if trace_enabled else None
+            timestep_id = torch.argmin(
+                (self.scheduler.timesteps.to(device) - timestep).abs()
+            )
+            sigma_step = self.scheduler.sigmas[timestep_id].to(device=device)
+            next_index = int(timestep_id.detach().cpu()) + 1
+            if next_index >= len(self.scheduler.sigmas):
+                # FlowMatchScheduler uses an explicit terminal boundary
+                # rather than storing an extra sigma value.
+                terminal_sigma = 1.0 if bool(
+                    getattr(self.scheduler, "inverse_timesteps", False)
+                    or getattr(self.scheduler, "reverse_sigmas", False)
+                ) else 0.0
+                sigma_next_step = torch.as_tensor(
+                    terminal_sigma, dtype=sigma_step.dtype, device=device
+                )
+            else:
+                sigma_next_step = self.scheduler.sigmas[next_index].to(device=device)
             with autocast_ctx:
                 latent_model_input = torch.cat([xt] * 2, dim=0)
                 timestep_input = timestep.unsqueeze(0)
@@ -356,10 +409,7 @@ class FlowSampler:
                 sigma = None
                 x0_hat = None
                 if trace_enabled:
-                    timestep_id = torch.argmin(
-                        (self.scheduler.timesteps.to(device) - timestep).abs()
-                    )
-                    sigma = self.scheduler.sigmas[timestep_id].to(device=device)
+                    sigma = sigma_step
                     x0_hat = (
                         x_sigma_trace.float()
                         - sigma.float() * velocity.float()
@@ -396,15 +446,31 @@ class FlowSampler:
                     and motion_mean is not None
                     and motion_std is not None
                 ):
-                    x_next_model = self.scheduler.step(velocity_model, timestep, xt)
-                    transfer_gain = self._guidance_transfer_gain(
-                        x_next_model,
+                    x_next_model = self._counterfactual_model_state(
                         x_next,
-                        motion_mean,
-                        motion_std,
-                        valid_mask.bool(),
-                        float(guidance_diagnostics.get("accepted_alpha_rms_deg", 0.0)),
+                        velocity_model,
+                        velocity,
+                        sigma_step,
+                        sigma_next_step,
+                        stochastic_sampling=bool(
+                            getattr(
+                                getattr(self.scheduler, "config", None),
+                                "stochastic_sampling",
+                                False,
+                            )
+                        ),
                     )
+                    if x_next_model is None:
+                        transfer_gain = None
+                    else:
+                        transfer_gain = self._guidance_transfer_gain(
+                            x_next_model,
+                            x_next,
+                            motion_mean,
+                            motion_std,
+                            valid_mask.bool(),
+                            float(guidance_diagnostics.get("accepted_alpha_rms_deg", 0.0)),
+                        )
                     if transfer_gain is not None:
                         guidance_diagnostics["transfer_gain"] = transfer_gain
                 if relative_root_forward_guidance is not None:
