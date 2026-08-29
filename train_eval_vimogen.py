@@ -30,6 +30,16 @@ from trainer import (
 from trainer.scheduler import TimestepSamplerMP, FlowMatchScheduler
 from utils import maybe_corrupt_ref_motion, smooth_motion_rep
 from sampling.flow_sampler import FlowSampler, FlowSampleResult
+from sampling.differentiable_flow_sampler import (
+    DifferentiableSamplerConfig,
+    SourceNoiseGateConfig,
+    run_source_noise_reproduction_gate,
+)
+from sampling.relative_root_forward_guidance_v2 import (
+    PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_V2_PROTOCOL,
+    MinimalSourceNoiseConfig,
+    run_minimal_source_noise_optimization,
+)
 from sampling.noise_protocol import SampleNoiseProtocol
 from sampling.m1_guidance import M1Config, M1Guidance
 from sampling.relative_root_forward_guidance import (
@@ -496,14 +506,20 @@ def main(args):
         RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL,
         RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL,
         RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL,
+        RELATIVE_ROOT_FORWARD_V2_PROTOCOL,
+        'v2',
         'v1',
     }:
         raise ValueError(
             'relative_root_forward.protocol must be '
             f'{RELATIVE_ROOT_FORWARD_PROTOCOL}, {RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL}, '
-            f'{RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL}, or {RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL}'
+            f'{RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL}, {RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL}, '
+            f'or {RELATIVE_ROOT_FORWARD_V2_PROTOCOL}'
         )
-    if relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL:
+    if relative_protocol_requested in {RELATIVE_ROOT_FORWARD_V2_PROTOCOL, 'v2'}:
+        relative_strategy_config = None
+        relative_guidance_class = None
+    elif relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL:
         relative_strategy_config = ShadowPoseHierarchicalConfig.from_mapping(relative_cfg)
         relative_guidance_class = ShadowPoseHierarchicalRootForwardGuidance
     elif relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL:
@@ -515,7 +531,10 @@ def main(args):
     else:
         relative_strategy_config = RelativeRootForwardConfig.from_mapping(relative_cfg)
         relative_guidance_class = RelativeRootForwardGuidance
-    relative_enabled = bool(relative_strategy_config.enabled)
+    relative_enabled = (
+        bool(relative_strategy_config.enabled)
+        if relative_strategy_config is not None else False
+    )
     relative_artifact_dir = (
         relative_cfg.get(
             'artifact_dir',
@@ -537,14 +556,56 @@ def main(args):
         raise ValueError(
             'm1, absolute_mean_pelvis, and relative_root_forward are mutually exclusive'
         )
-    control_enabled = m1_enabled or absolute_enabled or relative_enabled
+    source_noise_cfg = (
+        relative_cfg
+        if relative_protocol_requested in {RELATIVE_ROOT_FORWARD_V2_PROTOCOL, 'v2'}
+        else args.get('source_noise', {})
+    )
+    source_noise_enabled = (
+        relative_protocol_requested in {RELATIVE_ROOT_FORWARD_V2_PROTOCOL, 'v2'}
+        or bool(source_noise_cfg.get('enabled', False))
+    )
+    source_noise_artifact_dir = (
+        source_noise_cfg.get(
+            'artifact_dir',
+            os.path.join('results', 'phase7', 'relative_root_forward_v2'),
+        )
+        if source_noise_enabled else None
+    )
+    source_noise_target_delta_deg = float(
+        source_noise_cfg.get('target_delta_deg', relative_target_delta_deg)
+    )
+    if source_noise_enabled and not -10.0 <= source_noise_target_delta_deg <= 10.0:
+        raise ValueError('source noise target_delta_deg must lie in [-10,10]')
+    if source_noise_enabled and (m1_enabled or absolute_enabled or relative_enabled):
+        raise ValueError(
+            'source-noise v2 is mutually exclusive with m1, absolute_mean_pelvis, '
+            'and relative_root_forward v1.x'
+        )
+    control_enabled = m1_enabled or absolute_enabled or relative_enabled or source_noise_enabled
+
+    # Source-noise v2 begins with a strict, opt-in reproduction stop gate.
+    # The gate leaves all historical samplers untouched and is deliberately
+    # incompatible with endpoint guidance or representation reconciliation.
+    source_noise_gate_cfg = args.get('source_noise_gate', {})
+    source_noise_gate_enabled = bool(source_noise_gate_cfg.get('enabled', False))
+    source_noise_gate_artifact_dir = (
+        source_noise_gate_cfg.get('artifact_dir', None)
+        if source_noise_gate_enabled else None
+    )
+    if source_noise_gate_enabled and control_enabled:
+        raise ValueError('source_noise_gate cannot be combined with control guidance')
+    if source_noise_gate_enabled and source_noise_gate_artifact_dir is None:
+        raise ValueError('source_noise_gate.enabled requires artifact_dir')
+    if source_noise_gate_enabled and int(args.experiment.get('validation_steps', 50)) != 50:
+        raise ValueError('source_noise_gate requires experiment.validation_steps=50')
 
     # Explicitly opt-in control-aware 276D reconciliation.  The default
     # configuration has no ``representation`` section, so historical M0/M1
     # outputs and their audit artifacts remain unchanged.
     representation_cfg = args.get('representation', {})
     if (
-        (absolute_enabled or relative_enabled)
+        (absolute_enabled or relative_enabled or source_noise_enabled)
         and bool(representation_cfg.get('reconciliation', {}).get('enabled', False))
     ):
         raise ValueError(
@@ -922,6 +983,15 @@ def main(args):
                         relative_artifact_dir_current,
                         f'batch_{test_batch_idx:03d}',
                     )
+                source_noise_artifact_dir_current = source_noise_artifact_dir
+                if (
+                    source_noise_artifact_dir_current is not None
+                    and m0_sample_noise_protocol is not None
+                ):
+                    source_noise_artifact_dir_current = os.path.join(
+                        source_noise_artifact_dir_current,
+                        f'batch_{test_batch_idx:03d}',
+                    )
 
                 raw_latents_full = (
                     torch.zeros_like(latents, dtype=torch.float32)
@@ -985,7 +1055,9 @@ def main(args):
 
                 gen_latents_full = torch.zeros_like(
                     latents,
-                    dtype=torch.float32 if (absolute_enabled or relative_enabled) else latents.dtype,
+                    dtype=torch.float32
+                    if (absolute_enabled or relative_enabled or source_noise_enabled)
+                    else latents.dtype,
                 )
                 for condition_name, sample_mask in (('text', text_mask), ('motion', motion_mask)):
                     if not sample_mask.any().item():
@@ -1021,12 +1093,152 @@ def main(args):
                         # M1 needs the raw/official fields even when the
                         # no-video sweep deliberately does not persist the
                         # intermediate artifact files.
-                        return_artifacts=(m0_artifact_dir is not None or control_enabled),
+                        return_artifacts=(
+                            m0_artifact_dir is not None
+                            or control_enabled
+                            or source_noise_gate_enabled
+                        ),
                         batch_invariant=(
                             m0_sample_noise_protocol is not None
                             and bool(m0_cfg.get('batch_invariant', False))
                         ),
                     )
+                    if (
+                        source_noise_enabled
+                        and isinstance(m0_result, FlowSampleResult)
+                        and raw_latents_full is not None
+                    ):
+                        raw_latents_full[sample_mask] = m0_result.raw
+                        official_latents_full[sample_mask] = m0_result.official_pre_cast
+                    if source_noise_gate_enabled:
+                        if not isinstance(m0_result, FlowSampleResult):
+                            raise RuntimeError('source_noise_gate requires FlowSampleResult')
+                        if int(sample_mask.sum().item()) != 1:
+                            raise ValueError('source_noise_gate requires one sample per condition')
+                        gate_record = run_source_noise_reproduction_gate(
+                            model=model,
+                            scheduler=wan_scheduler,
+                            official_result=m0_result,
+                            prompt_emb=prompt_emb[sample_mask],
+                            prompt_emb_null=prompt_emb_null[sample_mask],
+                            valid_mask=latents_mask[sample_mask],
+                            ref_motion=condition_ref_latents,
+                            ref_motion_mask=ref_latents_visual_mask[sample_mask],
+                            condition_on_text=(condition_name == 'text'),
+                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                            motion_mean=motion_mean[sample_mask],
+                            motion_std=motion_std[sample_mask],
+                            dtype=dtype,
+                            sampler_config=DifferentiableSamplerConfig(
+                                num_inference_steps=50,
+                                denoising_strength=0.7,
+                                cfg_scale=float(args.experiment.get('cfg_scale', 5.0)),
+                                use_gradient_checkpointing=bool(
+                                    source_noise_gate_cfg.get(
+                                        'use_gradient_checkpointing', True
+                                    )
+                                ),
+                            ),
+                            gate_config=SourceNoiseGateConfig(
+                                target_delta_deg=float(
+                                    source_noise_gate_cfg.get('target_delta_deg', 10.0)
+                                ),
+                                max_reserved_mib=float(
+                                    source_noise_gate_cfg.get(
+                                        'max_reserved_mib', 28672.0
+                                    )
+                                ),
+                            ),
+                        )
+                        if global_rank == 0:
+                            gate_dir = os.path.join(
+                                source_noise_gate_artifact_dir,
+                                f'batch_{test_batch_idx:03d}',
+                                condition_name,
+                            )
+                            os.makedirs(gate_dir, exist_ok=True)
+                            gate_path = os.path.join(
+                                gate_dir, 'differentiable_50step_gate.json'
+                            )
+                            with open(gate_path, 'w', encoding='utf-8') as gate_file:
+                                json.dump(gate_record, gate_file, indent=2, sort_keys=True)
+                    source_noise_result = None
+                    if source_noise_enabled:
+                        if not isinstance(m0_result, FlowSampleResult):
+                            raise RuntimeError(
+                                'source-noise v2 requires FlowSampleResult from M0'
+                            )
+                        source_config = MinimalSourceNoiseConfig(
+                            iterations=int(source_noise_cfg.get('iterations', 12)),
+                            step_rms=float(source_noise_cfg.get('step_rms', 0.03)),
+                            max_delta_rms=float(
+                                source_noise_cfg.get('max_delta_rms', 1.0)
+                            ),
+                            line_search_steps=int(
+                                source_noise_cfg.get('line_search_steps', 4)
+                            ),
+                            feasible_pitch_mae_deg=float(
+                                source_noise_cfg.get('feasible_pitch_mae_deg', 1.0)
+                            ),
+                            feasible_forward_p95_deg=float(
+                                source_noise_cfg.get('feasible_forward_p95_deg', 2.0)
+                            ),
+                            forward_loss_temperature=float(
+                                source_noise_cfg.get('forward_loss_temperature', 5.0)
+                            ),
+                            use_gradient_checkpointing=bool(
+                                source_noise_cfg.get('use_gradient_checkpointing', True)
+                            ),
+                        )
+                        source_noise_result = run_minimal_source_noise_optimization(
+                            model=model,
+                            scheduler=wan_scheduler,
+                            official_result=m0_result,
+                            prompt_emb=prompt_emb[sample_mask],
+                            prompt_emb_null=prompt_emb_null[sample_mask],
+                            valid_mask=latents_mask[sample_mask],
+                            ref_motion=condition_ref_latents,
+                            ref_motion_mask=ref_latents_visual_mask[sample_mask],
+                            condition_on_text=(condition_name == 'text'),
+                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                            motion_mean=motion_mean[sample_mask],
+                            motion_std=motion_std[sample_mask],
+                            dtype=dtype,
+                            target_delta_deg=source_noise_target_delta_deg,
+                            config=source_config,
+                            sampler_config=DifferentiableSamplerConfig(
+                                num_inference_steps=50,
+                                denoising_strength=0.7,
+                                cfg_scale=float(args.experiment.get('cfg_scale', 5.0)),
+                                use_gradient_checkpointing=source_config.use_gradient_checkpointing,
+                            ),
+                        )
+                        condition_result = source_noise_result.motion_norm
+                        if global_rank == 0:
+                            source_dir = os.path.join(
+                                source_noise_artifact_dir_current,
+                                condition_name,
+                            )
+                            os.makedirs(source_dir, exist_ok=True)
+                            torch.save(
+                                source_noise_result.optimized_norm.detach().cpu(),
+                                os.path.join(source_dir, 'optimized_norm.pt'),
+                            )
+                            torch.save(
+                                source_noise_result.source_delta.detach().cpu(),
+                                os.path.join(source_dir, 'source_delta.pt'),
+                            )
+                            with open(
+                                os.path.join(source_dir, 'guidance_summary.json'),
+                                'w',
+                                encoding='utf-8',
+                            ) as source_file:
+                                json.dump(
+                                    source_noise_result.summary,
+                                    source_file,
+                                    indent=2,
+                                    sort_keys=True,
+                                )
                     # M1 uses the same initial noise and text/ref conditions:
                     # first obtain M0, then run a second pass with an endpoint
                     # strategy built from its explicit B0-canonical endpoint.
