@@ -28,6 +28,10 @@ PROTOCOL_NAME = "vimogen_relative_root_forward_v1_pose_authoritative"
 PROTOCOL_ROOT = ROOT / "results/phase7/relative_root_forward_v1"
 V1_1_PROTOCOL_NAME = "vimogen_relative_root_forward_v1_1_residual_adaptive"
 V1_1_PROTOCOL_ROOT = ROOT / "results/phase7/relative_root_forward_v1_1"
+V1_2_PROTOCOL_NAME = "vimogen_relative_root_forward_v1_2_trunk_stabilized"
+V1_2_PROTOCOL_ROOT = ROOT / "results/phase7/relative_root_forward_v1_2"
+V1_3_PROTOCOL_NAME = "vimogen_relative_root_forward_v1_3_shadow_pose_hierarchical"
+V1_3_PROTOCOL_ROOT = ROOT / "results/phase7/relative_root_forward_v1_3"
 SMOKE_MANIFEST = PROTOCOL_ROOT / "data/smoke_sample94_34122.json"
 PROTOCOL_FILE = PROTOCOL_ROOT / "protocol.json"
 DEFAULT_NOISE_CACHE = ROOT / "results/phase6/absolute_mean_pelvis_v2/noise_cache"
@@ -91,7 +95,28 @@ def ensure_protocol(manifest: Path, *, protocol_name: str, protocol_root: Path) 
         "protocol": protocol_name,
         "authority": ["body_pose", "root_rotation", "root_translation"],
         "derived": ["J", "dJ", "dR", "dT"],
-        "guidance": "per-frame scalar left root rotation about frozen M0 right axis",
+        "guidance": (
+            "shadow-pose direct-channel injection with iterated damped root-plus-spine "
+            "hierarchical solve"
+            if protocol_name == V1_3_PROTOCOL_NAME
+            else "constraint-first root pitch/heading plus spine1/2/3 local sagittal "
+            "compensation"
+            if protocol_name == V1_2_PROTOCOL_NAME
+            else "per-frame scalar left root rotation about frozen M0 right axis"
+        ),
+        "loss_framework": (
+            "separate_angular_constraints_and_physical_trust_regions"
+            if protocol_name == V1_3_PROTOCOL_NAME
+            else "independent_control_constraints_and_change_budgets"
+            if protocol_name == V1_2_PROTOCOL_NAME
+            else "forward_plus_motion_weight"
+        ),
+        "model_state_boundary": (
+            "only_root_rotation_and_spine_local_rotations_injected_each_step; "
+            "J/dJ/dR/dT_shadow_only_until_final_authority_projection"
+            if protocol_name == V1_3_PROTOCOL_NAME
+            else None
+        ),
         "target_delta_deg_range": [-10.0, 10.0],
         "downward_positive": True,
         "m0_projection": "once_and_frozen",
@@ -123,14 +148,22 @@ def build_config(
     max_step_deg: float,
     sigma_min: float,
     sigma_max: float,
+    heading_gain: float = 0.75,
+    max_heading_step_deg: float = 2.0,
+    trunk_gain: float = 0.75,
+    max_trunk_step_deg: float = 6.0,
 ):
     if not -10.0 <= float(target_delta_deg) <= 10.0:
         raise ValueError("target_delta_deg must lie in [-10,10]")
     config = OmegaConf.load(ROOT / "configs/tm2m_infer.yaml")
     config.mode = "eval"
-    config.mbench_name = (
-        f"relative_root_forward_{'v1_1' if protocol_name == V1_1_PROTOCOL_NAME else 'v1'}_delta{target_delta_deg:g}_seed{seed}"
-    )
+    protocol_tag = {
+        PROTOCOL_NAME: "v1",
+        V1_1_PROTOCOL_NAME: "v1_1",
+        V1_2_PROTOCOL_NAME: "v1_2",
+        V1_3_PROTOCOL_NAME: "v1_3",
+    }[protocol_name]
+    config.mbench_name = f"relative_root_forward_{protocol_tag}_delta{target_delta_deg:g}_seed{seed}"
     config.experiment.global_seed = int(seed)
     config.experiment.auto_resume = False
     config.experiment.eval_steps = 1
@@ -156,10 +189,16 @@ def build_config(
         "guidance_strength": 1.0,
         "sigma_min": float(sigma_min),
         "sigma_max": float(sigma_max),
-        "motion_weight": 0.1,
+        # v1.2 uses independent angular constraints and a separate change
+        # budget; it never forms the legacy angle-plus-motion scalar loss.
+        "motion_weight": 0.0 if protocol_name in {V1_2_PROTOCOL_NAME, V1_3_PROTOCOL_NAME} else 0.1,
         "base_step_deg": 1.0,
         "residual_gain": float(residual_gain),
         "max_step_deg": float(max_step_deg),
+        "heading_gain": float(heading_gain),
+        "max_heading_step_deg": float(max_heading_step_deg),
+        "trunk_gain": float(trunk_gain),
+        "max_trunk_step_deg": float(max_trunk_step_deg),
         "max_correction_rms": 0.05,
         "max_backtracks": 11,
         "trace_enabled": True,
@@ -175,29 +214,40 @@ def run(args) -> dict:
         protocol_name, protocol_root = PROTOCOL_NAME, PROTOCOL_ROOT
     elif args.protocol == "v1_1":
         protocol_name, protocol_root = V1_1_PROTOCOL_NAME, V1_1_PROTOCOL_ROOT
+    elif args.protocol == "v1_2":
+        protocol_name, protocol_root = V1_2_PROTOCOL_NAME, V1_2_PROTOCOL_ROOT
+    elif args.protocol == "v1_3":
+        protocol_name, protocol_root = V1_3_PROTOCOL_NAME, V1_3_PROTOCOL_ROOT
     else:
-        raise ValueError("protocol must be v1 or v1_1")
+        raise ValueError("protocol must be v1, v1_1, v1_2 or v1_3")
     protocol = ensure_protocol(
         manifest, protocol_name=protocol_name, protocol_root=protocol_root
     )
     noise_cache = args.noise_cache
     if not noise_cache.is_dir():
         raise FileNotFoundError(f"sample-noise cache is missing: {noise_cache}")
-    run_parent = (
-        protocol_root
-        / "runs"
-        / "smoke"
-        / f"seed_{args.seed:03d}"
-        / (
-            f"gain_{args.residual_gain:g}_step_{args.max_step_deg:g}"
-            + (
-                f"_sigma_{args.sigma_min:g}_to_{args.sigma_max:g}"
-                if args.sigma_min != 0.25 or args.sigma_max != 0.65
-                else ""
-            )
-            if args.protocol == "v1_1"
-            else "default"
+    if args.protocol == "v1_1":
+        parameter_key = f"gain_{args.residual_gain:g}_step_{args.max_step_deg:g}"
+        if args.sigma_min != 0.25 or args.sigma_max != 0.65:
+            parameter_key += f"_sigma_{args.sigma_min:g}_to_{args.sigma_max:g}"
+    elif args.protocol == "v1_2":
+        parameter_key = (
+            f"pitch_{args.residual_gain:g}_pstep_{args.max_step_deg:g}"
+            f"_heading_{args.heading_gain:g}_hstep_{args.max_heading_step_deg:g}"
+            f"_trunk_{args.trunk_gain:g}_tstep_{args.max_trunk_step_deg:g}"
+            f"_sigma_{args.sigma_min:g}_to_{args.sigma_max:g}"
         )
+    elif args.protocol == "v1_3":
+        parameter_key = (
+            f"pitch_{args.residual_gain:g}_pstep_{args.max_step_deg:g}"
+            f"_heading_{args.heading_gain:g}_hstep_{args.max_heading_step_deg:g}"
+            f"_trunk_{args.trunk_gain:g}_tstep_{args.max_trunk_step_deg:g}"
+            f"_sigma_{args.sigma_min:g}_to_{args.sigma_max:g}"
+        )
+    else:
+        parameter_key = "default"
+    run_parent = (
+        protocol_root / "runs" / "smoke" / f"seed_{args.seed:03d}" / parameter_key
         / f"delta_{args.target_delta_deg:+g}deg"
     )
     attempt = 1
@@ -218,6 +268,10 @@ def run(args) -> dict:
         max_step_deg=args.max_step_deg,
         sigma_min=args.sigma_min,
         sigma_max=args.sigma_max,
+        heading_gain=args.heading_gain,
+        max_heading_step_deg=args.max_heading_step_deg,
+        trunk_gain=args.trunk_gain,
+        max_trunk_step_deg=args.max_trunk_step_deg,
     )
     record = {
         "status": "RUNNING",
@@ -232,6 +286,10 @@ def run(args) -> dict:
         "max_step_deg": float(args.max_step_deg),
         "sigma_min": float(args.sigma_min),
         "sigma_max": float(args.sigma_max),
+        "heading_gain": float(args.heading_gain),
+        "max_heading_step_deg": float(args.max_heading_step_deg),
+        "trunk_gain": float(args.trunk_gain),
+        "max_trunk_step_deg": float(args.max_trunk_step_deg),
         "noise_cache": str(noise_cache),
         "run_root": str(run_base),
         "consistency_boundary": "authoritative_pose_to_fk_to_J_to_dJ_dR_dT_to_276D",
@@ -272,11 +330,15 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE_CACHE)
     parser.add_argument("--batch-size", type=int, default=2)
-    parser.add_argument("--protocol", choices=("v1", "v1_1"), default="v1")
+    parser.add_argument("--protocol", choices=("v1", "v1_1", "v1_2", "v1_3"), default="v1")
     parser.add_argument("--residual-gain", type=float, default=1.0)
     parser.add_argument("--max-step-deg", type=float, default=8.0)
     parser.add_argument("--sigma-min", type=float, default=0.25)
     parser.add_argument("--sigma-max", type=float, default=0.65)
+    parser.add_argument("--heading-gain", type=float, default=0.75)
+    parser.add_argument("--max-heading-step-deg", type=float, default=2.0)
+    parser.add_argument("--trunk-gain", type=float, default=0.75)
+    parser.add_argument("--max-trunk-step-deg", type=float, default=6.0)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2, ensure_ascii=False))
 

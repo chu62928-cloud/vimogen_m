@@ -16,6 +16,8 @@ import torch
 from evaluation.relative_root_forward_v1 import compute_relative_root_forward_metrics
 from sampling.relative_root_forward_guidance import PROTOCOL_NAME as V1_PROTOCOL_NAME
 from sampling.relative_root_forward_guidance_v1_1 import PROTOCOL_NAME as V1_1_PROTOCOL_NAME
+from sampling.relative_root_forward_guidance_v1_2 import PROTOCOL_NAME as V1_2_PROTOCOL_NAME
+from sampling.relative_root_forward_guidance_v1_3 import PROTOCOL_NAME as V1_3_PROTOCOL_NAME
 
 
 def main() -> None:
@@ -28,7 +30,7 @@ def main() -> None:
     parser.add_argument("--delta-deg", type=float, required=True)
     parser.add_argument(
         "--protocol",
-        choices=("v1", "v1_1"),
+        choices=("v1", "v1_1", "v1_2", "v1_3"),
         default="v1",
         help="protocol label to write into the metrics artifact",
     )
@@ -41,7 +43,12 @@ def main() -> None:
     mask = torch.load(args.mask, map_location="cpu", weights_only=True).bool()
     baseline_physical = baseline * std + mean
     candidate_physical = candidate * std + mean
-    protocol_name = V1_1_PROTOCOL_NAME if args.protocol == "v1_1" else V1_PROTOCOL_NAME
+    protocol_name = {
+        "v1": V1_PROTOCOL_NAME,
+        "v1_1": V1_1_PROTOCOL_NAME,
+        "v1_2": V1_2_PROTOCOL_NAME,
+        "v1_3": V1_3_PROTOCOL_NAME,
+    }[args.protocol]
     result = compute_relative_root_forward_metrics(
         baseline_physical,
         candidate_physical,

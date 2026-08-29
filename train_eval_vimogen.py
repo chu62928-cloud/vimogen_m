@@ -42,6 +42,16 @@ from sampling.relative_root_forward_guidance_v1_1 import (
     ResidualAdaptiveRootForwardConfig,
     ResidualAdaptiveRootForwardGuidance,
 )
+from sampling.relative_root_forward_guidance_v1_2 import (
+    PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL,
+    TrunkStabilizedRootForwardConfig,
+    TrunkStabilizedRootForwardGuidance,
+)
+from sampling.relative_root_forward_guidance_v1_3 import (
+    PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL,
+    ShadowPoseHierarchicalConfig,
+    ShadowPoseHierarchicalRootForwardGuidance,
+)
 from sampling.absolute_mean_pelvis_guidance import (
     AbsoluteMeanPelvisConfig,
     AbsoluteMeanPelvisGuidance,
@@ -484,13 +494,22 @@ def main(args):
     if relative_protocol_requested not in {
         RELATIVE_ROOT_FORWARD_PROTOCOL,
         RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL,
+        RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL,
+        RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL,
         'v1',
     }:
         raise ValueError(
             'relative_root_forward.protocol must be '
-            f'{RELATIVE_ROOT_FORWARD_PROTOCOL} or {RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL}'
+            f'{RELATIVE_ROOT_FORWARD_PROTOCOL}, {RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL}, '
+            f'{RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL}, or {RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL}'
         )
-    if relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL:
+    if relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL:
+        relative_strategy_config = ShadowPoseHierarchicalConfig.from_mapping(relative_cfg)
+        relative_guidance_class = ShadowPoseHierarchicalRootForwardGuidance
+    elif relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL:
+        relative_strategy_config = TrunkStabilizedRootForwardConfig.from_mapping(relative_cfg)
+        relative_guidance_class = TrunkStabilizedRootForwardGuidance
+    elif relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL:
         relative_strategy_config = ResidualAdaptiveRootForwardConfig.from_mapping(relative_cfg)
         relative_guidance_class = ResidualAdaptiveRootForwardGuidance
     else:
@@ -498,7 +517,17 @@ def main(args):
         relative_guidance_class = RelativeRootForwardGuidance
     relative_enabled = bool(relative_strategy_config.enabled)
     relative_artifact_dir = (
-        relative_cfg.get('artifact_dir', os.path.join('results', 'phase7', 'relative_root_forward_v1'))
+        relative_cfg.get(
+            'artifact_dir',
+            os.path.join(
+                'results', 'phase7',
+                'relative_root_forward_v1_2'
+                if relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL
+                else 'relative_root_forward_v1_3'
+                if relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL
+                else 'relative_root_forward_v1',
+            ),
+        )
         if relative_enabled else None
     )
     relative_target_delta_deg = float(relative_cfg.get('target_delta_deg', 5.0))

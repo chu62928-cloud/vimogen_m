@@ -29,6 +29,9 @@ from motion_rep.pose_authority import (
 RESIDUAL_ADAPTIVE_PROTOCOL_NAME = (
     "vimogen_relative_root_forward_v1_1_residual_adaptive"
 )
+TRUNK_STABILIZED_PROTOCOL_NAME = (
+    "vimogen_relative_root_forward_v1_2_trunk_stabilized"
+)
 
 
 def apply_root_forward_tangent(
@@ -86,9 +89,15 @@ class RelativeRootForwardConfig:
     trace_enabled: bool = False
 
     def __post_init__(self) -> None:
-        if self.protocol not in {PROTOCOL_NAME, RESIDUAL_ADAPTIVE_PROTOCOL_NAME, "v1"}:
+        if self.protocol not in {
+            PROTOCOL_NAME,
+            RESIDUAL_ADAPTIVE_PROTOCOL_NAME,
+            TRUNK_STABILIZED_PROTOCOL_NAME,
+            "v1",
+        }:
             raise ValueError(
-                f"protocol must be {PROTOCOL_NAME} or {RESIDUAL_ADAPTIVE_PROTOCOL_NAME}"
+                f"protocol must be {PROTOCOL_NAME}, {RESIDUAL_ADAPTIVE_PROTOCOL_NAME}, "
+                f"or {TRUNK_STABILIZED_PROTOCOL_NAME}"
             )
         if self.guidance_strength < 0 or self.motion_weight < 0:
             raise ValueError("guidance_strength and motion_weight must be non-negative")
@@ -498,5 +507,5 @@ __all__ = [
     "PROTOCOL_NAME", "RelativeRootForwardConfig", "RelativeRootForwardFinalOutputs",
     "RelativeRootForwardGuidance", "predict_x0", "velocity_from_x0",
     "apply_root_forward_tangent",
-    "RelativeRootForwardStrategy",
+    "RelativeRootForwardStrategy", "TRUNK_STABILIZED_PROTOCOL_NAME",
 ]
