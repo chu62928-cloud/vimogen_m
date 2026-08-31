@@ -5,7 +5,7 @@
 - VERIFIED：当前分支为 `codex/relative-root-forward-v2`；本轮代码提交为 `2404343`，v1.3 仍保持冻结。工作区中用户既有的未跟踪文件未被加入提交、删除或覆盖。
 - IMPLEMENTED：修复 `sampling/relative_root_forward_guidance_v2.py` 的已接受候选丢失问题；加入掩码均方根归一化的负梯度回退，并保留同一验证式回溯规则。新增统一门控、严格 JSON、接触证据、表示因果审计、子空间探针和统一报告入口。
 - VERIFIED：服务器环境为 `/root/miniconda3/envs/mdm5090/bin/python`、PyTorch `2.7.0+cu128`、RTX 4080 SUPER；所有动态测试、采样、诊断和视频渲染均通过 `connect_server.py` 在 `/root/autodl-tmp/vimogen_clean` 执行。
-- VERIFIED：服务器完整回归为 `237 passed in 49.33 s`；本地仅执行静态编译与 `git diff --check`，均通过。
+- VERIFIED：最终服务器完整回归为 `237 passed in 48.81 s`；本地仅执行静态编译与 `git diff --check`，均通过。
 - VERIFIED：固定纯 v2 单例为 sample94、seed0、+10°、120 次迭代上限；服务器 attempt_10 完成 `40` 次迭代，状态 `FEASIBLE`，耗时 `1625.718 s`，因连续无验证下降停止。统一评价中根俯仰 MAE `0.653901°`、完整前向 P95 `1.768239°`、根航向 P95 `1.556506°`、剂量符号正确；尾部两项通过，但躯干方向 P95 `7.503897°`、`q_rigid=0.649745` 和自然性外审失败。
 - VERIFIED/NEGATIVE_RESULT：服务器停止门 attempt_03 通过，位级复现为真，梯度非零 `27594/27600`，峰值保留显存 `9282 MiB`，但该停止门和纯 v2 运行均不等价于完整 v2 成功。最终 `gates.json` 固定 `counts_as_v2_success=false`，阶段 E 按失败门停止。
 - VERIFIED/DIAGNOSTIC_ORACLE：运动学诊断在 100/100 帧满足显式躯干和固定脚关节代理约束，但 SLSQP 成功返回 `0/100`，线搜索警告单独记录；源噪声子空间诊断包含 16 个方向、真实 50 步响应矩阵、线性 SLSQP 和四个比例复验，最佳真实根俯仰 P95 `7.926897°`，未达目标。两类结果均标记 `role=diagnostic_oracle`、`counts_as_v2_success=false`，没有混入纯 v2 门。
