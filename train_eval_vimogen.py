@@ -38,6 +38,7 @@ from sampling.differentiable_flow_sampler import (
 from sampling.relative_root_forward_guidance_v2 import (
     PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_V2_PROTOCOL,
     MinimalSourceNoiseConfig,
+    select_source_noise_output,
     run_minimal_source_noise_optimization,
 )
 from sampling.noise_protocol import SampleNoiseProtocol
@@ -1189,6 +1190,9 @@ def main(args):
                             use_gradient_checkpointing=bool(
                                 source_noise_cfg.get('use_gradient_checkpointing', True)
                             ),
+                            max_runtime_seconds=float(
+                                source_noise_cfg.get('max_runtime_seconds', 0.0)
+                            ),
                         )
                         source_noise_result = run_minimal_source_noise_optimization(
                             model=model,
@@ -1213,7 +1217,12 @@ def main(args):
                                 use_gradient_checkpointing=source_config.use_gradient_checkpointing,
                             ),
                         )
-                        condition_result = source_noise_result.motion_norm
+                        # Keep the selected source-noise result as the active
+                        # condition.  The M0 result is only the fallback when
+                        # no source-noise candidate was selected.
+                        condition_result = select_source_noise_output(
+                            m0_result, source_noise_result
+                        )
                         if global_rank == 0:
                             source_dir = os.path.join(
                                 source_noise_artifact_dir_current,
@@ -1242,7 +1251,8 @@ def main(args):
                     # M1 uses the same initial noise and text/ref conditions:
                     # first obtain M0, then run a second pass with an endpoint
                     # strategy built from its explicit B0-canonical endpoint.
-                    condition_result = m0_result
+                    if not source_noise_enabled:
+                        condition_result = m0_result
                     m1_result = None
                     if m1_enabled:
                         if not isinstance(m0_result, FlowSampleResult):

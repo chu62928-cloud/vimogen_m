@@ -79,6 +79,7 @@ def build_config(args, run_root: Path, manifest: Path):
         "feasible_pitch_mae_deg": float(args.feasible_pitch_mae_deg),
         "feasible_forward_p95_deg": float(args.feasible_forward_p95_deg),
         "forward_loss_temperature": float(args.forward_loss_temperature),
+        "max_runtime_seconds": float(args.max_runtime_seconds),
         "use_gradient_checkpointing": True,
     }
     config.representation = {"reconciliation": {"enabled": False}}
@@ -99,6 +100,7 @@ def run(args) -> dict:
         "seed": int(args.seed),
         "target_delta_deg": float(args.target_delta_deg),
         "iterations": int(args.iterations),
+        "max_runtime_seconds": float(args.max_runtime_seconds),
     }
     record_path = run_root / "run_record.json"
     record_path.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
@@ -141,13 +143,14 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--target-delta-deg", type=float, default=10.0)
-    parser.add_argument("--iterations", type=int, default=8)
-    parser.add_argument("--step-rms", type=float, default=0.03)
+    parser.add_argument("--iterations", type=int, default=120)
+    parser.add_argument("--step-rms", type=float, default=0.01)
     parser.add_argument("--max-delta-rms", type=float, default=1.0)
-    parser.add_argument("--line-search-steps", type=int, default=4)
+    parser.add_argument("--line-search-steps", type=int, default=8)
     parser.add_argument("--feasible-pitch-mae-deg", type=float, default=1.0)
     parser.add_argument("--feasible-forward-p95-deg", type=float, default=2.0)
     parser.add_argument("--forward-loss-temperature", type=float, default=5.0)
+    parser.add_argument("--max-runtime-seconds", type=float, default=0.0)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE_CACHE)
     args = parser.parse_args()
     print(json.dumps(run(args), indent=2))
