@@ -7,6 +7,7 @@ project server, like the rest of the ViMoGen test suite.
 from __future__ import annotations
 
 import torch
+import pytest
 
 from motion_rep.phase1 import MOTION_LAYOUT
 from sampling.differentiable_flow_sampler import DifferentiableSamplerConfig
@@ -14,6 +15,10 @@ from sampling.relative_root_forward_guidance_v2 import (
     MinimalSourceNoiseConfig,
     _within_trust_region,
     select_source_noise_output,
+)
+from scripts.evaluate_relative_root_forward_v2_naturalness import (
+    _allowed_increase,
+    _metric_pass,
 )
 
 
@@ -81,3 +86,10 @@ def test_trust_region_masks_padded_source_frames():
     assert torch.allclose(
         torch.sqrt(projected[:, :1].square().mean()), torch.tensor(0.25)
     )
+
+
+def test_naturalness_gate_uses_five_percent_or_one_millimeter_tolerance():
+    assert _allowed_increase(0.1) == pytest.approx(0.005)
+    assert _allowed_increase(0.0) == pytest.approx(0.001)
+    assert _metric_pass({"mean": 0.104, "p95": 0.204}, {"mean": 0.1, "p95": 0.2})
+    assert not _metric_pass({"mean": 0.106, "p95": 0.2}, {"mean": 0.1, "p95": 0.2})
