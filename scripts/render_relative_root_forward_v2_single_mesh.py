@@ -50,7 +50,8 @@ from scripts.render_relative_root_forward_v1_1 import (  # noqa: E402
 
 
 def _load_motions(
-    run_root: Path, sample_index: int, mean: torch.Tensor, std: torch.Tensor
+    run_root: Path, sample_index: int, mean: torch.Tensor, std: torch.Tensor,
+    diagnostic_motion: Path | None = None,
 ) -> dict[str, torch.Tensor]:
     m0_path = next(run_root.glob("m0_artifacts/batch_*/m0_official_norm_batch.pt"))
     candidate_path = next(
@@ -63,7 +64,15 @@ def _load_motions(
         candidate * archive["motion_std"].float()[0]
         + archive["motion_mean"].float()[0]
     )
-    return {"M0": m0, "-": m0.clone(), "+": candidate}
+    motions = {"M0": m0, "v2": candidate}
+    if diagnostic_motion is not None:
+        oracle = torch.load(diagnostic_motion, map_location="cpu", weights_only=True).float()
+        if oracle.ndim == 3:
+            oracle = oracle[sample_index]
+        if oracle.shape != m0.shape:
+            raise ValueError(f"diagnostic motion shape {tuple(oracle.shape)} does not match {tuple(m0.shape)}")
+        motions["diagnostic"] = oracle
+    return motions
 
 
 def _render_panel(
@@ -131,11 +140,14 @@ def main() -> None:
     parser.add_argument("--mean", type=Path, required=True)
     parser.add_argument("--std", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--diagnostic-motion", type=Path, default=None)
     args = parser.parse_args()
+    if args.diagnostic_motion is None:
+        raise ValueError("--diagnostic-motion is required for the three-way audit video")
 
     mean = torch.from_numpy(np.load(args.mean)).float()
     std = torch.from_numpy(np.load(args.std)).float()
-    motions = _load_motions(args.run_root, args.sample_index, mean, std)
+    motions = _load_motions(args.run_root, args.sample_index, mean, std, args.diagnostic_motion)
     parameters, joints, roots = {}, {}, {}
     with torch.inference_mode():
         for method, motion in motions.items():
@@ -167,7 +179,7 @@ def main() -> None:
         method: _panel_vectors(
             joints[method],
             roots[method],
-            _target_forward(f0, r0, 0.0 if method != "+" else 10.0),
+            _target_forward(f0, r0, 10.0 if method == "v2" else 0.0),
             camera_r,
             camera_t,
         )
@@ -181,26 +193,26 @@ def main() -> None:
         "M0": pyrender.MetallicRoughnessMaterial(
             baseColorFactor=[0.55, 0.58, 0.62, 1.0], metallicFactor=0.0, roughnessFactor=0.82
         ),
-        "-": pyrender.MetallicRoughnessMaterial(
+        "v2": pyrender.MetallicRoughnessMaterial(
             baseColorFactor=[0.95, 0.52, 0.10, 1.0], metallicFactor=0.0, roughnessFactor=0.82
         ),
-        "+": pyrender.MetallicRoughnessMaterial(
+        "diagnostic": pyrender.MetallicRoughnessMaterial(
             baseColorFactor=[0.10, 0.55, 0.92, 1.0], metallicFactor=0.0, roughnessFactor=0.82
         ),
     }
     camera_r_np = camera_r.detach().cpu().numpy()
     camera_t_np = camera_t.detach().cpu().numpy()
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    output = args.output_dir / f"{args.sample_label}_mesh_M0_+10.mp4"
+    output = args.output_dir / f"{args.sample_label}_mesh_M0_v2_diagnostic.mp4"
     process = _encoder(output)
     renderer = pyrender.OffscreenRenderer(PANEL_WIDTH, PANEL_HEIGHT)
     try:
         frame_count = joints["M0"].shape[0]
         for frame in range(frame_count):
             panels = []
-            for method in ("M0", "-", "+"):
-                target_delta = 0.0 if method != "+" else 10.0
-                label = "M0" if method != "+" else "v2 +10 deg"
+            for method in ("M0", "v2", "diagnostic"):
+                target_delta = 10.0 if method == "v2" else 0.0
+                label = {"M0": "M0", "v2": "pure v2 +10 deg", "diagnostic": "kinematic diagnostic"}[method]
                 panel = _render_panel(
                     vertices[method], faces, camera_r_np, camera_t_np,
                     frame, renderer, materials[method],
@@ -213,8 +225,8 @@ def main() -> None:
                 panels.append(panel)
             curves = {
                 "M0": root_change["M0"],
-                "-": root_change["-"],
-                "+": root_change["+"],
+                "-": root_change["v2"],
+                "+": root_change["diagnostic"],
             }
             bottom = _plot(curves, frame, (0.0, 10.0))
             process.stdin.write(

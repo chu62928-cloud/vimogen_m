@@ -41,11 +41,12 @@ def _load_motion(path: Path, mean: torch.Tensor, std: torch.Tensor) -> torch.Ten
 
 def _summary(values: torch.Tensor) -> dict[str, float | None]:
     if values.numel() == 0:
-        return {"mean": None, "p95": None, "max": None}
+        return {"mean": None, "p95": None, "max": None, "count": 0}
     return {
         "mean": float(values.mean()),
         "p95": float(torch.quantile(values, 0.95)),
         "max": float(values.max()),
+        "count": int(values.numel()),
     }
 
 
@@ -63,7 +64,9 @@ def _foot_external_metrics(
     m0_centre = 0.5 * (m0_heel + m0_toe)
     candidate_centre = 0.5 * (candidate_heel + candidate_toe)
     m0_speed = torch.zeros_like(m0_sole)
+    m0_speed[:] = float("nan")
     candidate_speed = torch.zeros_like(candidate_sole)
+    candidate_speed[:] = float("nan")
     m0_speed[1:] = torch.linalg.vector_norm(m0_centre[1:, :2] - m0_centre[:-1, :2], dim=-1)
     candidate_speed[1:] = torch.linalg.vector_norm(
         candidate_centre[1:, :2] - candidate_centre[:-1, :2], dim=-1
@@ -85,6 +88,12 @@ def _foot_external_metrics(
         "m0_lift_m": _summary(baseline_lift),
         "candidate_penetration_m": _summary(candidate_penetration),
         "m0_penetration_m": _summary(baseline_penetration),
+        "evidence": {
+            "height_minimum_frames": 3,
+            "sliding_minimum_continuous_pairs": 3,
+            "height_status": "PASS" if int(flat.sum()) >= 3 else "NOT_EVALUABLE",
+            "sliding_status": "PASS" if int(transition_mask.sum()) >= 3 else "NOT_EVALUABLE",
+        },
     }
 
 
@@ -99,10 +108,16 @@ def _metric_pass(candidate: dict, baseline: dict) -> bool:
         value = candidate.get(key)
         reference = baseline.get(key)
         if value is None or reference is None:
-            continue
+            return False
         if float(value) > float(reference) + _allowed_increase(reference):
             return False
     return True
+
+
+def _metric_status(candidate: dict, baseline: dict, minimum_count: int = 3) -> str:
+    if int(candidate.get("count", 0)) < minimum_count or int(baseline.get("count", 0)) < minimum_count:
+        return "NOT_EVALUABLE"
+    return "PASS" if _metric_pass(candidate, baseline) else "FAIL"
 
 
 def evaluate(run_root: Path, device: str = "cuda:0") -> dict:
@@ -145,6 +160,24 @@ def evaluate(run_root: Path, device: str = "cuda:0") -> dict:
         _metric_pass(row["external"]["candidate_penetration_m"], row["external"]["m0_penetration_m"])
         for row in rows
     )
+    sliding_statuses = [
+        _metric_status(row["external"]["candidate_sliding_m_per_frame"], row["external"]["m0_sliding_m_per_frame"])
+        for row in rows
+    ]
+    lift_statuses = [
+        _metric_status(row["external"]["candidate_lift_m"], row["external"]["m0_lift_m"])
+        for row in rows
+    ]
+    penetration_statuses = [
+        _metric_status(row["external"]["candidate_penetration_m"], row["external"]["m0_penetration_m"])
+        for row in rows
+    ]
+    naturalness_status = "PASS"
+    all_statuses = sliding_statuses + lift_statuses + penetration_statuses
+    if any(status == "FAIL" for status in all_statuses):
+        naturalness_status = "FAIL"
+    elif any(status == "NOT_EVALUABLE" for status in all_statuses):
+        naturalness_status = "NOT_EVALUABLE"
     result = {
         "protocol": "vimogen_relative_root_forward_v2_minimal_source_noise",
         "run_root": str(run_root),
@@ -152,7 +185,14 @@ def evaluate(run_root: Path, device: str = "cuda:0") -> dict:
         "m0_path": str(m0_path),
         "fixed_thresholds": {"allowed_relative_increase": 0.05, "absolute_tolerance_m": 0.001, "toe_regression_fraction": REGRESSION_FRACTION, "toe_gap_m": TOE_GAP_THRESHOLD_M, "flat_gap_m": FLAT_GAP_THRESHOLD_M, "contact_height_m": CONTACT_HEIGHT_M, "contact_speed_m_per_frame": CONTACT_SPEED_M},
         "rows": rows,
-        "naturalness_gate": {"toe_contact_regression": not toe_regression, "sliding": sliding_pass, "lift": lift_pass, "penetration": penetration_pass, "passed": not toe_regression and sliding_pass and lift_pass and penetration_pass},
+        "naturalness_gate": {
+            "toe_contact_regression": "PASS" if not toe_regression else "FAIL",
+            "sliding": sliding_statuses,
+            "lift": lift_statuses,
+            "penetration": penetration_statuses,
+            "status": "FAIL" if toe_regression else naturalness_status,
+            "passed": not toe_regression and naturalness_status == "PASS",
+        },
     }
     output = run_root / "source_noise_naturalness_evaluation.json"
     output.write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")

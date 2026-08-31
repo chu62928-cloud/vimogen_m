@@ -80,6 +80,15 @@ def build_config(args, run_root: Path, manifest: Path):
         "use_gradient_checkpointing": True,
         "max_reserved_mib": float(args.max_reserved_mib),
     }
+    if args.probe:
+        config.source_noise_probe = {
+            "enabled": True,
+            "artifact_dir": str(run_root / "subspace_probe_artifacts"),
+            "historical_delta_path": str(args.historical_delta_path) if args.historical_delta_path else None,
+            "direction_seed": int(args.direction_seed),
+            "rms_values": [0.005, 0.01],
+            "use_gradient_checkpointing": True,
+        }
     return config
 
 
@@ -139,6 +148,9 @@ def main() -> None:
     parser.add_argument("--target-delta-deg", type=float, default=10.0)
     parser.add_argument("--max-reserved-mib", type=float, default=28672.0)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE_CACHE)
+    parser.add_argument("--probe", action="store_true")
+    parser.add_argument("--historical-delta-path", type=Path, default=None)
+    parser.add_argument("--direction-seed", type=int, default=314159)
     args = parser.parse_args()
     record = run(args)
     print(json.dumps(record, indent=2))

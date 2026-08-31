@@ -33,6 +33,7 @@ from sampling.flow_sampler import FlowSampler, FlowSampleResult
 from sampling.differentiable_flow_sampler import (
     DifferentiableSamplerConfig,
     SourceNoiseGateConfig,
+    run_source_noise_subspace_probe,
     run_source_noise_reproduction_gate,
 )
 from sampling.relative_root_forward_guidance_v2 import (
@@ -600,6 +601,16 @@ def main(args):
         raise ValueError('source_noise_gate.enabled requires artifact_dir')
     if source_noise_gate_enabled and int(args.experiment.get('validation_steps', 50)) != 50:
         raise ValueError('source_noise_gate requires experiment.validation_steps=50')
+    source_noise_probe_cfg = args.get('source_noise_probe', {})
+    source_noise_probe_enabled = bool(source_noise_probe_cfg.get('enabled', False))
+    if source_noise_probe_enabled and int(args.experiment.get('validation_steps', 50)) != 50:
+        raise ValueError('source_noise_probe requires experiment.validation_steps=50')
+    source_noise_probe_artifact_dir = (
+        source_noise_probe_cfg.get('artifact_dir', None)
+        if source_noise_probe_enabled else None
+    )
+    if source_noise_probe_enabled and source_noise_probe_artifact_dir is None:
+        raise ValueError('source_noise_probe.enabled requires artifact_dir')
 
     # Explicitly opt-in control-aware 276D reconciliation.  The default
     # configuration has no ``representation`` section, so historical M0/M1
@@ -1163,6 +1174,60 @@ def main(args):
                             )
                             with open(gate_path, 'w', encoding='utf-8') as gate_file:
                                 json.dump(gate_record, gate_file, indent=2, sort_keys=True)
+                    if source_noise_probe_enabled:
+                        if not isinstance(m0_result, FlowSampleResult):
+                            raise RuntimeError('source_noise_probe requires FlowSampleResult')
+                        if int(sample_mask.sum().item()) != 1:
+                            raise ValueError('source_noise_probe requires one sample per condition')
+                        historical_path = source_noise_probe_cfg.get('historical_delta_path', None)
+                        historical_delta = None
+                        if historical_path is not None:
+                            historical_delta = torch.load(
+                                historical_path, map_location=device, weights_only=True
+                            ).to(device=device, dtype=torch.float32)
+                        probe_record = run_source_noise_subspace_probe(
+                            model=model,
+                            scheduler=wan_scheduler,
+                            official_result=m0_result,
+                            prompt_emb=prompt_emb[sample_mask],
+                            prompt_emb_null=prompt_emb_null[sample_mask],
+                            valid_mask=latents_mask[sample_mask].bool(),
+                            ref_motion=condition_ref_latents,
+                            ref_motion_mask=ref_latents_visual_mask[sample_mask],
+                            condition_on_text=(condition_name == 'text'),
+                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                            motion_mean=motion_mean[sample_mask],
+                            motion_std=motion_std[sample_mask],
+                            dtype=dtype,
+                            sampler_config=DifferentiableSamplerConfig(
+                                num_inference_steps=50,
+                                denoising_strength=0.7,
+                                cfg_scale=float(args.experiment.get('cfg_scale', 5.0)),
+                                use_gradient_checkpointing=bool(
+                                    source_noise_probe_cfg.get('use_gradient_checkpointing', True)
+                                ),
+                            ),
+                            historical_delta=historical_delta,
+                            direction_seed=int(source_noise_probe_cfg.get('direction_seed', 314159)),
+                            rms_values=tuple(float(value) for value in source_noise_probe_cfg.get('rms_values', [0.005, 0.01])),
+                            target_delta_deg=float(source_noise_probe_cfg.get('target_delta_deg', 10.0)),
+                        )
+                        if global_rank == 0:
+                            probe_dir = os.path.join(
+                                source_noise_probe_artifact_dir,
+                                f'batch_{test_batch_idx:03d}',
+                                condition_name,
+                            )
+                            os.makedirs(probe_dir, exist_ok=True)
+                            response = probe_record.pop('response_matrices').numpy()
+                            baseline_features = probe_record.pop('baseline_features').numpy()
+                            np.savez_compressed(
+                                os.path.join(probe_dir, 'subspace.npz'),
+                                response_matrices=response,
+                                baseline_features=baseline_features,
+                            )
+                            with open(os.path.join(probe_dir, 'subspace_probe.json'), 'w', encoding='utf-8') as probe_file:
+                                json.dump(probe_record, probe_file, indent=2, sort_keys=True)
                     source_noise_result = None
                     if source_noise_enabled:
                         if not isinstance(m0_result, FlowSampleResult):
@@ -1170,13 +1235,13 @@ def main(args):
                                 'source-noise v2 requires FlowSampleResult from M0'
                             )
                         source_config = MinimalSourceNoiseConfig(
-                            iterations=int(source_noise_cfg.get('iterations', 12)),
-                            step_rms=float(source_noise_cfg.get('step_rms', 0.03)),
+                            iterations=int(source_noise_cfg.get('iterations', 120)),
+                            step_rms=float(source_noise_cfg.get('step_rms', 0.01)),
                             max_delta_rms=float(
                                 source_noise_cfg.get('max_delta_rms', 1.0)
                             ),
                             line_search_steps=int(
-                                source_noise_cfg.get('line_search_steps', 4)
+                                source_noise_cfg.get('line_search_steps', 8)
                             ),
                             feasible_pitch_mae_deg=float(
                                 source_noise_cfg.get('feasible_pitch_mae_deg', 1.0)

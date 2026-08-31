@@ -226,6 +226,21 @@ def _source_rms(delta: torch.Tensor, valid_mask: Optional[torch.Tensor] = None) 
     return float(torch.sqrt(masked_delta.square().sum() / element_count).item())
 
 
+def _normalized_negative_gradient(
+    gradient: torch.Tensor,
+    step_rms: float,
+    valid_mask: Optional[torch.Tensor] = None,
+) -> torch.Tensor | None:
+    """Return a masked negative-gradient proposal with the requested RMS."""
+
+    rms = _source_rms(gradient, valid_mask)
+    if not math.isfinite(rms) or rms <= 1e-12:
+        return None
+    direction = -gradient * (float(step_rms) / rms)
+    mask = _valid_source_mask(direction, valid_mask)
+    return direction * mask[..., None].to(direction.dtype)
+
+
 def _restore_model_state_on_exit(function):
     """Restore training and ``requires_grad`` flags even on optimizer errors."""
 
@@ -414,15 +429,17 @@ def run_minimal_source_noise_optimization(
             )
             direction = direction * _valid_source_mask(direction, valid_mask)[..., None]
             direction_rms = _source_rms(direction, valid_mask)
-            if direction_rms <= 1e-12 or not math.isfinite(direction_rms):
-                entry["accepted"] = False
-                entry["stop_reason"] = "zero_adam_direction"
-                del gradient, loss, candidate
-                break
-            direction = direction * (float(config.step_rms) / direction_rms)
+            if direction_rms > 1e-12 and math.isfinite(direction_rms):
+                direction = direction * (float(config.step_rms) / direction_rms)
+            else:
+                direction = torch.zeros_like(gradient)
+                entry["adam_direction"] = "zero_or_nonfinite"
             accepted = False
             base_loss = float(loss.detach().item())
             trial_loss = None
+            accepted_trial = None
+            accepted_trial_metrics = None
+            accepted_trial_delta = None
             for backtrack in range(5):
                 scale = 0.5 ** backtrack
                 trial_delta = _within_trust_region(
@@ -469,11 +486,92 @@ def run_minimal_source_noise_optimization(
                 if math.isfinite(trial_loss) and trial_loss < base_loss:
                     delta = trial_delta.detach().float().requires_grad_(True)
                     accepted = True
+                    accepted_trial = trial
+                    accepted_trial_metrics = trial_metrics
+                    accepted_trial_delta = trial_actual_delta
                     entry["backtrack"] = backtrack
                     entry["accepted_loss"] = trial_loss
-                    del trial
                     break
                 del trial
+            if accepted and accepted_trial is not None:
+                # The accepted trial is a real candidate, not merely a
+                # proposal. Register it before the next loop or a timeout so
+                # the last verified update can never disappear from the
+                # archive.
+                _remember_candidate(
+                    accepted_trial_delta,
+                    accepted_trial.official_pre_cast,
+                    accepted_trial_metrics,
+                )
+                del accepted_trial
+            if not accepted:
+                # Adam can point into a locally flat or badly conditioned
+                # direction.  Retry the same verified backtracking rule with
+                # the raw negative gradient, normalized in the actual
+                # masked RMS metric, before declaring a stall.
+                fallback_direction = _normalized_negative_gradient(
+                    gradient, config.step_rms, valid_mask
+                )
+                if fallback_direction is not None:
+                    for backtrack in range(5):
+                        scale = 0.5 ** backtrack
+                        trial_delta = _within_trust_region(
+                            base_delta + fallback_direction * scale,
+                            config.max_delta_rms,
+                            valid_mask,
+                        )
+                        trial = differentiable_generate(
+                            model=model,
+                            scheduler=scheduler,
+                            prompt_emb=prompt_emb,
+                            prompt_emb_null=prompt_emb_null,
+                            initial_noise=z0 + trial_delta.to(dtype=z0.dtype),
+                            valid_mask=valid_mask,
+                            ref_motion=ref_motion,
+                            ref_motion_mask=ref_motion_mask,
+                            condition_on_text=condition_on_text,
+                            attend_to_text_mask=attend_to_text_mask,
+                            dtype=dtype,
+                            config=sampler_config,
+                        )
+                        with torch.no_grad():
+                            fallback_loss = float(
+                                _root_loss(
+                                    candidate_norm=trial.official_pre_cast,
+                                    baseline_norm=baseline_norm,
+                                    valid_mask=valid_mask,
+                                    motion_mean=motion_mean,
+                                    motion_std=motion_std,
+                                    target_delta_deg=target_delta_deg,
+                                    forward_loss_temperature=config.forward_loss_temperature,
+                                ).item()
+                            )
+                            fallback_delta = (
+                                (z0 + trial_delta.to(dtype=z0.dtype)).float()
+                                - z0.float()
+                            )
+                            fallback_metrics = _target_and_metrics(
+                                baseline_norm=baseline_norm,
+                                candidate_norm=trial.official_pre_cast,
+                                valid_mask=valid_mask,
+                                motion_mean=motion_mean,
+                                motion_std=motion_std,
+                                target_delta_deg=target_delta_deg,
+                            )[1]
+                        if math.isfinite(fallback_loss) and fallback_loss < base_loss:
+                            delta = trial_delta.detach().float().requires_grad_(True)
+                            _remember_candidate(
+                                fallback_delta,
+                                trial.official_pre_cast,
+                                fallback_metrics,
+                            )
+                            entry["backtrack"] = backtrack
+                            entry["accepted_loss"] = fallback_loss
+                            entry["direction_fallback"] = "normalized_negative_gradient"
+                            accepted = True
+                            del trial
+                            break
+                        del trial
             if not accepted:
                 stalled_steps += 1
                 delta = base_delta.detach().float().requires_grad_(True)
@@ -629,5 +727,6 @@ __all__ = [
     "MinimalSourceNoiseConfig",
     "SourceNoiseOptimizationResult",
     "select_source_noise_output",
+    "_normalized_negative_gradient",
     "run_minimal_source_noise_optimization",
 ]
