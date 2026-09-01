@@ -92,7 +92,27 @@ def main() -> None:
         result["status"] = "FAIL"
     output = args.output_dir or (args.run_root / "evaluation")
     output.mkdir(parents=True, exist_ok=True)
-    _write_json(output / "gates.json", result)
+    # Keep the machine-readable gate file limited to statuses and observations;
+    # human explanations remain in the run README/paired summary.
+    gate_only = {
+        "protocol": result["protocol"],
+        "status": result["status"],
+        "target_delta_deg": result["target_delta_deg"],
+        "gates": [{key: value for key, value in gate.items() if key != "reason"} for gate in result["gates"]],
+    }
+    _write_json(output / "gates.json", gate_only)
+    explanations = [
+        f"# v3 evaluation: sample {args.sample_id}",
+        "",
+        f"Overall status: `{result['status']}`.",
+        "",
+        "Gate explanations:",
+    ]
+    explanations.extend(
+        f"- `{gate['name']}`: {gate.get('reason') or 'no additional explanation'}"
+        for gate in result["gates"]
+    )
+    (output / "README.md").write_text("\n".join(explanations) + "\n", encoding="utf-8")
     _write_json(output / "metrics.json", result)
     rows = []
     from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe
