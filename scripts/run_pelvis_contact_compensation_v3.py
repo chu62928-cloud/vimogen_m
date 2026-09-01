@@ -177,7 +177,7 @@ def main() -> None:
         cases = [case for case in cases if str(case["sample_id"]) == str(args.sample_id)]
     if not cases:
         raise ValueError("no requested case in frozen protocol")
-    model_path = args.model_path or default_smpl_model_path("smplx", ROOT)
+    model_path = Path(args.model_path) if args.model_path is not None else Path(default_smpl_model_path("smplx", ROOT))
     device = torch.device(args.device)
     max_frames = int(valid.sum(dim=1).max().item())
     model = SMPLX(model_path=str(model_path), gender="neutral", num_betas=10, batch_size=max_frames, use_pca=False).to(device)
