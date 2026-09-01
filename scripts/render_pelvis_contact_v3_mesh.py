@@ -56,7 +56,13 @@ def fixed_sagittal_side_camera(joints: torch.Tensor, *, motion_heading: torch.Te
 
 
 def _render_panel(vertices: np.ndarray, faces: np.ndarray, camera_r: np.ndarray, camera_t: np.ndarray, frame: int, renderer: pyrender.OffscreenRenderer, material: pyrender.MetallicRoughnessMaterial) -> np.ndarray:
-    camera_points = vertices[frame] @ camera_r[frame] + camera_t[frame]
+    """Render one frame using the already-selected camera transform.
+
+    The caller passes a single frame's rotation/translation.  Keeping the
+    frame index only for the mesh prevents accidentally indexing a 3x3 camera
+    matrix as if it were a time sequence.
+    """
+    camera_points = vertices[frame] @ camera_r + camera_t
     mesh_points = np.stack((-camera_points[:, 0], camera_points[:, 1], -camera_points[:, 2]), axis=-1)
     tri = trimesh.Trimesh(vertices=mesh_points, faces=faces, process=False)
     scene = pyrender.Scene(bg_color=np.array([245, 245, 245, 255], dtype=np.uint8), ambient_light=np.array([0.35, 0.35, 0.35]))
