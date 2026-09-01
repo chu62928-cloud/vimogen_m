@@ -101,10 +101,22 @@ def _run_case(
                 continue
             start = int(window["window_start"])
             end = int(window["window_end_exclusive"])
+            stable_masks = {
+                name: torch.as_tensor(
+                    case["sides"][name]["evidence"]["valid_masks"]["flat_contact"],
+                    dtype=torch.bool,
+                )[start:end]
+                for name in ("left", "right")
+            }
             current: torch.Tensor | None = None
             dose_records = []
             for continuation_dose in (2.0, 5.0, float(dose)):
-                solver = PelvisContactCompensationSolver(base[start:end], model, patches, valid_mask=torch.ones(end - start, dtype=torch.bool), config=config, device=device)
+                solver = PelvisContactCompensationSolver(
+                    base[start:end], model, patches,
+                    valid_mask=torch.ones(end - start, dtype=torch.bool),
+                    stable_masks=stable_masks,
+                    config=config, device=device,
+                )
                 result = solver.solve(continuation_dose, initial_motion=current)
                 best_candidate = result["motion"]
                 if bool(result.get("feasible", False)):
@@ -115,7 +127,17 @@ def _run_case(
             sides[side] = {"status": dose_records[-1]["status"], "feasible": bool(dose_records[-1].get("feasible", False)), "window": window, "dose_records": dose_records, "motion_path": str(side_root / "candidate.pt")}
             torch.save(selected, side_root / "candidate.pt")
         return {"phase": phase, "sample_id": case_id, "status": "COMPLETED", "sides": sides}
-    solver = PelvisContactCompensationSolver(base, model, patches, valid_mask=base_mask, config=config, device=device)
+    stable_masks = {
+        name: torch.as_tensor(
+            case["sides"][name]["evidence"]["valid_masks"]["flat_contact"],
+            dtype=torch.bool,
+        )[:length]
+        for name in ("left", "right")
+    }
+    solver = PelvisContactCompensationSolver(
+        base, model, patches, valid_mask=base_mask, stable_masks=stable_masks,
+        config=config, device=device,
+    )
     result = solver.solve(float(dose))
     best_candidate = result["motion"]
     feasible = bool(result.get("feasible", False))

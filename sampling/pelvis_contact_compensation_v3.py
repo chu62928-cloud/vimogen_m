@@ -81,6 +81,7 @@ class PelvisContactCompensationSolver:
         patches: Mapping[str, Mapping[str, list[int]]],
         *,
         valid_mask: torch.Tensor | None = None,
+        stable_masks: Mapping[str, torch.Tensor] | None = None,
         config: PelvisCompensationConfig | None = None,
         device: str | torch.device = "cuda:0",
     ) -> None:
@@ -114,6 +115,11 @@ class PelvisContactCompensationSolver:
             heel, toe = patch_centres(self.base_vertices, patches[side])
             self.contact[side] = {
                 "heel": heel.detach(), "toe": toe.detach(),
+                "stable_mask": (
+                    torch.as_tensor(stable_masks[side], device=self.device, dtype=torch.bool)[:length]
+                    if stable_masks is not None and side in stable_masks
+                    else None
+                ),
                 "evidence": contact_evidence(
                     heel.detach(), toe.detach(),
                     contact_height_m=self.config.contact_height_m,
@@ -151,7 +157,9 @@ class PelvisContactCompensationSolver:
             heel, toe = patch_centres(output.vertices, self.patches[side])
             evidence = self.contact[side]["evidence"]
             confidence = torch.as_tensor(evidence["confidence"], device=self.device, dtype=torch.float32)
-            stable = confidence >= self.config.stable_confidence
+            frozen_stable = self.contact[side]["stable_mask"]
+            stable = (confidence >= self.config.stable_confidence) if frozen_stable is None else frozen_stable
+            stable = stable & self.valid_mask
             if bool(stable.any()):
                 target_heel = self.contact[side]["heel"]
                 target_toe = self.contact[side]["toe"]
