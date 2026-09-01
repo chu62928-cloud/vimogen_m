@@ -28,7 +28,7 @@ from evaluation.pelvis_contact_compensation_v3 import (
     select_stable_window,
 )
 from evaluation.relative_root_trunk_v2_1 import direct_smpl_parameters
-from motion_rep.motion_checker import _default_smpl_model_path
+from motion_rep.smplx_utils import default_smpl_model_path
 from motion_rep.pose_authority import authority_project
 
 
@@ -81,7 +81,7 @@ def main() -> None:
         raise ValueError("sample-indices must identify two distinct M0 rows")
     output = args.output
     output.mkdir(parents=True, exist_ok=False)
-    model_path = args.model_path or _default_smpl_model_path("smplx")
+    model_path = args.model_path or default_smpl_model_path("smplx", ROOT)
     device = torch.device(args.device)
     model = SMPLX(model_path=str(model_path), gender="neutral", num_betas=10, batch_size=int(m0_physical.shape[1]), use_pca=False).to(device)
     patches = foot_patches(model)

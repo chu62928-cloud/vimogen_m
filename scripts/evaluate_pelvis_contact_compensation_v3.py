@@ -20,7 +20,7 @@ if str(ROOT) not in sys.path:
 
 from evaluation.pelvis_contact_compensation_v3 import evaluate_v3_pair, foot_patches, patch_centres
 from evaluation.relative_root_trunk_v2_1 import direct_smpl_parameters
-from motion_rep.motion_checker import _default_smpl_model_path
+from motion_rep.smplx_utils import default_smpl_model_path
 
 
 def _sha256(path: Path) -> str:
@@ -70,7 +70,7 @@ def main() -> None:
     if m0.shape != candidate.shape or m0.shape[0] != 1:
         raise ValueError("M0 and selected candidate must be paired [1,T,276]")
     valid = torch.ones(m0.shape[:2], dtype=torch.bool)
-    model_path = args.model_path or _default_smpl_model_path("smplx")
+    model_path = args.model_path or default_smpl_model_path("smplx", ROOT)
     device = torch.device(args.device)
     model = SMPLX(model_path=str(model_path), gender="neutral", num_betas=10, batch_size=int(m0.shape[1]), use_pca=False).to(device)
     m0_vertices = _vertices(m0[0], model, device)

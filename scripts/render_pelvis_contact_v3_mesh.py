@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from evaluation.pelvis_contact_compensation_v3 import pelvis_pitch_delta_deg
 from evaluation.relative_root_trunk_v2_1 import direct_joints_from_motion, direct_smpl_parameters
-from motion_rep.motion_checker import _default_smpl_model_path
+from motion_rep.smplx_utils import default_smpl_model_path
 from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe
 from scripts.render_absolute_mean_triptych import estimate_motion_heading, fixed_sagittal_side_camera
 from scripts.render_relative_root_forward_v2_single_mesh import _draw_direction_overlay, _render_panel
@@ -80,7 +80,7 @@ def main() -> None:
     if m0.shape != candidate.shape:
         raise ValueError("M0 and candidate shapes differ")
     device = torch.device(args.device)
-    model_path = args.model_path or _default_smpl_model_path("smplx")
+    model_path = args.model_path or default_smpl_model_path("smplx", ROOT)
     model = __import__("smplx").SMPLX(model_path=str(model_path), gender="neutral", num_betas=10, batch_size=int(m0.shape[0]), use_pca=False).to(device)
     motions = {"M0": m0, "candidate": candidate}
     vertices, joints, roots = {}, {}, {}
