@@ -100,6 +100,12 @@ class PelvisContactCompensationSolver:
             raise ValueError("valid_mask has invalid length")
         self.m0 = self.m0[:length]
         self.frames = length
+        # ``SMPLX.forward`` repeats landmark barycentric coordinates using the
+        # module's constructor batch size rather than the input batch.  A
+        # window solve has a shorter batch, so keep that internal value in
+        # lockstep with the current sequence.
+        if hasattr(self.model, "batch_size"):
+            self.model.batch_size = self.frames
         self.valid_mask = torch.ones(length, dtype=torch.bool, device=self.device)
         self.base_body = decode_rot6d_safe(self.m0[..., MOTION_LAYOUT.body_pose].reshape(length, 21, 6))
         self.base_root = decode_rot6d_safe(self.m0[..., MOTION_LAYOUT.root_rotation])
