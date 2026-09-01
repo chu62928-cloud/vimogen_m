@@ -196,14 +196,27 @@ def select_stable_window(
     confidence: torch.Tensor,
     *,
     valid_mask: torch.Tensor | None = None,
+    stable_mask: torch.Tensor | None = None,
     pad: int = 4,
 ) -> dict[str, Any]:
-    """Select the longest stable M0 interval; ties choose the earliest one."""
+    """Select the longest stable M0 interval; ties choose the earliest one.
+
+    The frozen *discrete* flat-contact mask is the authoritative window
+    selector.  Continuous confidence remains available to the optimiser, but
+    requiring ``c >= .8`` for window selection would discard the validated
+    sample-34122 flat runs (their confidence is intentionally transitional at
+    the boundaries).
+    """
 
     if confidence.ndim != 1:
         raise ValueError("confidence must be [T]")
     valid = torch.ones_like(confidence, dtype=torch.bool) if valid_mask is None else valid_mask.to(confidence.device)
-    stable = (confidence >= STABLE_CONFIDENCE) & valid
+    if stable_mask is None:
+        stable = (confidence >= STABLE_CONFIDENCE) & valid
+    else:
+        stable = stable_mask.to(confidence.device).bool() & valid
+        if stable.shape != confidence.shape:
+            raise ValueError("stable_mask must have the same shape as confidence")
     run = longest_true_run(stable)
     if run is None:
         return {"status": NOT_EVALUABLE, "stable_count": int(stable.sum().item()), "frames": []}

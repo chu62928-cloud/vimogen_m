@@ -61,7 +61,7 @@ def main() -> None:
     parser.add_argument("--model-path", type=Path, default=None)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--sample-ids", nargs=2, default=["94", "34122"])
-    parser.add_argument("--sample-indices", nargs=2, type=int, default=[0, 1])
+    parser.add_argument("--sample-indices", nargs=2, type=int, default=None)
     args = parser.parse_args()
     if args.output.exists():
         raise FileExistsError(f"frozen protocol already exists: {args.output}")
@@ -76,7 +76,17 @@ def main() -> None:
         raise ValueError("M0, mask, mean and std dimensions do not match")
     m0_physical = m0_norm * std.view(1, 1, -1) + mean.view(1, 1, -1)
     m0_physical = authority_project(m0_physical, valid_mask=valid_mask, output_dtype=torch.float32).physical_motion
-    indices = [int(x) for x in args.sample_indices]
+    archive_ids = archive.get("sample_ids")
+    if args.sample_indices is None:
+        if not isinstance(archive_ids, (list, tuple)):
+            raise ValueError("archive must contain sample_ids when --sample-indices is omitted")
+        lookup = {str(sample_id): index for index, sample_id in enumerate(archive_ids)}
+        try:
+            indices = [lookup[str(sample_id)] for sample_id in args.sample_ids]
+        except KeyError as exc:
+            raise ValueError(f"requested sample id is absent from archive: {exc.args[0]}") from exc
+    else:
+        indices = [int(x) for x in args.sample_indices]
     if len(set(indices)) != 2 or any(index < 0 or index >= m0_physical.shape[0] for index in indices):
         raise ValueError("sample-indices must identify two distinct M0 rows")
     output = args.output
@@ -98,7 +108,12 @@ def main() -> None:
             heel, toe = patch_centres(vertices, patches[side])
             evidence = contact_evidence(heel, toe, valid_mask=valid_mask[source_index].cpu())
             confidence = torch.tensor(evidence["confidence"], dtype=torch.float32)
-            window = select_stable_window(confidence, valid_mask=valid_mask[source_index].cpu(), pad=4)
+            window = select_stable_window(
+                confidence,
+                valid_mask=valid_mask[source_index].cpu(),
+                stable_mask=torch.as_tensor(evidence["valid_masks"]["flat_contact"], dtype=torch.bool),
+                pad=4,
+            )
             sides[side] = {"evidence": evidence, "stable_window": window}
         cases.append({"sample_id": str(sample_id), "source_index": int(source_index), "row_index": row_index, "seed": 0, "target_delta_deg": 10.0, "sides": sides})
     protocol = {
