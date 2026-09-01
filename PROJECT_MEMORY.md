@@ -11,6 +11,7 @@
 - VERIFIED：冻结 v2 `attempt_10` 的同一直接权威化配对重评仍失败：相对角 MAE/P95 `13.384°/14.541°`，实际相对角剂量 `-3.384°`，躯干三维方向 P95 `7.593°`、`q_rigid=0.645`；水平朝向 P95 `1.557°`、尾部额外旋转 `0.558°`、俯仰跳变 `0.660°`。左脚滑动均值由 `24.408` 增至 `30.027 mm/帧`并超过容差，旧自然性回归未被评价修正消除。
 - VERIFIED：最终交付目录为 `results/phase7/relative_root_trunk_v2_1/diagnostics/`，含 `USER_REPORT.md`、`TEST_REPORT.md`、`attempt_03_final/gates.json`、`naturalness.json`、逐帧/逐脚 CSV、相对角曲线、回放记录和三栏/脚部局部 MP4。三栏视频和脚部视频均为 H.264、1920×1080、20 fps、100 帧、5 秒；哈希分别为 `b3ec722b9cdda8d011ecb0ee125c47359ec2fe66dca16c3e56aae28a678d49c4` 和 `152e97c87be749169f2a03548fcf1ff0f46b1383137786924c50b8e5d625c9ce`。
 - DECISION：按停止条件停止纯源噪声相对角路线，不扩展其他七种组合、样本、种子或正式 MBench，不向本协议加入脚部/躯干优化损失。下一任务转向学习式全身适配器，或先做接触感知的全序列运动学/物理投影，再决定是否接回生成器。相对角几何的通过测试仅证明表示的几何性质，不证明本单例可达。
+- COMMITTED：v2.1 代码与项目记忆已提交为 `295be19`（`feat: validate root-trunk relative-angle v2.1`），并已推送到远端 `codex/relative-root-trunk-v2-1`。工作区其余未跟踪文件为用户既有文件，未加入提交。
 
 ## 2026-08-31：v2 统一评价、正确性修复与可达性诊断完成
 
