@@ -96,7 +96,7 @@ def target_root_rotation(
     frame = m0_sagittal_frame(m0_root_rotation)
     delta = torch.as_tensor(target_delta_deg, dtype=m0_root_rotation.dtype, device=m0_root_rotation.device)
     delta = torch.broadcast_to(delta, m0_root_rotation.shape[:-2])
-    correction = axis_angle_to_mat3x3(frame["right"] * (-delta * math.pi / 180.0))
+    correction = axis_angle_to_mat3x3(frame["right"] * (-delta[..., None] * math.pi / 180.0))
     return correction @ m0_root_rotation
 
 

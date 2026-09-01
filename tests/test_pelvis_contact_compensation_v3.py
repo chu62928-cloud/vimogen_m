@@ -41,6 +41,13 @@ def test_fixed_m0_frame_is_invariant_to_yaw() -> None:
     assert float(pelvis_pitch_delta_deg(m0, candidate)[0]) == pytest.approx(-5.0, abs=1e-4)
 
 
+def test_batched_target_rotation_broadcasts_dose_per_frame() -> None:
+    m0 = torch.stack([_root_yaw_pitch(0.0), _root_yaw_pitch(15.0)])
+    candidate = target_root_rotation(m0, torch.tensor([2.0, -5.0]))
+    observed = pelvis_pitch_delta_deg(m0, candidate)
+    assert torch.allclose(observed, torch.tensor([2.0, -5.0]), atol=1e-4)
+
+
 def test_degenerate_vertical_forward_is_rejected() -> None:
     root = axis_angle_to_mat3x3(torch.tensor([0.0, 0.0, 0.0])).reshape(1, 3, 3)
     with pytest.raises(ValueError, match="horizontal root-forward"):
