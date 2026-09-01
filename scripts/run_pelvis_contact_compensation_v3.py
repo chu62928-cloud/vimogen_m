@@ -199,6 +199,7 @@ def main() -> None:
     parser.add_argument("--output-root", type=Path, default=None)
     parser.add_argument("--model-path", type=Path, default=None)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--source-revision", default=None, help="commit id when the server tree has no .git metadata")
     args = parser.parse_args()
     protocol, patches, m0, valid = _load_protocol(args.protocol_root)
     if protocol.get("protocol") != PROTOCOL_NAME:
@@ -239,7 +240,7 @@ def main() -> None:
             "protocol_root": str(args.protocol_root),
             "protocol_sha256": _sha256(args.protocol_root / "protocol.json"),
             "patch_sha256": protocol["foot_patches"]["sha256"],
-            "git_revision": _git_revision(),
+            "git_revision": _git_revision() or args.source_revision,
             "model_path": str(model_path),
             "model_sha256": _sha256(model_path) if model_path.is_file() else None,
         }
