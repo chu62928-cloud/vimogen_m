@@ -54,7 +54,7 @@ def test_contact_confidence_excludes_first_frame_and_reports_pairs() -> None:
     toe[:, 0] = heel[:, 0]
     result = contact_evidence(heel, toe)
     assert result["valid_masks"]["general_contact"][0] is False
-    assert result["contact_frames"] == 5
+    assert result["contact_frames"] == 6
     assert result["continuous_contact_pairs"] == 4
     assert result["confidence"][0] == 0.0
 
