@@ -267,7 +267,9 @@ class PelvisContactCompensationSolver:
                 self._clip_bounds()
             with torch.no_grad():
                 _, residuals = self._objective(stage, penalty, multipliers)
-                for key, residual in residuals.items():
+                active_keys = ("contact", "orientation", "penetration") + (("trunk",) if stage >= 2 else ())
+                for key in active_keys:
+                    residual = residuals[key]
                     if residual.numel():
                         if multipliers[key].shape != residual.shape:
                             multipliers[key] = torch.zeros_like(residual)
