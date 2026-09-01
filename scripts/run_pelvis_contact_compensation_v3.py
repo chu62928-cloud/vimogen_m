@@ -126,7 +126,27 @@ def _run_case(
             selected = current if current is not None and bool(dose_records[-1].get("feasible", False)) else base[start:end].cpu()
             sides[side] = {"status": dose_records[-1]["status"], "feasible": bool(dose_records[-1].get("feasible", False)), "window": window, "dose_records": dose_records, "motion_path": str(side_root / "candidate.pt")}
             torch.save(selected, side_root / "candidate.pt")
-        return {"phase": phase, "sample_id": case_id, "status": "COMPLETED", "sides": sides}
+        infeasible = {
+            side: {
+                "status": value.get("status"),
+                "feasible": value.get("feasible"),
+                "window": value.get("window"),
+                "final_residuals": (
+                    value.get("dose_records", [{}])[-1].get("stages", [{}])[-1].get("final_residuals")
+                    if value.get("dose_records") else None
+                ),
+            }
+            for side, value in sides.items()
+            if value.get("status") not in ("PASS", "FEASIBLE")
+        }
+        return {
+            "phase": phase,
+            "sample_id": case_id,
+            "status": "STOP_V3_2" if infeasible else "COMPLETED",
+            "v3_2_allowed": not bool(infeasible),
+            "conflicts": infeasible,
+            "sides": sides,
+        }
     stable_masks = {
         name: torch.as_tensor(
             case["sides"][name]["evidence"]["valid_masks"]["flat_contact"],
@@ -208,7 +228,7 @@ def main() -> None:
         try:
             result = _run_case(phase=args.phase, case=case, protocol_root=args.protocol_root, patches=patches, m0=m0, valid=valid, model=model, device=device, dose=args.target_delta_deg, output_root=run_root)
             record.update(result)
-            record["status"] = "COMPLETED"
+            record["status"] = result.get("status", "COMPLETED")
         except Exception as exc:
             record.update({"status": "FAILED", "error": repr(exc)})
             raise
