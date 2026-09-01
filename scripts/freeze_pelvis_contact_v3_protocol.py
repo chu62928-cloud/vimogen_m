@@ -145,7 +145,7 @@ def main() -> None:
             "archive": {"path": str(args.archive), "sha256": _sha256(args.archive)},
             "mean": {"path": str(args.mean), "sha256": _sha256(args.mean)},
             "std": {"path": str(args.std), "sha256": _sha256(args.std)},
-            "smplx_model": {"path": str(model_path), "sha256": _sha256(Path(model_path)) if Path(model_path).is_file() else None},
+            "smplx_model": {"path": str(model_path), "sha256": _sha256(Path(model_path)) if Path(model_path).exists() else None},
         },
         "artifacts": {"m0_physical": "m0_physical.pt", "valid_mask": "valid_mask.pt"},
     }
