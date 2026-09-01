@@ -42,6 +42,11 @@ from sampling.relative_root_forward_guidance_v2 import (
     select_source_noise_output,
     run_minimal_source_noise_optimization,
 )
+from sampling.relative_root_trunk_guidance_v2_1 import (
+    PROTOCOL_NAME as RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL,
+    RelativeRootTrunkConfig,
+    run_minimal_source_noise_relative_root_trunk_optimization,
+)
 from sampling.noise_protocol import SampleNoiseProtocol
 from sampling.m1_guidance import M1Config, M1Guidance
 from sampling.relative_root_forward_guidance import (
@@ -509,6 +514,7 @@ def main(args):
         RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL,
         RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL,
         RELATIVE_ROOT_FORWARD_V2_PROTOCOL,
+        RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL,
         'v2',
         'v1',
     }:
@@ -516,9 +522,14 @@ def main(args):
             'relative_root_forward.protocol must be '
             f'{RELATIVE_ROOT_FORWARD_PROTOCOL}, {RELATIVE_ROOT_FORWARD_V1_1_PROTOCOL}, '
             f'{RELATIVE_ROOT_FORWARD_V1_2_PROTOCOL}, {RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL}, '
-            f'or {RELATIVE_ROOT_FORWARD_V2_PROTOCOL}'
+            f'or {RELATIVE_ROOT_FORWARD_V2_PROTOCOL} or {RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL}'
         )
-    if relative_protocol_requested in {RELATIVE_ROOT_FORWARD_V2_PROTOCOL, 'v2'}:
+    source_noise_protocols = {
+        RELATIVE_ROOT_FORWARD_V2_PROTOCOL,
+        RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL,
+        'v2',
+    }
+    if relative_protocol_requested in source_noise_protocols:
         relative_strategy_config = None
         relative_guidance_class = None
     elif relative_protocol_requested == RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL:
@@ -560,17 +571,22 @@ def main(args):
         )
     source_noise_cfg = (
         relative_cfg
-        if relative_protocol_requested in {RELATIVE_ROOT_FORWARD_V2_PROTOCOL, 'v2'}
+        if relative_protocol_requested in source_noise_protocols
         else args.get('source_noise', {})
     )
     source_noise_enabled = (
-        relative_protocol_requested in {RELATIVE_ROOT_FORWARD_V2_PROTOCOL, 'v2'}
+        relative_protocol_requested in source_noise_protocols
         or bool(source_noise_cfg.get('enabled', False))
     )
     source_noise_artifact_dir = (
         source_noise_cfg.get(
             'artifact_dir',
-            os.path.join('results', 'phase7', 'relative_root_forward_v2'),
+            os.path.join(
+                'results', 'phase7',
+                'relative_root_trunk_v2_1'
+                if relative_protocol_requested == RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL
+                else 'relative_root_forward_v2',
+            ),
         )
         if source_noise_enabled else None
     )
@@ -1234,7 +1250,12 @@ def main(args):
                             raise RuntimeError(
                                 'source-noise v2 requires FlowSampleResult from M0'
                             )
-                        source_config = MinimalSourceNoiseConfig(
+                        source_config_class = (
+                            RelativeRootTrunkConfig
+                            if relative_protocol_requested == RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL
+                            else MinimalSourceNoiseConfig
+                        )
+                        source_config = source_config_class(
                             iterations=int(source_noise_cfg.get('iterations', 120)),
                             step_rms=float(source_noise_cfg.get('step_rms', 0.01)),
                             max_delta_rms=float(
@@ -1258,8 +1279,21 @@ def main(args):
                             max_runtime_seconds=float(
                                 source_noise_cfg.get('max_runtime_seconds', 0.0)
                             ),
+                            **({
+                                'feasible_relative_mae_deg': float(
+                                    source_noise_cfg.get('feasible_relative_mae_deg', 1.0)
+                                ),
+                                'feasible_relative_p95_deg': float(
+                                    source_noise_cfg.get('feasible_relative_p95_deg', 2.0)
+                                ),
+                            } if relative_protocol_requested == RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL else {}),
                         )
-                        source_noise_result = run_minimal_source_noise_optimization(
+                        source_noise_runner = (
+                            run_minimal_source_noise_relative_root_trunk_optimization
+                            if relative_protocol_requested == RELATIVE_ROOT_TRUNK_V2_1_PROTOCOL
+                            else run_minimal_source_noise_optimization
+                        )
+                        source_noise_result = source_noise_runner(
                             model=model,
                             scheduler=wan_scheduler,
                             official_result=m0_result,

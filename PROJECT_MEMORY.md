@@ -1,5 +1,17 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-01：根—躯干相对角 v2.1 单例验证完成
+
+- VERIFIED：已从冻结的 `codex/relative-root-forward-v2` 切出 `codex/relative-root-trunk-v2-1`。v2 的代码和历史产物保持冻结；本分支最终对 `sampling/relative_root_forward_guidance_v2.py` 无差异。v2.1 新增独立几何、配对自然性评价、源噪声优化器、服务器运行器、最终评价器、视频渲染器和测试。
+- IMPLEMENTED：新增协议 `vimogen_relative_root_trunk_v2_1_minimal_source_noise`。目标是每帧冻结 M0 水平朝向，在 M0 矢状面内计算“spine1→neck 躯干轴到直接根前向轴”的绕 M0 右轴有符号相对角；优化损失只包含相对角误差，躯干和脚部只作外部门。
+- IMPLEMENTED：配对自然性评价统一使用直接 `body_pose/root_rotation/root_translation` 权威化和 FK/SMPL-X 网格，不使用速度积分。M0 固定接触集合排除首帧速度，一般接触用于滑动/离地/穿地，平足只用于脚尖主导；均值和 P95 使用 `max(M0×5%,1 mm)` 容差，证据不足返回 `NOT_EVALUABLE`。
+- VERIFIED：服务器专项几何/接触测试 `9 passed`；服务器完整回归 `246 passed in 47.19 s`。所有动态测试、模型运行、评价和 EGL 视频渲染均通过 `connect_server.py` 在服务器完成，本地仅作静态编译、哈希核对和报告整理。
+- VERIFIED/NEGATIVE_RESULT：固定单例 `sample94/seed0/+10°`、50 步、120 次上限、步长 RMS `0.01`、源噪声 RMS≤`1.0`、8 级固定锚点缩小最终运行于 `attempt_03`，耗时 `271.220 s`，实际 4 次迭代，状态 `INFEASIBLE_WITHIN_BUDGET`，明确选择 `m0_fallback`。最佳不可行候选实际相对角剂量约 `+2.046°`，相对角 P95 误差约 `8.642°`；最终选定 M0 的相对角 MAE/P95 均为 `10.000°`，因此内部相对角门失败。
+- VERIFIED：v2.1 最终外部门中，躯干三维方向 P95 `0.028°`、`q_rigid=0`、水平朝向 P95 `0.020°`、尾部额外旋转/俯仰跳变约为零、左右脚滑动/离地/穿地相对 M0 均 `PASS`；脚尖门为 `NOT_EVALUABLE`（右脚平足证据不足）。这些脚部门结果来自 M0 回退，不能解释为 v2.1 成功保持了生成候选自然性；总状态为 `FAIL`。
+- VERIFIED：冻结 v2 `attempt_10` 的同一直接权威化配对重评仍失败：相对角 MAE/P95 `13.384°/14.541°`，实际相对角剂量 `-3.384°`，躯干三维方向 P95 `7.593°`、`q_rigid=0.645`；水平朝向 P95 `1.557°`、尾部额外旋转 `0.558°`、俯仰跳变 `0.660°`。左脚滑动均值由 `24.408` 增至 `30.027 mm/帧`并超过容差，旧自然性回归未被评价修正消除。
+- VERIFIED：最终交付目录为 `results/phase7/relative_root_trunk_v2_1/diagnostics/`，含 `USER_REPORT.md`、`TEST_REPORT.md`、`attempt_03_final/gates.json`、`naturalness.json`、逐帧/逐脚 CSV、相对角曲线、回放记录和三栏/脚部局部 MP4。三栏视频和脚部视频均为 H.264、1920×1080、20 fps、100 帧、5 秒；哈希分别为 `b3ec722b9cdda8d011ecb0ee125c47359ec2fe66dca16c3e56aae28a678d49c4` 和 `152e97c87be749169f2a03548fcf1ff0f46b1383137786924c50b8e5d625c9ce`。
+- DECISION：按停止条件停止纯源噪声相对角路线，不扩展其他七种组合、样本、种子或正式 MBench，不向本协议加入脚部/躯干优化损失。下一任务转向学习式全身适配器，或先做接触感知的全序列运动学/物理投影，再决定是否接回生成器。相对角几何的通过测试仅证明表示的几何性质，不证明本单例可达。
+
 ## 2026-08-31：v2 统一评价、正确性修复与可达性诊断完成
 
 - VERIFIED：当前分支为 `codex/relative-root-forward-v2`；本轮代码提交为 `2404343`，v1.3 仍保持冻结。工作区中用户既有的未跟踪文件未被加入提交、删除或覆盖。
