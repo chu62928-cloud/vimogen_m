@@ -137,6 +137,7 @@ class PelvisContactCompensationSolver:
         self.base_trunk = F.normalize(trunk, dim=-1)
         self.floor = {side: torch.as_tensor(self.contact[side]["evidence"]["floor_height_m"], device=self.device, dtype=torch.float32) for side in ("left", "right")}
         self._target_root: torch.Tensor | None = None
+        self._multipliers: dict[str, torch.Tensor] | None = None
 
     def _model(self, body: torch.Tensor, root: torch.Tensor, translation: torch.Tensor) -> Any:
         body_aa = mat3x3_to_axis_angle(body).reshape(self.frames, 63)
@@ -242,12 +243,14 @@ class PelvisContactCompensationSolver:
             self.translation_delta.clamp_(-self.config.max_translation_m, self.config.max_translation_m)
 
     def _optimise_stage(self, stage: int) -> dict[str, Any]:
-        multipliers = {
-            "contact": torch.zeros((max(1, self.frames * 6), 1), device=self.device),
-            "orientation": torch.zeros((max(1, self.frames), 3), device=self.device),
-            "penetration": torch.zeros((max(1, self.frames * 2), 1), device=self.device),
-            "trunk": torch.zeros((max(1, self.frames), 3), device=self.device),
-        }
+        if self._multipliers is None:
+            self._multipliers = {
+                "contact": torch.zeros((max(1, self.frames * 6), 1), device=self.device),
+                "orientation": torch.zeros((max(1, self.frames), 3), device=self.device),
+                "penetration": torch.zeros((max(1, self.frames * 2), 1), device=self.device),
+                "trunk": torch.zeros((max(1, self.frames), 3), device=self.device),
+            }
+        multipliers = self._multipliers
         penalty = self.config.penalty_start
         history: list[dict[str, float]] = []
         residuals: dict[str, torch.Tensor] = {}
@@ -271,12 +274,14 @@ class PelvisContactCompensationSolver:
                         multipliers[key] = multipliers[key] + penalty * residual.detach()
                         history.append({"stage": float(stage), "outer": float(outer), "penalty": float(penalty), f"{key}_rms": float(torch.sqrt(residual.square().mean()).item())})
             penalty *= self.config.penalty_multiplier
+        self._multipliers = multipliers
         return {"stage": stage, "history": history, "final_residuals": {key: float(torch.sqrt(value.square().mean()).item()) if value.numel() else 0.0 for key, value in residuals.items()}}
 
     def solve(self, target_delta_deg: float, *, initial_motion: torch.Tensor | None = None) -> dict[str, Any]:
         if not math.isfinite(float(target_delta_deg)) or not -10.0 <= float(target_delta_deg) <= 10.0:
             raise ValueError("target_delta_deg must lie in [-10,10]")
         self._target_root = target_root_rotation(self.base_root, float(target_delta_deg))
+        self._multipliers = None
         if initial_motion is not None:
             self._initialise_from_motion(initial_motion)
         stages = []
