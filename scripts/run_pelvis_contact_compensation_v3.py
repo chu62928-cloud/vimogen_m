@@ -53,6 +53,17 @@ def _next_attempt(parent: Path) -> Path:
     return result
 
 
+def _latest_v31_record(output_base: Path, sample_id: str, dose: float) -> dict[str, Any] | None:
+    """Read the newest v3.1 gate for a case, if one has been recorded."""
+
+    sign = "+" if dose >= 0 else ""
+    parent = output_base / "v3_1_window_feasibility" / f"sample_{sample_id}" / f"dose_{sign}{dose:g}deg"
+    candidates = sorted(parent.glob("attempt_*/run_record.json"), key=lambda path: path.stat().st_mtime)
+    if not candidates:
+        return None
+    return json.loads(candidates[-1].read_text(encoding="utf-8"))
+
+
 def _load_protocol(root: Path) -> tuple[dict[str, Any], dict[str, Any], torch.Tensor, torch.Tensor]:
     protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
     patches = json.loads((root / "foot_patches.json").read_text(encoding="utf-8"))
@@ -202,7 +213,17 @@ def main() -> None:
     max_frames = int(valid.sum(dim=1).max().item())
     model = SMPLX(model_path=str(model_path), gender="neutral", num_betas=10, batch_size=max_frames, use_pca=False).to(device)
     output_base = args.output_root or (ROOT / "results/phase8/pelvis_contact_compensation_v3")
-    output_base = Path(output_base) / args.phase
+    output_base = Path(output_base)
+    if args.phase == "v3_2_full_sequence":
+        strict_cases = [case for case in cases if str(case["sample_id"]) == "34122"]
+        for strict_case in strict_cases:
+            gate = _latest_v31_record(output_base, str(strict_case["sample_id"]), args.target_delta_deg)
+            if gate is None or gate.get("status") != "COMPLETED" or not gate.get("v3_2_allowed", False):
+                raise RuntimeError(
+                    "v3.2 is frozen until the sample-34122 v3.1 gate passes; "
+                    f"latest gate={gate.get('status') if gate else None}"
+                )
+    output_base = output_base / args.phase
     records = []
     for case in cases:
         parent = output_base / f"sample_{case['sample_id']}" / f"dose_{args.target_delta_deg:+g}deg"
