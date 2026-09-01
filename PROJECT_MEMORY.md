@@ -6,10 +6,12 @@
 - FROZEN：协议名为 `vimogen_pelvis_contact_compensation_v3`，结果根目录为 `results/phase8/pelvis_contact_compensation_v3/`。正剂量采用 `delta=M0_pitch-candidate_pitch`；目标根旋转为 `Rot(M0_right,-delta)@R0`；接触阈值为高度 25 mm、速度 30 mm/帧、平足高差 20 mm，首帧速度无效，最小证据 3 帧/连续帧对。足底贴片使用中性 SMPL-X 网格并写入哈希。
 - VERIFIED：服务器冻结协议位于 `/root/autodl-tmp/vimogen_pelvis_contact_v3_results/protocol_v3_0_hashed2/`，协议 SHA256 为 `a0b9efce1a9e1b7ee1d57404ee102e9c996b00ea4a92367843e6999b7bf290b5`，SMPL-X 模型目录 SHA256 为 `c4721f0dbbc741438cac9961efea31d832aa212cf65e34a3f3be82706af55896`。sample94 左脚平足 5 帧、右脚 0 帧（右脚 `NOT_EVALUABLE`）；sample34122 左右平足分别 8/11 帧，最长稳定段为左 `18–21`、右 `82–86`，均按冻结离散 M0 掩码选择。
 - VERIFIED：服务器 v3 专项测试为 `8 passed in 2.64 s`；原服务器工作区只读完整回归为 `246 passed in 51.41 s`。从干净 `805a6a5` 提取树收集旧测试会因服务器脏工作区中的历史兼容模块未随提交归档而导入失败，该问题不属于 v3 代码；完整回归已在原工作区完成。
-- NEGATIVE_RESULT/STOP：sample34122、seed0、+10° 的 v3.1 左右窗口均在名义信赖域 30°/5 cm 内 `INFEASIBLE_WITHIN_BUDGET`；固定延续路径 `+2°→+5°→+10°` 后接触位置 RMS 分别约 `4.481 mm`（左）与 `4.513 mm`（右），超过 1 mm 接触门，故运行记录 `attempt_10/run_record.json` 状态为 `STOP_V3_2`、`v3_2_allowed=false`。脚本已强制 v3.2 检查该门，当前尝试会明确拒绝，不生成冒充成功的候选。
+- NEGATIVE_RESULT/STOP：sample34122、seed0、+10° 的 v3.1 左右窗口由当前求解器报告为 `INFEASIBLE_WITHIN_BUDGET`；接触位置 RMS 分别约 `4.481 mm`（左）与 `4.513 mm`（右），超过 1 mm 接触门，故运行记录 `attempt_10/run_record.json` 状态为 `STOP_V3_2`、`v3_2_allowed=false`。脚本已强制 v3.2 检查该门，当前尝试会明确拒绝，不生成冒充成功的候选。
+- AUDIT/ISSUE：视频与代码复核后，不能把上述结果解释为“冻结协议下已证明几何不可达”。当前实现仅在前一剂量可行时才传递初始化，因此 `+2°` 失败后 `+5°/+10°` 实际从零开始；三个阶段会重置增广拉格朗日乘子，也没有把前级约束冻结为可行集；信赖域按轴分量钳位而非旋转/平移范数投影，最佳候选根平移范数最大为左 `5.042 cm`、右 `5.028 cm`，略超名义 5 cm。现有负结果只证明“当前求解器及预算未通过”，修复这些协议一致性问题后必须重跑 v3.1。
+- AUDIT/VISUAL：左窗口最佳不可行候选的骨盆剂量精确为 `+10°`，躯干方向 P95 `0.693°`、水平朝向 P95 `0.020°`、`q_rigid=0.045`，但共同 M0 相机下仍出现明显整体前倾观感。当前躯干门只检查 spine1→neck 单轴，未评价重心投影、支撑多边形、头胸姿态或整体轮廓倾斜；因此“躯干门通过”不能等价为“人体视觉上保持直立”。
 - VERIFIED：动态运行树为 `/root/autodl-tmp/vimogen_pelvis_contact_v3`，模型/数据仅通过只读链接复用；运行记录包含协议哈希、足底贴片哈希、模型哈希和源提交 `d4983d4c574a3a84adc5c963457a82cd773a308f`。失败尝试目录保留，未覆盖；v3.2 因 v3.1 停止门未执行。
 - DIAGNOSTIC：为审查窗口内的几何变化，在不改变正式评价结论的前提下渲染了 sample34122 左脚窗口（帧 14–25）的 M0 与 `+10°` 最佳不可行候选对照视频；远端运行目录为 `/root/autodl-tmp/vimogen_pelvis_contact_v3_results/render_diagnostic_left_attempt10_fix1/`，本地 MP4 位于 `results/phase8/pelvis_contact_compensation_v3/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_10/videos/v3_1_sample34122_left_window_M0_vs_best_infeasible.mp4`。渲染器修复了逐帧相机矩阵的误索引，提交为 `e3f0396`；该视频是诊断产物，不计为 v3.2 成功。
-- DECISION：本轮停止在 v3.1 可达性否决点，不训练残差适配器，不进入 v3.3/v3.4、采样中投影或物理模块。若要继续，需先针对左右窗口的具体足底位置冲突另立诊断/算法变更并重新冻结协议，不能修改当前 v3 阈值后宣称通过。
+- DECISION：v3.2 继续保持停止，不训练残差适配器，不进入 v3.3/v3.4、采样中投影或物理模块。下一步先修复 v3.1 求解器对固定延续、分层约束和范数信赖域的实现一致性，并在不改协议定义/阈值的条件下重跑左右窗口；若仍不可行，再把结果解释为更可信的几何冲突证据。新增重心/支撑指标先作为诊断，若要升级为正式门必须另行版本化冻结。
 
 ## 2026-09-01：根—躯干相对角 v2.1 单例验证完成
 
