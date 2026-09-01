@@ -135,7 +135,27 @@ class PelvisContactCompensationSolver:
     def _model(self, body: torch.Tensor, root: torch.Tensor, translation: torch.Tensor) -> Any:
         body_aa = mat3x3_to_axis_angle(body).reshape(self.frames, 63)
         root_aa = mat3x3_to_axis_angle(root).reshape(self.frames, 3)
-        return self.model(body_pose=body_aa, global_orient=root_aa, transl=translation, return_verts=True)
+        # SMPL-X stores default hands/face/shape at the constructor batch
+        # size.  Explicitly broadcast the frozen streams to this sequence's
+        # length so window solves (which are shorter than the full batch) do
+        # not mix a 13-frame pose with a 100-frame default expression.
+        def zeros_like_parameter(name: str) -> torch.Tensor:
+            value = getattr(self.model, name)
+            return torch.zeros((self.frames, value.shape[-1]), device=self.device, dtype=body_aa.dtype)
+
+        return self.model(
+            body_pose=body_aa,
+            global_orient=root_aa,
+            transl=translation,
+            betas=zeros_like_parameter("betas"),
+            expression=zeros_like_parameter("expression"),
+            left_hand_pose=zeros_like_parameter("left_hand_pose"),
+            right_hand_pose=zeros_like_parameter("right_hand_pose"),
+            jaw_pose=zeros_like_parameter("jaw_pose"),
+            leye_pose=zeros_like_parameter("leye_pose"),
+            reye_pose=zeros_like_parameter("reye_pose"),
+            return_verts=True,
+        )
 
     def _state(self) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         body = self.base_body.clone()
