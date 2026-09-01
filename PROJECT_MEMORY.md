@@ -1,5 +1,15 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-01：骨盆接触补偿 v3.0–v3.2 已实现并在 v3.1 停止
+
+- IMPLEMENTED：从提交 `805a6a5` 建立独立工作树与分支 `codex/pelvis-contact-compensation-v3`，远端最新提交为 `d4983d4`。新增 `evaluation/pelvis_contact_compensation_v3.py`、`sampling/pelvis_contact_compensation_v3.py`、协议冻结/运行/评价/渲染脚本及专项测试；ViMoGen 与 v1.3/v2.1 代码未覆盖。
+- FROZEN：协议名为 `vimogen_pelvis_contact_compensation_v3`，结果根目录为 `results/phase8/pelvis_contact_compensation_v3/`。正剂量采用 `delta=M0_pitch-candidate_pitch`；目标根旋转为 `Rot(M0_right,-delta)@R0`；接触阈值为高度 25 mm、速度 30 mm/帧、平足高差 20 mm，首帧速度无效，最小证据 3 帧/连续帧对。足底贴片使用中性 SMPL-X 网格并写入哈希。
+- VERIFIED：服务器冻结协议位于 `/root/autodl-tmp/vimogen_pelvis_contact_v3_results/protocol_v3_0_final/`。sample94 左脚平足 5 帧、右脚 0 帧（右脚 `NOT_EVALUABLE`）；sample34122 左右平足分别 8/11 帧，最长稳定段为左 `18–21`、右 `82–86`，均按冻结离散 M0 掩码选择。
+- VERIFIED：服务器 v3 专项测试为 `8 passed in 2.64 s`；原服务器工作区只读完整回归为 `246 passed in 51.41 s`。从干净 `805a6a5` 提取树收集旧测试会因服务器脏工作区中的历史兼容模块未随提交归档而导入失败，该问题不属于 v3 代码；完整回归已在原工作区完成。
+- NEGATIVE_RESULT/STOP：sample34122、seed0、+10° 的 v3.1 左右窗口均在名义信赖域 30°/5 cm 内 `INFEASIBLE_WITHIN_BUDGET`；固定延续路径 `+2°→+5°→+10°` 后接触位置 RMS 分别约 `4.481 mm`（左）与 `4.513 mm`（右），超过 1 mm 接触门，故运行记录 `attempt_07/run_record.json` 状态为 `STOP_V3_2`、`v3_2_allowed=false`。脚本已强制 v3.2 检查该门，当前尝试会明确拒绝，不生成冒充成功的候选。
+- VERIFIED：动态运行树为 `/root/autodl-tmp/vimogen_pelvis_contact_v3`，模型/数据仅通过只读链接复用；运行记录包含协议哈希、足底贴片哈希、模型哈希和源提交 `d4983d4c574a3a84adc5c963457a82cd773a308f`。失败尝试目录保留，未覆盖；v3.2 与视频渲染因 v3.1 停止门未执行。
+- DECISION：本轮停止在 v3.1 可达性否决点，不训练残差适配器，不进入 v3.3/v3.4、采样中投影或物理模块。若要继续，需先针对左右窗口的具体足底位置冲突另立诊断/算法变更并重新冻结协议，不能修改当前 v3 阈值后宣称通过。
+
 ## 2026-09-01：根—躯干相对角 v2.1 单例验证完成
 
 - VERIFIED：已从冻结的 `codex/relative-root-forward-v2` 切出 `codex/relative-root-trunk-v2-1`。v2 的代码和历史产物保持冻结；本分支最终对 `sampling/relative_root_forward_guidance_v2.py` 无差异。v2.1 新增独立几何、配对自然性评价、源噪声优化器、服务器运行器、最终评价器、视频渲染器和测试。
