@@ -2,7 +2,7 @@
 
 ## 2026-09-01：骨盆接触补偿 v3.0–v3.2 已实现并在 v3.1 停止
 
-- IMPLEMENTED：从提交 `805a6a5` 建立独立工作树与分支 `codex/pelvis-contact-compensation-v3`，远端最新提交为 `b9de41c`。新增 `evaluation/pelvis_contact_compensation_v3.py`、`sampling/pelvis_contact_compensation_v3.py`、协议冻结/运行/评价/渲染脚本及专项测试；ViMoGen 与 v1.3/v2.1 代码未覆盖。
+- IMPLEMENTED：从提交 `805a6a5` 建立独立工作树与分支 `codex/pelvis-contact-compensation-v3`，远端最新提交为 `1016921`。新增 `evaluation/pelvis_contact_compensation_v3.py`、`sampling/pelvis_contact_compensation_v3.py`、协议冻结/运行/评价/渲染脚本及专项测试；ViMoGen 与 v1.3/v2.1 代码未覆盖。
 - FROZEN：协议名为 `vimogen_pelvis_contact_compensation_v3`，结果根目录为 `results/phase8/pelvis_contact_compensation_v3/`。正剂量采用 `delta=M0_pitch-candidate_pitch`；目标根旋转为 `Rot(M0_right,-delta)@R0`；接触阈值为高度 25 mm、速度 30 mm/帧、平足高差 20 mm，首帧速度无效，最小证据 3 帧/连续帧对。足底贴片使用中性 SMPL-X 网格并写入哈希。
 - VERIFIED：服务器冻结协议位于 `/root/autodl-tmp/vimogen_pelvis_contact_v3_results/protocol_v3_0_hashed2/`，协议 SHA256 为 `a0b9efce1a9e1b7ee1d57404ee102e9c996b00ea4a92367843e6999b7bf290b5`，SMPL-X 模型目录 SHA256 为 `c4721f0dbbc741438cac9961efea31d832aa212cf65e34a3f3be82706af55896`。sample94 左脚平足 5 帧、右脚 0 帧（右脚 `NOT_EVALUABLE`）；sample34122 左右平足分别 8/11 帧，最长稳定段为左 `18–21`、右 `82–86`，均按冻结离散 M0 掩码选择。
 - VERIFIED：服务器 v3 专项测试为 `8 passed in 2.64 s`；原服务器工作区只读完整回归为 `246 passed in 51.41 s`。从干净 `805a6a5` 提取树收集旧测试会因服务器脏工作区中的历史兼容模块未随提交归档而导入失败，该问题不属于 v3 代码；完整回归已在原工作区完成。
