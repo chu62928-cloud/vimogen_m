@@ -4,13 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 from pathlib import Path
 import sys
 
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
 import cv2
 import numpy as np
 import torch
+import trimesh
 import pyrender
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -21,9 +25,51 @@ from evaluation.pelvis_contact_compensation_v3 import pelvis_pitch_delta_deg
 from evaluation.relative_root_trunk_v2_1 import direct_joints_from_motion, direct_smpl_parameters
 from motion_rep.smplx_utils import default_smpl_model_path
 from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe
-from scripts.render_absolute_mean_triptych import estimate_motion_heading, fixed_sagittal_side_camera
-from scripts.render_relative_root_forward_v2_single_mesh import _draw_direction_overlay, _render_panel
-from scripts.render_relative_root_forward_v1_1 import _panel_vectors, _root_geometry
+def estimate_motion_heading(joints: torch.Tensor, min_displacement: float = 1e-4) -> torch.Tensor:
+    if joints.ndim != 3 or joints.shape[-1] != 3 or joints.shape[1] < 1:
+        raise ValueError("joints must have shape [T,J,3]")
+    displacement = joints[-1, 0, :2] - joints[0, 0, :2]
+    norm = torch.linalg.vector_norm(displacement)
+    if float(norm) < min_displacement:
+        return torch.tensor([0.0, 1.0, 0.0], dtype=joints.dtype, device=joints.device)
+    return torch.nn.functional.pad(displacement / norm, (0, 1))
+
+
+def fixed_sagittal_side_camera(joints: torch.Tensor, *, motion_heading: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    roots = joints[:, 0]
+    heading = motion_heading.to(device=joints.device, dtype=joints.dtype)
+    heading = heading / torch.linalg.vector_norm(heading).clamp_min(1e-8)
+    up = torch.tensor([0.0, 0.0, 1.0], dtype=joints.dtype, device=joints.device)
+    camera_x = -heading
+    camera_z = torch.linalg.cross(camera_x, up)
+    R_one = torch.stack((camera_x, up, camera_z), dim=1)
+    root_min, root_max = roots.amin(dim=0), roots.amax(dim=0)
+    root_move = root_max - root_min
+    root_depth = torch.matmul(roots, camera_z)
+    depth_offset = 2.5 - root_depth.amin() + 0.5 * torch.linalg.vector_norm(root_move)
+    T_one = torch.zeros(3, dtype=joints.dtype, device=joints.device)
+    root_center = 0.5 * (root_min + root_max)
+    T_one[0] = torch.dot(root_center, heading)
+    T_one[1] = -roots[0, 2]
+    T_one[2] = depth_offset
+    return R_one[None].repeat(joints.shape[0], 1, 1), T_one[None].repeat(joints.shape[0], 1)
+
+
+def _render_panel(vertices: np.ndarray, faces: np.ndarray, camera_r: np.ndarray, camera_t: np.ndarray, frame: int, renderer: pyrender.OffscreenRenderer, material: pyrender.MetallicRoughnessMaterial) -> np.ndarray:
+    camera_points = vertices[frame] @ camera_r[frame] + camera_t[frame]
+    mesh_points = np.stack((-camera_points[:, 0], camera_points[:, 1], -camera_points[:, 2]), axis=-1)
+    tri = trimesh.Trimesh(vertices=mesh_points, faces=faces, process=False)
+    scene = pyrender.Scene(bg_color=np.array([245, 245, 245, 255], dtype=np.uint8), ambient_light=np.array([0.35, 0.35, 0.35]))
+    focal = 0.85 * max(PANEL_WIDTH, PANEL_HEIGHT)
+    camera = pyrender.IntrinsicsCamera(fx=focal, fy=focal, cx=PANEL_WIDTH / 2.0, cy=PANEL_HEIGHT / 2.0, znear=0.01, zfar=100.0)
+    scene.add(camera, pose=np.eye(4, dtype=np.float32))
+    scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=3.0), pose=np.eye(4, dtype=np.float32))
+    light_pose = np.eye(4, dtype=np.float32)
+    light_pose[:3, :3] = np.array([[0.82, 0.0, 0.57], [0.0, 1.0, 0.0], [-0.57, 0.0, 0.82]], dtype=np.float32)
+    scene.add(pyrender.DirectionalLight(color=np.ones(3), intensity=2.0), pose=light_pose)
+    scene.add(pyrender.Mesh.from_trimesh(tri, material=material, smooth=False))
+    color, _ = renderer.render(scene, flags=pyrender.RenderFlags.RGBA | pyrender.RenderFlags.SKIP_CULL_FACES)
+    return cv2.cvtColor(color[:, :, :3], cv2.COLOR_RGB2BGR)
 
 
 WIDTH, HEIGHT, FPS = 1280, 1080, 20
@@ -103,7 +149,6 @@ def main() -> None:
     foot = _encoder(foot_path)
     renderer = pyrender.OffscreenRenderer(PANEL_WIDTH, PANEL_HEIGHT)
     dose_curve = pelvis_pitch_delta_deg(roots["M0"], roots["candidate"]).numpy()
-    target_vectors = _panel_vectors(joints["M0"], roots["M0"], _root_geometry(roots["M0"])[0], camera_r, camera_t)
     try:
         for frame in range(m0.shape[0]):
             panels = []
