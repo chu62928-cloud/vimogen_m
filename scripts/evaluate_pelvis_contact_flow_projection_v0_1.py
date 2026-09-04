@@ -159,6 +159,11 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     projection_log = json.loads(
         (run_root / "projection_artifacts" / "batch_000" / "sampling_projection_log.json").read_text(encoding="utf-8")
     )
+    projection_case = projection_log.get("case", {})
+    if not projection_case:
+        records = projection_log.get("records", [])
+        if records and isinstance(records[0], dict):
+            projection_case = records[0].get("case", {})
     result = {
         "protocol": run_record["protocol"],
         "sample_id": "34122",
@@ -176,7 +181,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
             ),
             "replay_full_max_abs": float((replay_m0 - m0).abs().max().item()),
             "status": str(
-                projection_log.get("case", {}).get("m0_match_status", "UNKNOWN")
+                projection_case.get("m0_match_status", "UNKNOWN")
             ),
         },
         "primary_control": {

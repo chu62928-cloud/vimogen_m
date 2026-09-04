@@ -1,5 +1,15 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-04：Pelvis-Contact Sampling Projection v0.1 首轮停止
+
+- BRANCH：独立工作树 `vimogen0809_pelvis_contact_flow_projection_v0_1`、分支 `codex/pelvis-contact-flow-projection-v0-1`；最新实现提交为 `dc65560`（其前包含 M0 边界、FP32 投影、终端投影和评价器修复提交）。旧 v1.3、v2/v2.1、v3/v3.0.1 结果目录未覆盖。
+- IMPLEMENTED：新增 `sampling/pelvis_contact_flow_projection_v0_1.py`、采样器/训练入口接入、运行器、评价器和专项测试。投影限制在根平移/根旋转、spine1–3、双侧髋膝踝脚；使用冻结接触贴片、active equality approximation、两种 metric、5°/10 mm 信赖域、最多 5 次重线性化、固定回溯和最终权威重建。
+- VERIFIED：服务器专项测试与采样器、v1.3、冻结 v3 边界兼容回归合计 `36 passed`；本地 Python 静态编译、`git diff --check` 通过。SMPL-X 端点 FP32 冒烟曾以 1 次重线性化收敛，条件数约 `215.6`，heel/toe 约 `0.05 mm`。
+- RUN：服务器运行目录 `/root/autodl-tmp/vimogen_clean/results/phase8/pelvis_contact_flow_projection_v0_1/pilot_sample34122/left/kinematic_temporal/dose_+2deg/attempt_08/`，耗时约 `79.3 s`。冻结输入快照、M0、投影端点、严格 JSON 和评价结果均保留；更早的失败 attempt_01/02/03/05/06 未覆盖。
+- AUDIT：当前服务器采样器重放与冻结 v3.0.1 M0 直接通道最大差约 `0.1583`；严格模式会拒绝。本次运行显式使用 `allow_m0_mismatch=true` 的探索分支，投影锚定当前重放 M0，冻结 M0 另作对照并记录 `MISMATCH_ALLOWED`，因此不能称为严格复现。
+- RESULT：左窗口 `14–25`、+2°、kinematic+temporal 相对当前重放 M0 的剂量均值 `1.780°`、MAE `0.373°`、P95 `0.765°`，剂量门通过；窗口接触门失败，左足滑动 P95 约 `41.1 mm/帧`、离地 P95 约 `20.4 mm`，穿地 P95 为 `0`。严格状态 `PRIMARY_FAIL_OR_NOT_EVALUABLE`。
+- DECISION：按计划首轮失败即停止，不继续右窗口、Euclidean 对照、+5/+10° 或视频扩展；该负结果不能解释为几何不可达。后续若继续，应先建立与冻结 M0 完全一致的采样器/批路径，再重新执行首轮。
+
 ## 2026-09-04：ProjFlow-inspired v0.1 实现与真实 SMPL-X 端点冒烟完成
 
 - IMPLEMENTED：在独立工作树 `vimogen0809_pelvis_contact_flow_projection_v0_1`、分支 `codex/pelvis-contact-flow-projection-v0-1` 中新增 `sampling/pelvis_contact_flow_projection_v0_1.py`、服务器运行器、离线评价器和专项测试。新协议只修改根平移、根旋转、spine1–3、双侧髋/膝/踝/脚的权威直接姿态；每次接受更新后重新做 SMPL-X/FK 与 276D 表示重建。
