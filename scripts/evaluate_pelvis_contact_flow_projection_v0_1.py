@@ -97,9 +97,23 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         use_pca=False,
     ).to(device)
     m0_vertices = _vertices(model, m0, torch.device(device))
+    replay_m0_vertices = _vertices(model, replay_m0, torch.device(device))
     candidate_vertices = _vertices(model, candidate, torch.device(device))
     patches = json.loads((protocol_root / "foot_patches.json").read_text(encoding="utf-8"))
+    # For whole-sequence contact/regression metrics, pair against the actual
+    # replayed M0 so numerical drift outside the edited window does not look
+    # like a projection-induced regression.  The frozen M0 remains the
+    # authoritative target for the window dose and is also reported below.
     paired = evaluate_v3_pair(
+        replay_m0,
+        candidate,
+        valid,
+        target_delta_deg=target,
+        m0_vertices=replay_m0_vertices,
+        candidate_vertices=candidate_vertices,
+        patches=patches,
+    )
+    paired_frozen = evaluate_v3_pair(
         m0,
         candidate,
         valid,
@@ -151,6 +165,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         },
         "contact": foot,
         "full_sequence_evaluation": paired,
+        "frozen_baseline_evaluation": paired_frozen,
         "projection": projection_log,
         "interpretation": (
             "PRIMARY_PASS_WINDOW_CONTROL_AND_NO_CONTACT_REGRESSION"
