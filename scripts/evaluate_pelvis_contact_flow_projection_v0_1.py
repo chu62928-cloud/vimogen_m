@@ -104,8 +104,10 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         candidate,
         valid,
         target_delta_deg=target,
-        m0_vertices=m0_vertices.unsqueeze(0),
-        candidate_vertices=candidate_vertices.unsqueeze(0),
+        # The v3 evaluator consumes the per-sequence [T,V,3] mesh while
+        # motion tensors remain batched [B,T,276].
+        m0_vertices=m0_vertices,
+        candidate_vertices=candidate_vertices,
         patches=patches,
     )
     window = case["sides"][side]["stable_window"]
