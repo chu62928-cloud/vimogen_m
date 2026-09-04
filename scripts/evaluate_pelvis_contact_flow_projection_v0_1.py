@@ -55,6 +55,12 @@ def _paired_status(candidate: dict[str, Any], baseline: dict[str, Any]) -> str:
     return "PASS"
 
 
+def m0_pairing_eligible(status: str) -> bool:
+    """Only the strict replay status can unlock a formal result."""
+
+    return str(status) == "PASS"
+
+
 def _frozen_window_foot(
     m0_vertices: torch.Tensor,
     candidate_vertices: torch.Tensor,
@@ -88,8 +94,8 @@ def _frozen_window_foot(
         frame_mask = torch.zeros(m0_vertices.shape[0], dtype=torch.bool)
         frame_mask[window_start:window_end] = True
         pair_mask = torch.zeros(max(m0_vertices.shape[0] - 1, 0), dtype=torch.bool)
-        pair_start = max(0, context_start - 1)
-        pair_end = min(m0_vertices.shape[0] - 1, context_end - 1)
+        pair_start = max(0, context_start)
+        pair_end = min(m0_vertices.shape[0] - 1, context_end)
         if pair_end > pair_start:
             pair_mask[pair_start:pair_end] = True
         pair_mask &= pairs
@@ -220,10 +226,9 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     replay_m0_vertices = _vertices(model, replay_m0, torch.device(device))
     candidate_vertices = _vertices(model, candidate, torch.device(device))
     patches = json.loads((protocol_root / "foot_patches.json").read_text(encoding="utf-8"))
-    # For whole-sequence contact/regression metrics, pair against the actual
-    # replayed M0 so numerical drift outside the edited window does not look
-    # like a projection-induced regression.  The frozen M0 remains the
-    # authoritative target for the window dose and is also reported below.
+    # Keep replay-paired diagnostics to expose numerical drift, while the
+    # temporal protocol's primary window evaluation below uses the frozen M0
+    # and its frozen evidence exactly as required by v0.2.
     paired = evaluate_v3_pair(
         replay_m0,
         candidate,
@@ -286,7 +291,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     projection_config = resolved_config.get("pelvis_contact_projection", {})
     if is_temporal:
         frozen_feet = _frozen_window_foot(
-            replay_m0_vertices,
+            m0_vertices,
             candidate_vertices,
             patches,
             case["sides"],
@@ -302,10 +307,11 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         frozen_feet = None
         foot = paired_window["feet"].get(side, {})
     contact_status = foot.get("status", "NOT_EVALUABLE")
+    primary_angle = frozen_window_angle if is_temporal else window_angle
     primary_pass = bool(
-        window_angle["pass"]
+        primary_angle["pass"]
         and contact_status == "PASS"
-        and pairing_status == "PASS"
+        and m0_pairing_eligible(pairing_status)
         and paired["finite_values"]
         and foot.get("candidate", {}).get("penetration_m", {}).get("p95") is not None
     )
@@ -345,7 +351,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
             if primary_pass
             else (
                 "INELIGIBLE_M0_MISMATCH"
-                if pairing_status != "PASS"
+                if not m0_pairing_eligible(pairing_status)
                 else "PRIMARY_FAIL_OR_NOT_EVALUABLE"
             )
         ),

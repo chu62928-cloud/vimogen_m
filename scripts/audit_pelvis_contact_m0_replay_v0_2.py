@@ -6,10 +6,15 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
 import torch
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from motion_rep.phase1 import MOTION_LAYOUT
 from motion_rep.pose_authority import authority_project
@@ -22,6 +27,22 @@ def sha256_path(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def sha256_tensor_row(path: Path, row_index: int) -> tuple[str, list[int], str]:
+    """Hash one sample row, independent of the replay batch size."""
+
+    tensor = torch.load(path, map_location="cpu", weights_only=True)
+    if not isinstance(tensor, torch.Tensor) or tensor.ndim < 1:
+        raise ValueError(f"invalid tensor artifact in {path}")
+    if not 0 <= row_index < tensor.shape[0]:
+        raise ValueError(f"row {row_index} is outside {path}")
+    row = tensor[row_index].detach().cpu().contiguous()
+    digest = hashlib.sha256()
+    digest.update(str(row.dtype).encode("ascii"))
+    digest.update(json.dumps(list(row.shape), separators=(",", ":")).encode("ascii"))
+    digest.update(row.numpy().tobytes(order="C"))
+    return digest.hexdigest(), list(row.shape), str(row.dtype)
 
 
 def _direct_max(candidate: torch.Tensor, frozen: torch.Tensor, valid: torch.Tensor) -> float:
@@ -103,11 +124,36 @@ def audit(
                 "authority_full_max_abs": float((authoritative - frozen).abs()[valid].max().item()),
             }
         z0 = run_root / "m0_artifacts" / "batch_000" / "z0_replayed.pt"
+        snapshot_path = run_root / "input_snapshot.json"
+        snapshot = (
+            json.loads(snapshot_path.read_text(encoding="utf-8"))
+            if snapshot_path.is_file()
+            else {}
+        )
+        z0_row_hash = z0_shape = z0_dtype = None
+        if z0.is_file():
+            z0_row_hash, z0_shape, z0_dtype = sha256_tensor_row(z0, row_index)
         record = {
             "label": label,
             "run_root": str(run_root),
             "sample_index": row_index,
             "z0_sha256": sha256_path(z0) if z0.is_file() else None,
+            "z0_row_sha256": z0_row_hash,
+            "z0_row_shape": z0_shape,
+            "z0_row_dtype": z0_dtype,
+            "input_snapshot": str(snapshot_path) if snapshot else None,
+            "input_snapshot_fingerprint": {
+                key: snapshot.get(key)
+                for key in (
+                    "vimogen_checkpoint",
+                    "smplx_model",
+                    "frozen_v3_protocol",
+                    "manifest",
+                    "sampling_schedule",
+                    "guidance_step_mask",
+                )
+                if key in snapshot
+            },
             "stages": stage_rows,
         }
         official = stage_rows.get("official_pre_cast")
@@ -118,13 +164,43 @@ def audit(
             else "FAIL"
         )
         records.append(record)
+    fingerprints = [
+        record["input_snapshot_fingerprint"]
+        for record in records
+        if record["input_snapshot_fingerprint"]
+    ]
+    fingerprint_keys = (
+        "vimogen_checkpoint",
+        "smplx_model",
+        "frozen_v3_protocol",
+        "manifest",
+        "sampling_schedule",
+        "guidance_step_mask",
+    )
+    metadata_consistent = bool(fingerprints) and all(
+        all(item.get(key) == fingerprints[0].get(key) for item in fingerprints)
+        for key in fingerprint_keys
+    )
+    row_hashes = [record["z0_row_sha256"] for record in records]
+    sample_noise_consistent = bool(row_hashes) and len(set(row_hashes)) == 1
     result = {
         "protocol": "vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact",
         "frozen_protocol": str(frozen_protocol),
         "frozen_sample_index": sample_index,
         "threshold_direct_max_abs": threshold,
+        "input_consistency": {
+            "sample_noise_row_hash_equal": sample_noise_consistent,
+            "checkpoint_mean_std_schedule_equal": metadata_consistent,
+        },
         "records": records,
-        "status": "PASS" if records and all(r["status"] == "PASS" for r in records) else "FAIL",
+        "status": (
+            "PASS"
+            if records
+            and metadata_consistent
+            and sample_noise_consistent
+            and all(r["status"] == "PASS" for r in records)
+            else "FAIL"
+        ),
     }
     write_strict_json(output, result)
     return result
@@ -147,4 +223,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

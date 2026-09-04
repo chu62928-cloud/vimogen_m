@@ -59,6 +59,29 @@ ROTATION_NAMES = ("root",) + ACTIVE_JOINT_NAMES
 VARIABLES_PER_FRAME = 3 + 3 * len(ROTATION_NAMES)
 
 
+def temporal_contact_residual(
+    candidate_positions: torch.Tensor,
+    m0_positions: torch.Tensor,
+    pair_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Return 3-D frame-to-frame displacement error on frozen contact pairs."""
+
+    if candidate_positions.shape != m0_positions.shape:
+        raise ValueError("candidate and M0 positions must have identical shapes")
+    if candidate_positions.ndim != 2 or candidate_positions.shape[-1] != 3:
+        raise ValueError("positions must have shape [T,3]")
+    pair_mask = torch.as_tensor(
+        pair_mask, device=candidate_positions.device, dtype=torch.bool
+    )
+    if pair_mask.shape != (max(candidate_positions.shape[0] - 1, 0),):
+        raise ValueError("pair_mask must have length T-1")
+    displacement_error = (
+        candidate_positions[1:] - candidate_positions[:-1]
+        - (m0_positions[1:] - m0_positions[:-1])
+    )
+    return displacement_error[pair_mask]
+
+
 def _broadcast_sigma(value: torch.Tensor | float, reference: torch.Tensor) -> torch.Tensor:
     sigma = torch.as_tensor(value, dtype=reference.dtype, device=reference.device)
     while sigma.ndim < reference.ndim:
@@ -240,6 +263,13 @@ class ProjectorConfig:
     def from_mapping(cls, values: Mapping[str, Any] | None) -> "ProjectorConfig":
         values = dict(values or {})
         defaults = asdict(cls())
+        # v0.1 keeps its historical zero-velocity/zero-halo defaults.  The
+        # temporal-contact protocol has an explicit safe default so a
+        # minimal YAML block cannot silently disable the new constraint.
+        protocol = str(values.get("protocol", defaults["protocol"]))
+        if protocol == TEMPORAL_CONTACT_PROTOCOL:
+            defaults["contact_velocity_weight"] = 1.0e6
+            defaults["boundary_halo_frames"] = 1
         for key in defaults:
             if key in values:
                 defaults[key] = values[key]
@@ -267,6 +297,8 @@ class ProjectionResult:
     active_penetration_constraints: int
     converged: bool
     finite: bool
+    per_iteration_root_translation: list[float]
+    cumulative_root_translation: float
     records: list[dict[str, Any]] = field(default_factory=list)
 
     def diagnostics(self) -> dict[str, Any]:
@@ -803,14 +835,12 @@ class PelvisContactFlowProjector:
                 pair_mask = pair_mask.to(device=heel.device, dtype=torch.bool)
                 if pair_mask.shape != (heel.shape[0] - 1,):
                     raise ValueError("velocity_pairs must match adjacent model frames")
-                heel_velocity = heel[1:] - heel[:-1]
-                toe_velocity = toe[1:] - toe[:-1]
-                heel_velocity_error = (
-                    heel_velocity - (anchors[side]["heel"][1:] - anchors[side]["heel"][:-1])
-                )[pair_mask]
-                toe_velocity_error = (
-                    toe_velocity - (anchors[side]["toe"][1:] - anchors[side]["toe"][:-1])
-                )[pair_mask]
+                heel_velocity_error = temporal_contact_residual(
+                    heel, anchors[side]["heel"], pair_mask
+                )
+                toe_velocity_error = temporal_contact_residual(
+                    toe, anchors[side]["toe"], pair_mask
+                )
                 configured_pair_weights = (
                     None if velocity_pair_weights is None else velocity_pair_weights.get(side)
                 )
@@ -1073,6 +1103,7 @@ class PelvisContactFlowProjector:
         )
         records: list[dict[str, Any]] = []
         total_increment = torch.zeros_like(zero)
+        per_iteration_root_translation: list[float] = []
         previous_violation: float | None = None
         stalled = 0
         converged = False
@@ -1224,6 +1255,12 @@ class PelvisContactFlowProjector:
                 break
             current_body, current_root, current_translation = accepted_state
             total_increment += proposed * float(accepted_alpha)
+            iteration_root_translation = float(
+                torch.linalg.vector_norm(
+                    (proposed * float(accepted_alpha))[:, :3], dim=-1
+                ).max().cpu()
+            )
+            per_iteration_root_translation.append(iteration_root_translation)
             final_summary = accepted_summary
             active_count = int(summary_before["active_penetration_count"] or 0)
             record = {
@@ -1251,6 +1288,10 @@ class PelvisContactFlowProjector:
                 "delta_q_norm": float(torch.linalg.vector_norm(proposed).cpu()),
                 "delta_root_translation": float(
                     torch.linalg.vector_norm(proposed[:, :3], dim=-1).max().cpu()
+                ),
+                "per_iteration_root_translation": iteration_root_translation,
+                "cumulative_root_translation": float(
+                    torch.linalg.vector_norm(total_increment[:, :3], dim=-1).max().cpu()
                 ),
                 "max_joint_increment_deg": float(
                     torch.linalg.vector_norm(
@@ -1342,6 +1383,10 @@ class PelvisContactFlowProjector:
             ),
             delta_q_norm=float(torch.linalg.vector_norm(total_increment).cpu()),
             delta_root_translation_norm=float(
+                torch.linalg.vector_norm(total_increment[:, :3], dim=-1).max().cpu()
+            ),
+            per_iteration_root_translation=per_iteration_root_translation,
+            cumulative_root_translation=float(
                 torch.linalg.vector_norm(total_increment[:, :3], dim=-1).max().cpu()
             ),
             num_relinearization_iters=len(records),
@@ -1538,5 +1583,6 @@ __all__ = [
     "so3_exp",
     "so3_log",
     "solve_local_projection",
+    "temporal_contact_residual",
     "write_strict_json",
 ]

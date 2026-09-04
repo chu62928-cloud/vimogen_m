@@ -36,7 +36,7 @@ DEFAULT_PROTOCOL_ROOT = Path(
     "protocol_v3_0_1_final"
 )
 DEFAULT_NOISE_CACHE = ROOT / "results/phase6/absolute_mean_pelvis_v2/noise_cache"
-DEFAULT_OUTPUT = ROOT / "results/phase8/pelvis_contact_flow_projection_v0_1"
+DEFAULT_OUTPUT = ROOT / "results/phase8/pelvis_contact_flow_projection_v0_2"
 
 
 def sha256_path(path: Path) -> str:
@@ -144,6 +144,22 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
     config.absolute_mean_pelvis = {"enabled": False}
     config.relative_root_forward = {"enabled": False}
     config.source_noise = {"enabled": False}
+    contact_velocity_weight = (
+        1.0e6
+        if args.contact_velocity_weight is None
+        and args.protocol == TEMPORAL_CONTACT_PROTOCOL
+        else 0.0
+        if args.contact_velocity_weight is None
+        else args.contact_velocity_weight
+    )
+    boundary_halo_frames = (
+        1
+        if args.boundary_halo_frames is None
+        and args.protocol == TEMPORAL_CONTACT_PROTOCOL
+        else 0
+        if args.boundary_halo_frames is None
+        else args.boundary_halo_frames
+    )
     projector = ProjectorConfig(
         protocol=args.protocol,
         metric=args.metric,
@@ -161,10 +177,10 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         penetration_epsilon_m=0.0005,
         max_joint_increment_deg=5.0,
         max_root_translation_m=0.010,
-        contact_velocity_weight=args.contact_velocity_weight,
+        contact_velocity_weight=contact_velocity_weight,
         contact_velocity_tolerance_m_per_frame=args.contact_velocity_tolerance_m_per_frame,
         transition_pair_weight=args.transition_pair_weight,
-        boundary_halo_frames=args.boundary_halo_frames,
+        boundary_halo_frames=boundary_halo_frames,
     )
     projector.validate()
     config.pelvis_contact_projection = {
@@ -218,6 +234,8 @@ def freeze_inputs(
         smplx_path = Path(protocol["inputs"]["smplx_model"]["path"])
     snapshot = {
         "protocol": args.protocol,
+        "allow_m0_mismatch": bool(args.allow_m0_mismatch),
+        "eligibility": "DIAGNOSTIC_INELIGIBLE" if args.allow_m0_mismatch else "FORMAL_CANDIDATE",
         "status": "INPUTS_FROZEN_BEFORE_GENERATION",
         "source_revision": git_value("rev-parse", "HEAD"),
         "source_branch": git_value("branch", "--show-current"),
@@ -254,6 +272,8 @@ def freeze_inputs(
         "projection_window": case["sides"][args.side]["stable_window"],
         "metric": args.metric,
         "target_delta_deg": float(args.target_delta_deg),
+        "allow_m0_mismatch": bool(args.allow_m0_mismatch),
+        "eligible": not bool(args.allow_m0_mismatch),
         "seed": 0,
         "sample_id": "34122",
         "side": args.side,
@@ -263,13 +283,13 @@ def freeze_inputs(
     return snapshot
 
 
-def main() -> None:
+def main(*, default_protocol: str = PROTOCOL_NAME) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metric", choices=(EUCLIDEAN_METRIC, KINEMATIC_TEMPORAL_METRIC), required=True)
     parser.add_argument(
         "--protocol",
         choices=(PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL),
-        default=PROTOCOL_NAME,
+        default=default_protocol,
     )
     parser.add_argument("--side", choices=("left", "right"), required=True)
     parser.add_argument("--target-delta-deg", type=float, choices=(2.0, 5.0, 10.0), required=True)
@@ -282,14 +302,14 @@ def main() -> None:
     parser.add_argument("--lambda-vel", type=float, default=1.0)
     parser.add_argument("--lambda-acc", type=float, default=5.0)
     parser.add_argument("--contact-weight", type=float, default=1.0e6)
-    parser.add_argument("--contact-velocity-weight", type=float, default=0.0)
+    parser.add_argument("--contact-velocity-weight", type=float, default=None)
     parser.add_argument(
         "--contact-velocity-tolerance-m-per-frame",
         type=float,
         default=0.001,
     )
     parser.add_argument("--transition-pair-weight", type=float, default=0.25)
-    parser.add_argument("--boundary-halo-frames", type=int, default=0)
+    parser.add_argument("--boundary-halo-frames", type=int, default=None)
     parser.add_argument("--allow-m0-mismatch", action="store_true")
     parser.add_argument("--m0-only", action="store_true")
     parser.add_argument("--manifest", type=Path, default=None)
@@ -341,7 +361,11 @@ def main() -> None:
         from train_eval_vimogen import main as train_eval_main
 
         train_eval_main(config)
-        record["status"] = "COMPLETED_GENERATION_PENDING_EVALUATION"
+        record["status"] = (
+            "DIAGNOSTIC_INELIGIBLE"
+            if args.allow_m0_mismatch
+            else "COMPLETED_GENERATION_PENDING_EVALUATION"
+        )
     except Exception as exc:
         record["status"] = "FAILED"
         record["error"] = repr(exc)

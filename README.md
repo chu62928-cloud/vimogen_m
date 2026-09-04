@@ -4,6 +4,51 @@
 
 当前主线新增独立协议 `vimogen_absolute_mean_pelvis_v4_anatomical_local`：它在 v3 完整前向运动学和末端安全融合基础上，使用冻结的项目专用 LASI/RASI/LPSI/RPSI 标志，并提供局部骨盆主导与防作弊审计。v3 仍是只读历史基线。
 
+## ViMoGen 骨盆—接触时间一致性投影 v0.2（2026-09-04）
+
+### 本次运行目的
+
+本轮在冻结 v0.1 代码和 `attempt_08` 结果之外建立独立分支，协议为
+`vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact`，结果根目录为
+`results/phase8/pelvis_contact_flow_projection_v0_2/`。目标只有两个：严格复现冻结 v3.0.1 的 M0，并在脚跟/脚尖位置约束上增加冻结连续接触帧对的三维位移约束，降低脚滑和抬脚。本轮不训练 ViMoGen、不优化初始噪声，也不加入重心、躯干或头部投影约束。
+
+### 实验内容与固定条件
+
+固定 sample34122、seed0、50 步、BF16、`sample_v1` 样本级初始噪声、原始双样本清单和冻结 v3.0.1 的 SMPL-X/接触贴片/地面高度。M0 复现门依次要求双样本批大小 2、单样本批大小 1，必要时再用冻结提交 `46a1b04` 重放；正式投影默认 `allow_m0_mismatch=false`。窗口前后各读取 1 帧固定上下文，只有窗口帧可修改。
+
+### 具体实现
+
+- `sampling/pelvis_contact_flow_projection_v0_1.py` 保持 v0.1 接口兼容，并加入 v0.2 时间接触协议、脚跟/脚尖位移残差、平足权重 1.0、一般接触权重 0.25、默认位移权重 `1e6`、1 mm/帧门和冻结上下文列；保留原有信赖域、非线性重线性化、有限值检查和逐分量回溯。
+- `train_eval_vimogen.py` 的正式基线固定为 `official_pre_cast → authority_project → frozen physical M0`，并保存 `raw`、`official_pre_cast`、`official` 及权威重建产物。允许不匹配时运行记录标记为 `DIAGNOSTIC_INELIGIBLE`。
+- 新增 `sampling/pelvis_contact_flow_projection_v0_2.py`、v0.2 运行器、M0 审计入口和冻结接触评价层。评价使用协议冻结的接触掩码、地面高度和窗口边界帧对；`NOT_EVALUABLE` 不计为正式通过。
+
+### 测试与运行命令
+
+静态 Python 编译和 `git diff --check` 已通过。服务器专项回归（v0.1 兼容测试与 v0.2 新增测试）已通过 `21 passed`；本机没有 PyTorch，动态测试必须在服务器执行。正式入口为：
+
+```text
+python scripts/run_pelvis_contact_flow_projection_v0_2.py --metric kinematic_temporal --side left --target-delta-deg 2
+python scripts/audit_pelvis_contact_m0_replay_v0_2.py --frozen-protocol <protocol> --run dual=<run>=1 --run singleton=<run>=0 --output <audit.json>
+python scripts/evaluate_pelvis_contact_flow_projection_v0_1.py --run-root <run> --protocol-root <protocol>
+```
+
+### M0 复现结果与停止状态
+
+当前服务器已完成两次无投影重放：
+
+- 双样本批大小 2：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/dual_batch2/left/kinematic_temporal/dose_+2deg/attempt_01/`；
+- 单样本批大小 1：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/singleton_batch1/left/kinematic_temporal/dose_+2deg/attempt_01/`。
+
+两次重放的 `official_pre_cast → authority_project` 直接姿态最大差均为约 `1.8884e-2`，超过冻结门 `2e-3`；当前代码和批大小不是主要差异来源。审计文件为 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，总体状态为 `FAIL`。服务器连接随后不可用，冻结提交 `46a1b04` 的第三次受控重放尚未执行，因此阶段 A 尚未完成，阶段 B 端点投影和阶段 C–E 正式采样均按停止门未执行。
+
+### 结果说明、不能说明什么
+
+已验证的是：v0.2 的时间接触残差和严格评价边界已实现，当前双样本/单样本重放均能稳定产生可审计的 M0 差异。该差异说明当前环境或算子路径尚未达到冻结 M0 的逐样本复现要求；它不能说明时间投影几何不可行，也不能支持任何 +2°/+5°/+10° 正式效果结论。没有通过 `M0_PAIRING_PASS` 时，任何允许漂移的候选都只能作为诊断，不能算正式结果。
+
+### 停止原因与下一步分流
+
+先恢复服务器连接并使用冻结提交 `46a1b04`、原始双样本配置完成第三次重放；保存逐阶段、逐通道和逐帧差异以及样本级噪声哈希、有效帧掩码、检查点/均值/标准差/采样调度哈希。若第三次仍失败，停止正式采样并将问题归类为环境/算子复现阻塞；若通过，才按冻结端点可行性 → 左侧 +2° → 右侧和消融/高剂量的顺序继续。任何 v0.2.1 躯干安全包络或支撑关系约束都必须另建协议，不能覆盖本轮结果。
+
 主要提交顺序：`a052bd0` 归档保护 → `11e8fe0` 表示/评价基线 → `a2cb7e5` 脚本/测试 → `9bf94af` 解剖几何 → `55bc0d0` v4 引导/评价/标定 → `592cd30` 局部主导安全项 → `7544acc` 占比统计修正 → `65ee191` 视频标记 → `00d5e66` 训练入口 → `5dcd795` 配置边界修正。
 
 ## 存档原则
