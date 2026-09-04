@@ -40,6 +40,12 @@ PELVIS_NECK_P95_DEG = 2.0
 PELVIS_HEAD_P95_DEG = 3.0
 PELVIS_SUPPORT_DRIFT_P95_M = 0.020
 
+# This is deliberately a diagnostic proxy rather than a formal physical
+# centre-of-mass model.  The evaluator does not receive segment densities or
+# inertial parameters, so the geometric centroid of the complete SMPL-X mesh
+# is the reproducible quantity available for comparing M0 and a candidate.
+COM_DIAGNOSTIC_METHOD = "uniform_smplx_vertex_centroid_proxy"
+
 
 def wrap_angle_deg(value: torch.Tensor) -> torch.Tensor:
     return torch.remainder(value + 180.0, 360.0) - 180.0
@@ -186,6 +192,161 @@ def temporal_naturalness_metrics(
     return result
 
 
+def _convex_hull_2d(points: torch.Tensor) -> list[tuple[float, float]]:
+    """Return a deterministic counter-clockwise 2-D convex hull."""
+
+    if points.ndim != 2 or points.shape[-1] != 2:
+        raise ValueError("points must have shape [N,2]")
+    unique = sorted({(float(x), float(y)) for x, y in points.detach().cpu().tolist()})
+    if len(unique) <= 1:
+        return unique
+
+    def cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[tuple[float, float]] = []
+    for point in unique:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], point) <= 1.0e-12:
+            lower.pop()
+        lower.append(point)
+    upper: list[tuple[float, float]] = []
+    for point in reversed(unique):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], point) <= 1.0e-12:
+            upper.pop()
+        upper.append(point)
+    return lower[:-1] + upper[:-1]
+
+
+def _signed_distance_to_hull(point: torch.Tensor, hull: list[tuple[float, float]]) -> float:
+    """Signed distance to a CCW convex polygon (metres; negative is outside)."""
+
+    if len(hull) < 3:
+        return float("nan")
+    px, py = (float(value) for value in point.detach().cpu().tolist())
+    signed_edges: list[float] = []
+    for index, start in enumerate(hull):
+        end = hull[(index + 1) % len(hull)]
+        ex, ey = end[0] - start[0], end[1] - start[1]
+        length = math.hypot(ex, ey)
+        if length <= EPS:
+            continue
+        cross = (ex * (py - start[1]) - ey * (px - start[0])) / length
+        signed_edges.append(cross)
+    if not signed_edges:
+        return float("nan")
+    if min(signed_edges) >= -1.0e-9:
+        return min(signed_edges)
+    return -max(-value for value in signed_edges)
+
+
+def center_of_mass_support_metrics(
+    m0_vertices: torch.Tensor,
+    candidate_vertices: torch.Tensor,
+    valid_mask: torch.Tensor,
+    patches: Mapping[str, Mapping[str, list[int]]],
+) -> dict[str, Any]:
+    """Diagnose COM/support-polygon changes without adding a formal gate.
+
+    The COM is the uniform mesh-vertex centroid because no segment mass model
+    is part of the frozen v3 protocol.  Support polygons are convex hulls of
+    the complete sole patches on the *frozen M0 flat-contact frames*.  The
+    candidate COM is measured both against its moved support and against the
+    frozen M0 support, making global forward lean distinguishable from a foot
+    translation.  All returned quantities are report-only.
+    """
+
+    if m0_vertices.shape != candidate_vertices.shape or m0_vertices.ndim != 3 or m0_vertices.shape[-1] != 3:
+        raise ValueError("vertex tensors must both have shape [T,V,3]")
+    if valid_mask.ndim != 1 or valid_mask.shape[0] != m0_vertices.shape[0] or valid_mask.dtype is not torch.bool:
+        raise ValueError("valid_mask must have shape [T] and bool dtype")
+    if not torch.isfinite(m0_vertices).all() or not torch.isfinite(candidate_vertices).all():
+        raise ValueError("vertex tensors must be finite")
+
+    m0_com = m0_vertices.mean(dim=1)
+    candidate_com = candidate_vertices.mean(dim=1)
+    evidence: dict[str, dict[str, Any]] = {}
+    for side in ("left", "right"):
+        m0_heel, m0_toe = patch_centres(m0_vertices, patches[side])
+        evidence[side] = contact_evidence(m0_heel, m0_toe)
+
+    shifts: list[float] = []
+    m0_margins: list[float] = []
+    candidate_margins: list[float] = []
+    candidate_on_m0_margins: list[float] = []
+    m0_inside = 0
+    candidate_inside = 0
+    candidate_on_m0_inside = 0
+    support_count = 0
+    per_frame: list[dict[str, Any]] = []
+    for frame in range(m0_vertices.shape[0]):
+        if not bool(valid_mask[frame]):
+            continue
+        active = [
+            side for side in ("left", "right")
+            if bool(evidence[side]["valid_masks"]["flat_contact"][frame])
+        ]
+        if not active:
+            continue
+        m0_points = torch.cat(
+            [m0_vertices[frame, torch.as_tensor(patches[side]["sole"], dtype=torch.long, device=m0_vertices.device), :2] for side in active],
+            dim=0,
+        )
+        candidate_points = torch.cat(
+            [candidate_vertices[frame, torch.as_tensor(patches[side]["sole"], dtype=torch.long, device=candidate_vertices.device), :2] for side in active],
+            dim=0,
+        )
+        m0_hull = _convex_hull_2d(m0_points)
+        candidate_hull = _convex_hull_2d(candidate_points)
+        m0_margin = _signed_distance_to_hull(m0_com[frame, :2], m0_hull)
+        candidate_margin = _signed_distance_to_hull(candidate_com[frame, :2], candidate_hull)
+        candidate_on_m0_margin = _signed_distance_to_hull(candidate_com[frame, :2], m0_hull)
+        if not all(math.isfinite(value) for value in (m0_margin, candidate_margin, candidate_on_m0_margin)):
+            continue
+        shifts.append(float(torch.linalg.vector_norm(candidate_com[frame, :2] - m0_com[frame, :2]).item()))
+        m0_margins.append(m0_margin)
+        candidate_margins.append(candidate_margin)
+        candidate_on_m0_margins.append(candidate_on_m0_margin)
+        m0_inside += int(m0_margin >= 0.0)
+        candidate_inside += int(candidate_margin >= 0.0)
+        candidate_on_m0_inside += int(candidate_on_m0_margin >= 0.0)
+        support_count += 1
+        per_frame.append(
+            {
+                "frame": frame,
+                "active_sides": "+".join(active),
+                "com_shift_m": shifts[-1],
+                "m0_support_margin_m": m0_margin,
+                "candidate_support_margin_m": candidate_margin,
+                "candidate_on_m0_support_margin_m": candidate_on_m0_margin,
+                "m0_inside": m0_margin >= 0.0,
+                "candidate_inside": candidate_margin >= 0.0,
+                "candidate_on_m0_inside": candidate_on_m0_margin >= 0.0,
+            }
+        )
+
+    def summary(values: list[float]) -> dict[str, Any]:
+        if not values:
+            return _summary(torch.zeros(0, dtype=m0_vertices.dtype, device=m0_vertices.device))
+        return _summary(torch.as_tensor(values, dtype=m0_vertices.dtype, device=m0_vertices.device))
+
+    return {
+        "method": COM_DIAGNOSTIC_METHOD,
+        "vertical_axis": "z",
+        "horizontal_axes": ["x", "y"],
+        "support_definition": "convex hull of complete sole patches on frozen M0 flat-contact frames",
+        "evidence_count": support_count,
+        "com_horizontal_shift_m": summary(shifts),
+        "m0_support_margin_m": summary(m0_margins),
+        "candidate_support_margin_m": summary(candidate_margins),
+        "candidate_on_m0_support_margin_m": summary(candidate_on_m0_margins),
+        "m0_inside_fraction": None if support_count == 0 else m0_inside / support_count,
+        "candidate_inside_fraction": None if support_count == 0 else candidate_inside / support_count,
+        "candidate_on_m0_inside_fraction": None if support_count == 0 else candidate_on_m0_inside / support_count,
+        "per_frame": per_frame,
+        "diagnostic_only": True,
+    }
+
+
 def whole_body_upright_metrics(
     m0_joints: torch.Tensor,
     candidate_joints: torch.Tensor,
@@ -223,6 +384,19 @@ def whole_body_upright_metrics(
     }
     if m0_vertices is None or candidate_vertices is None or patches is None:
         result["pelvis_support_drift"] = _summary(torch.zeros(0, dtype=m0_joints.dtype))
+        result["com_support"] = {
+            "method": COM_DIAGNOSTIC_METHOD,
+            "diagnostic_only": True,
+            "evidence_count": 0,
+            "com_horizontal_shift_m": _summary(torch.zeros(0, dtype=m0_joints.dtype)),
+            "m0_support_margin_m": _summary(torch.zeros(0, dtype=m0_joints.dtype)),
+            "candidate_support_margin_m": _summary(torch.zeros(0, dtype=m0_joints.dtype)),
+            "candidate_on_m0_support_margin_m": _summary(torch.zeros(0, dtype=m0_joints.dtype)),
+            "m0_inside_fraction": None,
+            "candidate_inside_fraction": None,
+            "candidate_on_m0_inside_fraction": None,
+            "per_frame": [],
+        }
         return result
     if m0_vertices.shape != candidate_vertices.shape or m0_vertices.ndim != 3 or m0_vertices.shape[0] != m0_joints.shape[1]:
         raise ValueError("vertex tensors must both have shape [T,V,3]")
@@ -251,6 +425,9 @@ def whole_body_upright_metrics(
             side_rows[side] = _summary(torch.zeros(0, dtype=m0_vertices.dtype, device=m0_vertices.device))
     result["pelvis_support_drift"] = _summary(torch.cat(values) if values else torch.zeros(0, dtype=m0_vertices.dtype, device=m0_vertices.device))
     result["per_side"] = side_rows
+    result["com_support"] = center_of_mass_support_metrics(
+        m0_vertices, candidate_vertices, valid, patches,
+    )
     return result
 
 
@@ -622,7 +799,7 @@ def evaluate_v3_pair(
 __all__ = [
     "PROTOCOL_NAME", "GEOMETRY_PROTOCOL", "PASS", "FAIL", "NOT_EVALUABLE",
     "CONTACT_HEIGHT_M", "CONTACT_SPEED_M_PER_FRAME", "FLAT_GAP_M", "STABLE_CONFIDENCE",
-    "pelvis_pitch_delta_deg", "target_root_rotation", "m0_sagittal_frame", "whole_body_upright_metrics", "temporal_naturalness_metrics",
+    "pelvis_pitch_delta_deg", "target_root_rotation", "m0_sagittal_frame", "whole_body_upright_metrics", "center_of_mass_support_metrics", "temporal_naturalness_metrics",
     "contact_evidence", "longest_true_run", "select_stable_window", "foot_patches", "patch_hash", "patch_centres",
     "evaluate_paired_foot", "evaluate_v3_pair", "combine_statuses",
 ]

@@ -136,6 +136,27 @@ def _naturalness_rows(result: dict[str, Any], temporal: dict[str, Any]) -> list[
                 "evidence_count": record["count"],
             }
         )
+    com = result["uprightness"].get("com_support", {})
+    for name, unit, record in (
+        ("com_horizontal_shift", "m", com.get("com_horizontal_shift_m", {})),
+        ("candidate_on_m0_support_margin", "m", com.get("candidate_on_m0_support_margin_m", {})),
+        ("candidate_support_margin", "m", com.get("candidate_support_margin_m", {})),
+    ):
+        rows.append(
+            {
+                "group": "com_support_diagnostic",
+                "metric": name,
+                "unit": unit,
+                "m0_mean": 0.0,
+                "m0_p95": 0.0,
+                "candidate_mean": record.get("mean"),
+                "candidate_p95": record.get("p95"),
+                "absolute_delta_mean": record.get("mean"),
+                "absolute_delta_p95": record.get("p95"),
+                "status": "REPORT_ONLY",
+                "evidence_count": com.get("evidence_count", 0),
+            }
+        )
     return rows
 
 
@@ -155,6 +176,7 @@ def main() -> None:
     parser.add_argument("--target-delta-deg", type=float, default=10.0)
     parser.add_argument("--output-dir", type=Path, default=None)
     parser.add_argument("--candidate-path", type=Path, default=None)
+    parser.add_argument("--candidate-label", default=None)
     parser.add_argument("--diagnostic-only", action="store_true")
     parser.add_argument("--model-path", type=Path, default=None)
     parser.add_argument("--device", default="cuda:0")
@@ -204,6 +226,7 @@ def main() -> None:
         result["status"] = "FAIL"
     result["diagnostic_only"] = bool(args.diagnostic_only)
     result["eligible"] = not bool(args.diagnostic_only)
+    candidate_label = args.candidate_label or candidate_path.stem
     temporal = temporal_naturalness_metrics(
         direct_joints_from_motion(m0),
         direct_joints_from_motion(candidate),
@@ -225,6 +248,8 @@ def main() -> None:
     _write_json(output / "gates.json", gate_only)
     explanations = [
         f"# v3 evaluation: sample {args.sample_id}",
+        "",
+        f"Candidate: `{candidate_label}` (`{candidate_path.name}`).",
         "",
         f"Overall status: `{result['status']}`.",
         "",
@@ -256,6 +281,12 @@ def main() -> None:
         writer = csv.DictWriter(handle, fieldnames=list(naturalness_rows[0].keys()))
         writer.writeheader()
         writer.writerows(naturalness_rows)
+    com_rows = result["uprightness"].get("com_support", {}).get("per_frame", [])
+    if com_rows:
+        with (output / "com_support_per_frame.csv").open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(com_rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(com_rows)
     rows = []
     from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe
     from evaluation.pelvis_contact_compensation_v3 import pelvis_pitch_delta_deg
@@ -268,7 +299,7 @@ def main() -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-    summary = {"sample_id": str(args.sample_id), "status": result["status"], "solver_feasible": run_record.get("feasible"), "diagnostic_only": bool(args.diagnostic_only), "eligible": not bool(args.diagnostic_only), "candidate_path": str(candidate_path), "pelvis_pitch_mae_deg": result["angle"]["mae_deg"], "pelvis_pitch_p95_deg": result["angle"]["p95_deg"], "q_rigid": result["q_rigid"], "output_dir": str(output), "run_sha256": _sha256(args.run_root / "run_record.json") if (args.run_root / "run_record.json").is_file() else None}
+    summary = {"sample_id": str(args.sample_id), "status": result["status"], "solver_feasible": run_record.get("feasible"), "diagnostic_only": bool(args.diagnostic_only), "eligible": not bool(args.diagnostic_only), "candidate_label": candidate_label, "candidate_path": str(candidate_path), "pelvis_pitch_mae_deg": result["angle"]["mae_deg"], "pelvis_pitch_p95_deg": result["angle"]["p95_deg"], "q_rigid": result["q_rigid"], "com_support": result["uprightness"].get("com_support"), "output_dir": str(output), "run_sha256": _sha256(args.run_root / "run_record.json") if (args.run_root / "run_record.json").is_file() else None}
     _write_json(output / "paired_summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False))
     if result["status"] == "FAIL":

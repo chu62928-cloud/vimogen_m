@@ -19,6 +19,7 @@ from evaluation.pelvis_contact_compensation_v3 import (
     select_stable_window,
     target_root_rotation,
     temporal_naturalness_metrics,
+    center_of_mass_support_metrics,
     whole_body_upright_metrics,
 )
 from sampling.pelvis_contact_compensation_v3 import project_trust_region
@@ -113,6 +114,23 @@ def test_whole_body_upright_metrics_detect_global_lean() -> None:
     result = whole_body_upright_metrics(joints, candidate, torch.ones((1, 4), dtype=torch.bool))
     assert result["pelvis_neck"]["p95"] == pytest.approx(4.0, abs=0.2)
     assert result["pelvis_head"]["p95"] == pytest.approx(4.0, abs=0.2)
+
+
+def test_com_support_diagnostic_detects_shift_outside_frozen_support() -> None:
+    vertices = torch.zeros((4, 5, 3), dtype=torch.float32)
+    vertices[:, 0, :2] = torch.tensor([-0.10, -0.05])
+    vertices[:, 1, :2] = torch.tensor([0.10, -0.05])
+    vertices[:, 2, :2] = torch.tensor([0.10, 0.05])
+    vertices[:, 3, :2] = torch.tensor([-0.10, 0.05])
+    vertices[:, 4, 2] = 1.0
+    candidate = vertices.clone()
+    candidate[:, 4, 0] = 0.8
+    patches = {"left": {"heel": [0, 1], "toe": [2, 3], "sole": [0, 1, 2, 3]}, "right": {"heel": [0], "toe": [0], "sole": [0]}}
+    result = center_of_mass_support_metrics(vertices, candidate, torch.ones(4, dtype=torch.bool), patches)
+    assert result["diagnostic_only"] is True
+    assert result["evidence_count"] == 3
+    assert result["candidate_on_m0_support_margin_m"]["p95"] < 0.0
+    assert result["candidate_on_m0_inside_fraction"] == pytest.approx(0.0)
 
 
 def test_temporal_naturalness_reports_speed_and_acceleration_against_m0() -> None:

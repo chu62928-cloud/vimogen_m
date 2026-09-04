@@ -43,6 +43,28 @@
 | 骨盆相对支撑漂移 P95 | `0` | `75.73 mm` | FAIL |
 | 水平朝向变化 P95 | `0°` | `0.020°` | PASS |
 
+### 仅根旋转复核与躯干/重心诊断
+
+为确认“接触补偿本身是否造成抖动”，本轮又单独构造了一个仅改变根旋转的候选：保持 M0 的 `body_pose`、根平移和所有派生通道，只按冻结协议构造 `+10°` 根旋转并重新权威化。服务器专项测试为 `14 passed`，候选形状为 `100×276` 且全部有限。
+
+| 指标（sample94，+10°） | M0 | 仅根旋转 | 诊断补偿 | 解释 |
+|---|---:|---:|---:|---|
+| 根速度 P95 | `10.79 mm/帧` | `10.79` | `46.97` | 仅根旋转不增加根部抖动 |
+| 平均关节加速度 P95 | `7.24 mm/帧²` | `7.40` | `81.62` | 额外补偿显著放大抖动 |
+| 左脚足滑均值 / P95 | `23.58 / 29.16` | `24.18 / 28.37` | `53.19 / 107.30` | 仅根旋转基本保持原有水平 |
+| 左脚离地 P95 | `22.52 mm` | `80.17 mm` | `157.62 mm` | 根旋转本身会改变脚底高度 |
+| 左脚穿地 P95 | `0` | `18.72 mm` | `0` | 仅根旋转存在明显穿地 |
+| 躯干方向变化 P95 | `0°` | `10.00°` | `15.68°` | 两者都没有保持躯干直立 |
+| 骨盆-颈部 / 头部变化 P95 | `0° / 0°` | `10.00° / 10.00°` | `14.15° / 14.86°` | 前倾是全身姿态问题 |
+
+重心部分采用完整 SMPL-X 网格顶点几何中心作为可复现的诊断代理，不冒充物理质量模型；支撑区域为冻结 M0 平足接触帧的完整足底贴片凸包。左脚只有 5 个有效稳定帧，右脚没有平足证据，因此该指标只作诊断，不进入正式门：
+
+- M0 重心代理在这 5 帧相对足底支撑多边形的内部比例为 `0%`，说明步行动作不能用“所有帧重心必须落在脚中心”解释。
+- 仅根旋转的重心水平位移 P95 为 `41.2 mm`，相对冻结 M0 支撑的有符号边界距离 P95 为 `−67.3 mm`。
+- 诊断补偿的对应数值为 `91.1 mm` 和 `−107.3 mm`，整体平衡代理反而更差。
+
+因此，当前证据支持：接触补偿增加了抖动，但没有修复身体前倾；接触几何与躯干/全身平衡必须分开处理。重心约束值得加入下一轮，但应先作为稳定支撑帧上的软诊断/软约束，并使用接触置信度渐变，不能直接施加全序列硬约束。
+
 三栏视频依次显示 M0、仅改变根旋转、诊断补偿。固定相机下，诊断补偿在大多数帧仍接近“仅根旋转”，整体前倾没有恢复，同时根平移和时间变化显著放大。这与运行记录一致：能恢复躯干的阶段 2 候选因接触超出 1 mm 而被整体回退。
 
 - [正常速度三栏视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_M0_root_only_compensated.mp4)
@@ -50,6 +72,11 @@
 - [足部局部视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_foot_local.mp4)
 - [自然度对照表](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation/naturalness_comparison.csv)
 - [完整评价说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation/README.md)
+- [仅根旋转评价说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_root_only_com_v2/README.md)
+- [仅根旋转指标](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_root_only_com_v2/metrics.json)
+- [仅根旋转逐帧重心](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_root_only_com_v2/com_support_per_frame.csv)
+- [诊断补偿（含重心指标）](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_compensated_com_v2/metrics.json)
+- [诊断补偿逐帧重心](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_compensated_com_v2/com_support_per_frame.csv)
 
 下一步保持协议和阈值不变，改造阶段 2 为可行性保持线搜索：只接受不破坏接触门的躯干更新，并额外保存“回退前候选”用于四栏诊断。目标是从当前 `1.236 mm` 向 1 mm 内推进，而不是放宽接触阈值。随后先在 sample94 观察步态连续性，再回到 sample34122 完成正式双脚接触验证。
 
