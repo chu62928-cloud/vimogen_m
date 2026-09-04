@@ -127,7 +127,8 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     window = case["sides"][side]["stable_window"]
     window_mask = torch.zeros_like(valid)
     window_mask[:, int(window["window_start"]) : int(window["window_end_exclusive"])] = True
-    window_angle = _window_angle(m0, candidate, window_mask, target)
+    window_angle = _window_angle(replay_m0, candidate, window_mask, target)
+    frozen_window_angle = _window_angle(m0, candidate, window_mask, target)
     foot = paired["feet"].get(side, {})
     contact_status = foot.get("status", "NOT_EVALUABLE")
     primary_pass = bool(
@@ -155,11 +156,14 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
                 (replay_m0[..., MOTION_LAYOUT.body_pose] - m0[..., MOTION_LAYOUT.body_pose]).abs().max().item()
             ),
             "replay_full_max_abs": float((replay_m0 - m0).abs().max().item()),
-            "status": str(projection_log.get("m0_match_status", "UNKNOWN")),
+            "status": str(
+                projection_log.get("case", {}).get("m0_match_status", "UNKNOWN")
+            ),
         },
         "primary_control": {
             "window": window,
             "window_angle": window_angle,
+            "frozen_window_angle": frozen_window_angle,
             "full_sequence_angle": paired["angle"],
             "pass": primary_pass,
         },

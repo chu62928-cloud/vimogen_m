@@ -500,7 +500,7 @@ class PelvisContactFlowProjector:
         row_index = int(case.get("row_index", case.get("source_index", 0)))
         if row_index < 0 or row_index >= frozen_m0.shape[0]:
             raise ValueError("frozen case row_index is outside m0_physical.pt")
-        m0 = frozen_m0[row_index : row_index + 1].to(device)
+        frozen_m0_case = frozen_m0[row_index : row_index + 1].to(device)
         expected_valid = frozen_valid[row_index : row_index + 1].to(device)
         if valid_mask.shape != expected_valid.shape or not torch.equal(
             valid_mask.bool().to(device), expected_valid
@@ -530,6 +530,12 @@ class PelvisContactFlowProjector:
                 "current paired M0 differs from frozen v3.0.1 direct pose: "
                 f"max={direct_max:.6g}"
             )
+        # When the explicit exploratory override is enabled, use the current
+        # replay as the kinematic/contact anchor so the candidate does not
+        # inherit the server replay drift as an artificial foot failure.  The
+        # frozen endpoint and the measured mismatch remain in the audit log;
+        # strict callers still use the frozen endpoint above.
+        m0 = current_m0 if allow_m0_mismatch else frozen_m0_case
         if model_path is None:
             frozen_model_path = protocol.get("inputs", {}).get("smplx_model", {}).get("path")
             if frozen_model_path:
@@ -580,6 +586,7 @@ class PelvisContactFlowProjector:
             "frozen_protocol": str(protocol_root),
             "baseline_direct_max_abs": direct_max,
             "m0_match_status": "PASS" if direct_max <= 2.0e-3 else "MISMATCH_ALLOWED",
+            "projection_baseline": "current_replay" if allow_m0_mismatch else "frozen_v3_0_1",
             "allow_m0_mismatch": bool(allow_m0_mismatch),
         }
         return cls(
