@@ -129,7 +129,19 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     window_mask[:, int(window["window_start"]) : int(window["window_end_exclusive"])] = True
     window_angle = _window_angle(replay_m0, candidate, window_mask, target)
     frozen_window_angle = _window_angle(m0, candidate, window_mask, target)
-    foot = paired["feet"].get(side, {})
+    # The v0.1 actuator is explicitly window-local.  Evaluate the primary
+    # contact gate on that same window; retain the full-sequence paired result
+    # as a separate regression diagnostic.
+    paired_window = evaluate_v3_pair(
+        replay_m0,
+        candidate,
+        window_mask,
+        target_delta_deg=target,
+        m0_vertices=replay_m0_vertices,
+        candidate_vertices=candidate_vertices,
+        patches=patches,
+    )
+    foot = paired_window["feet"].get(side, {})
     contact_status = foot.get("status", "NOT_EVALUABLE")
     primary_pass = bool(
         window_angle["pass"]
@@ -169,6 +181,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         },
         "contact": foot,
         "full_sequence_evaluation": paired,
+        "window_evaluation": paired_window,
         "frozen_baseline_evaluation": paired_frozen,
         "projection": projection_log,
         "interpretation": (
