@@ -78,6 +78,24 @@ def _load_stage(
     return physical, authoritative
 
 
+def _find_valid_mask(
+    run_root: Path, row_index: int, frozen_valid: torch.Tensor
+) -> tuple[bool | None, str | None]:
+    """Compare the archived dataloader mask with the frozen mask when present."""
+
+    for archive_path in sorted(run_root.rglob("mbench_raw_norm_batch.pt")):
+        archive = torch.load(archive_path, map_location="cpu", weights_only=True)
+        archived = archive.get("motion_mask") if isinstance(archive, dict) else None
+        if not isinstance(archived, torch.Tensor) or archived.ndim != 2:
+            continue
+        if not 0 <= row_index < archived.shape[0]:
+            continue
+        return bool(
+            torch.equal(archived[row_index].bool(), frozen_valid)
+        ), str(archive_path)
+    return None, None
+
+
 def audit(
     frozen_protocol: Path,
     runs: list[str],
@@ -135,6 +153,9 @@ def audit(
         z0_row_hash = z0_shape = z0_dtype = None
         if z0.is_file():
             z0_row_hash, z0_shape, z0_dtype = sha256_tensor_row(z0, row_index)
+        valid_mask_equal, valid_mask_path = _find_valid_mask(
+            run_root, row_index, valid_all[sample_index]
+        )
         record = {
             "label": label,
             "run_root": str(run_root),
@@ -143,6 +164,8 @@ def audit(
             "z0_row_sha256": z0_row_hash,
             "z0_row_shape": z0_shape,
             "z0_row_dtype": z0_dtype,
+            "valid_mask_equal": valid_mask_equal,
+            "valid_mask_artifact": valid_mask_path,
             "input_snapshot": str(snapshot_path) if snapshot else None,
             "input_snapshot_fingerprint": {
                 key: snapshot.get(key)
@@ -192,6 +215,12 @@ def audit(
     )
     row_hashes = [record["z0_row_sha256"] for record in records]
     sample_noise_consistent = bool(row_hashes) and len(set(row_hashes)) == 1
+    valid_masks_present = bool(records) and all(
+        record["valid_mask_equal"] is not None for record in records
+    )
+    valid_masks_consistent = valid_masks_present and all(
+        record["valid_mask_equal"] for record in records
+    )
     result = {
         "protocol": "vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact",
         "frozen_protocol": str(frozen_protocol),
@@ -199,6 +228,8 @@ def audit(
         "threshold_direct_max_abs": threshold,
         "input_consistency": {
             "sample_noise_row_hash_equal": sample_noise_consistent,
+            "valid_mask_equal": valid_masks_consistent,
+            "valid_mask_artifacts_present": valid_masks_present,
             "input_fingerprints_complete": metadata_complete,
             "checkpoint_mean_std_schedule_equal": metadata_consistent,
         },
@@ -208,6 +239,7 @@ def audit(
             if records
             and metadata_consistent
             and sample_noise_consistent
+            and valid_masks_consistent
             and all(r["status"] == "PASS" for r in records)
             else "M0_PAIRING_FAIL"
         ),
