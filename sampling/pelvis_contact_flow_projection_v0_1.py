@@ -1189,11 +1189,27 @@ class PelvisContactFlowProjector:
         return corrected, diagnostics
 
     def finalize_outputs(self, official: torch.Tensor, valid_mask: torch.Tensor) -> ProjectionFinalOutputs:
-        """Rebuild representation only; do not impose a terminal pose target."""
+        """Project the terminal clean endpoint, then rebuild the representation.
+
+        The last active flow step can leave a small scheduler integration
+        residual after its endpoint correction.  Reprojecting the terminal
+        clean endpoint uses the same frozen contact constraints (rather than a
+        separate pose target) and makes the saved candidate auditable against
+        the same v3.0.1 gates.
+        """
 
         physical = self._physical(official)
+        terminal = self.project_clean_endpoint(
+            official.float(),
+            self.baseline_motion.to(device=official.device),
+            self.contact_data,
+            self.target_dose,
+            {"valid_mask": valid_mask},
+        )
+        projected_norm = terminal.projected_clean_motion
+        projected_physical = self._physical(projected_norm)
         rebuilt = authority_project(
-            physical,
+            projected_physical,
             valid_mask=valid_mask.to(device=physical.device, dtype=torch.bool),
             output_dtype=torch.float32,
         ).physical_motion
