@@ -519,7 +519,7 @@ class PelvisContactFlowProjector:
         )
         direct_max = max(
             float(
-                (current_m0[..., span] - m0[..., span])[
+                (current_m0[..., span] - frozen_m0_case[..., span])[
                     expected_valid
                 ].abs().max().item()
             )
