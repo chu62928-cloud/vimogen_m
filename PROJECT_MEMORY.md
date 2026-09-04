@@ -2,7 +2,7 @@
 
 ## 2026-09-04：Pelvis-Contact Sampling Projection v0.1 首轮停止
 
-- BRANCH：独立工作树 `vimogen0809_pelvis_contact_flow_projection_v0_1`、分支 `codex/pelvis-contact-flow-projection-v0-1`；最新实现提交为 `dc65560`（其前包含 M0 边界、FP32 投影、终端投影和评价器修复提交）。旧 v1.3、v2/v2.1、v3/v3.0.1 结果目录未覆盖。
+- BRANCH：独立工作树 `vimogen0809_pelvis_contact_flow_projection_v0_1`、分支 `codex/pelvis-contact-flow-projection-v0-1`；最新实现提交为 `be4a2c9`（其前包含 M0 边界、FP32 投影、终端投影和评价器修复提交）。旧 v1.3、v2/v2.1、v3/v3.0.1 结果目录未覆盖。
 - IMPLEMENTED：新增 `sampling/pelvis_contact_flow_projection_v0_1.py`、采样器/训练入口接入、运行器、评价器和专项测试。投影限制在根平移/根旋转、spine1–3、双侧髋膝踝脚；使用冻结接触贴片、active equality approximation、两种 metric、5°/10 mm 信赖域、最多 5 次重线性化、固定回溯和最终权威重建。
 - VERIFIED：服务器专项测试与采样器、v1.3、冻结 v3 边界兼容回归合计 `36 passed`；本地 Python 静态编译、`git diff --check` 通过。SMPL-X 端点 FP32 冒烟曾以 1 次重线性化收敛，条件数约 `215.6`，heel/toe 约 `0.05 mm`。
 - RUN：服务器运行目录 `/root/autodl-tmp/vimogen_clean/results/phase8/pelvis_contact_flow_projection_v0_1/pilot_sample34122/left/kinematic_temporal/dose_+2deg/attempt_08/`，耗时约 `79.3 s`。冻结输入快照、M0、投影端点、严格 JSON 和评价结果均保留；更早的失败 attempt_01/02/03/05/06 未覆盖。
