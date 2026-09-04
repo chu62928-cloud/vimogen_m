@@ -1137,6 +1137,10 @@ def main(args):
                     torch.zeros_like(latents, dtype=torch.float32)
                     if projection_enabled else None
                 )
+                projection_baseline_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if projection_enabled else None
+                )
                 projection_summary_records = []
 
                 attend_to_text_mask_bool = attend_to_text_mask.bool()
@@ -1194,6 +1198,24 @@ def main(args):
                             and bool(m0_cfg.get('batch_invariant', False))
                         ),
                     )
+                    # Persist the M0 pair immediately, before any optional
+                    # guidance/projection can fail.  This keeps a failed
+                    # attempt diagnostically complete and lets us compare the
+                    # exact current endpoint with the frozen protocol.
+                    if (
+                        m0_artifact_dir_current is not None
+                        and global_rank == 0
+                        and isinstance(m0_result, FlowSampleResult)
+                    ):
+                        os.makedirs(m0_artifact_dir_current, exist_ok=True)
+                        torch.save(
+                            m0_result.raw.detach().float().cpu(),
+                            os.path.join(m0_artifact_dir_current, f'm0_raw_{condition_name}.pt'),
+                        )
+                        torch.save(
+                            m0_result.official_pre_cast.detach().float().cpu(),
+                            os.path.join(m0_artifact_dir_current, f'm0_official_{condition_name}.pt'),
+                        )
                     if (
                         source_noise_enabled
                         and isinstance(m0_result, FlowSampleResult)
@@ -1585,11 +1607,22 @@ def main(args):
                             )
                         condition_mean = motion_mean[sample_mask]
                         condition_std = motion_std[sample_mask]
+                        # The frozen v3.0.1 M0 is the explicit B0-canonical
+                        # endpoint used by the v1.3 shadow-pose protocol,
+                        # rather than the smoothed sampler tensor alone.
+                        # Rebuild that same boundary before comparing or
+                        # projecting so the current run and frozen M0 speak
+                        # the identical 276D representation.
+                        projection_baseline_norm = canonicalize_m0_batch(
+                            m0_result.raw,
+                            condition_mean,
+                            condition_std,
+                        )
                         projection_strategy = PelvisContactFlowProjector.from_frozen_protocol(
                             protocol_root=Path(projection_protocol_root),
                             sample_id=projection_sample_id,
                             side=projection_side,
-                            baseline_motion_norm=m0_result.official_pre_cast.float(),
+                            baseline_motion_norm=projection_baseline_norm,
                             valid_mask=latents_mask[sample_mask].bool(),
                             motion_mean=condition_mean,
                             motion_std=condition_std,
@@ -1601,6 +1634,7 @@ def main(args):
                                 else Path(projection_model_path)
                             ),
                         )
+                        projection_baseline_latents_full[sample_mask] = projection_baseline_norm
                         projection_result = generate_pipe(
                             model=model,
                             prompt_emb=prompt_emb[sample_mask],
@@ -1811,6 +1845,7 @@ def main(args):
                 if projection_artifact_dir_current is not None and global_rank == 0:
                     os.makedirs(projection_artifact_dir_current, exist_ok=True)
                     for filename, tensor in (
+                        ('m0_projection_baseline_norm_batch.pt', projection_baseline_latents_full),
                         ('projected_raw_norm_batch.pt', projection_raw_latents_full),
                         ('projected_official_norm_batch.pt', projection_official_latents_full),
                         ('projected_g0_norm_batch.pt', projection_g0_latents_full),
