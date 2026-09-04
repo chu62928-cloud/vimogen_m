@@ -41,7 +41,9 @@ def sha256_tensor_row(path: Path, row_index: int) -> tuple[str, list[int], str]:
     digest = hashlib.sha256()
     digest.update(str(row.dtype).encode("ascii"))
     digest.update(json.dumps(list(row.shape), separators=(",", ":")).encode("ascii"))
-    digest.update(row.numpy().tobytes(order="C"))
+    # NumPy has no portable bfloat16 dtype; hash the tensor's raw bytes via a
+    # uint8 view so the comparison remains bit-exact for BF16 replays.
+    digest.update(row.view(torch.uint8).numpy().tobytes(order="C"))
     return digest.hexdigest(), list(row.shape), str(row.dtype)
 
 
@@ -194,12 +196,12 @@ def audit(
         },
         "records": records,
         "status": (
-            "PASS"
+            "M0_PAIRING_PASS"
             if records
             and metadata_consistent
             and sample_noise_consistent
             and all(r["status"] == "PASS" for r in records)
-            else "FAIL"
+            else "M0_PAIRING_FAIL"
         ),
     }
     write_strict_json(output, result)

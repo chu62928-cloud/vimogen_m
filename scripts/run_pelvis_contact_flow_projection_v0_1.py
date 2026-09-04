@@ -117,6 +117,23 @@ def next_attempt(parent: Path) -> Path:
     return result
 
 
+def read_projection_pairing_status(run_root: Path) -> str | None:
+    """Read the projector's strict M0 status after a successful generation."""
+
+    log_path = run_root / "projection_artifacts" / "batch_000" / "sampling_projection_log.json"
+    if not log_path.is_file():
+        return None
+    payload = json.loads(log_path.read_text(encoding="utf-8"))
+    records = payload.get("records", [])
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        case = record.get("case", {})
+        if isinstance(case, dict) and case.get("m0_match_status"):
+            return str(case["m0_match_status"])
+    return None
+
+
 def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> Any:
     config = OmegaConf.load(ROOT / "configs/tm2m_infer.yaml")
     config.mode = "eval"
@@ -361,11 +378,20 @@ def main(*, default_protocol: str = PROTOCOL_NAME) -> None:
         from train_eval_vimogen import main as train_eval_main
 
         train_eval_main(config)
-        record["status"] = (
-            "DIAGNOSTIC_INELIGIBLE"
-            if args.allow_m0_mismatch
-            else "COMPLETED_GENERATION_PENDING_EVALUATION"
-        )
+        if args.allow_m0_mismatch:
+            record["status"] = "DIAGNOSTIC_INELIGIBLE"
+        elif args.m0_only:
+            record["status"] = "COMPLETED_GENERATION_PENDING_EVALUATION"
+        else:
+            pairing_status = read_projection_pairing_status(run_root)
+            record["m0_pairing_status"] = pairing_status
+            record["status"] = (
+                "M0_PAIRING_PASS"
+                if pairing_status == "M0_PAIRING_PASS"
+                else "INELIGIBLE_M0_MISMATCH"
+                if pairing_status is not None
+                else "COMPLETED_GENERATION_PENDING_EVALUATION"
+            )
     except Exception as exc:
         record["status"] = "FAILED"
         record["error"] = repr(exc)

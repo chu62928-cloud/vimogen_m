@@ -675,7 +675,9 @@ class PelvisContactFlowProjector:
             "window": window,
             "frozen_protocol": str(protocol_root),
             "baseline_direct_max_abs": direct_max,
-            "m0_match_status": "PASS" if direct_max <= 2.0e-3 else "MISMATCH_ALLOWED",
+            "m0_match_status": (
+                "M0_PAIRING_PASS" if direct_max <= 2.0e-3 else "DIAGNOSTIC_INELIGIBLE"
+            ),
             "projection_baseline": "current_replay" if allow_m0_mismatch else "frozen_v3_0_1",
             "allow_m0_mismatch": bool(allow_m0_mismatch),
         }

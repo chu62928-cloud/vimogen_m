@@ -43,6 +43,7 @@ def test_temporal_mapping_uses_strict_defaults() -> None:
 
 
 def test_m0_mismatch_and_not_evaluable_cannot_unlock_formal_pass() -> None:
+    assert m0_pairing_eligible("M0_PAIRING_PASS")
     assert not m0_pairing_eligible("MISMATCH_ALLOWED")
     assert not m0_pairing_eligible("INELIGIBLE_M0_MISMATCH")
     baseline = {"count": 2, "mean": 0.0, "p95": 0.0, "max": 0.0}

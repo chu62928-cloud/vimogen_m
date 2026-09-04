@@ -58,7 +58,7 @@ def _paired_status(candidate: dict[str, Any], baseline: dict[str, Any]) -> str:
 def m0_pairing_eligible(status: str) -> bool:
     """Only the strict replay status can unlock a formal result."""
 
-    return str(status) == "PASS"
+    return str(status) in {"PASS", "M0_PAIRING_PASS"}
 
 
 def _frozen_window_foot(
