@@ -148,6 +148,8 @@ def audit(
                 key: snapshot.get(key)
                 for key in (
                     "vimogen_checkpoint",
+                    "motion_mean",
+                    "motion_std",
                     "smplx_model",
                     "frozen_v3_protocol",
                     "manifest",
@@ -173,13 +175,18 @@ def audit(
     ]
     fingerprint_keys = (
         "vimogen_checkpoint",
+        "motion_mean",
+        "motion_std",
         "smplx_model",
         "frozen_v3_protocol",
         "manifest",
         "sampling_schedule",
         "guidance_step_mask",
     )
-    metadata_consistent = bool(fingerprints) and all(
+    metadata_complete = bool(fingerprints) and all(
+        all(key in item for key in fingerprint_keys) for item in fingerprints
+    )
+    metadata_consistent = metadata_complete and all(
         all(item.get(key) == fingerprints[0].get(key) for item in fingerprints)
         for key in fingerprint_keys
     )
@@ -192,6 +199,7 @@ def audit(
         "threshold_direct_max_abs": threshold,
         "input_consistency": {
             "sample_noise_row_hash_equal": sample_noise_consistent,
+            "input_fingerprints_complete": metadata_complete,
             "checkpoint_mean_std_schedule_equal": metadata_consistent,
         },
         "records": records,

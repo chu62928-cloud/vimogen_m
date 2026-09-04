@@ -6,7 +6,7 @@
 - IMPLEMENTED：保留 v0.1 求解器接口并加入冻结连续接触帧对的脚跟/脚尖三维位移残差；稳定平足对权重 `1.0`、一般接触对权重 `0.25`、默认 `contact_velocity_weight=1e6`、容差 `1 mm/帧`；窗口前后各 1 帧上下文，列冻结且不施加骨盆剂量。回溯按骨盆、脚跟/脚尖位置、脚跟/脚尖位移和穿地六类归一化违反量执行下降/不越门/不恶化超过 5% 规则。
 - IMPLEMENTED：正式 M0 边界改为 `official_pre_cast → authority_project → frozen physical M0`；保存 `raw`、`official_pre_cast`、BF16 `official` 和投影前后权威表示。默认禁止 M0 不匹配；显式诊断覆盖时记录 `DIAGNOSTIC_INELIGIBLE`，评价器强制 `M0_PAIRING_PASS` 且拒绝 `NOT_EVALUABLE`。
 - VERIFIED：本地静态编译和 `git diff --check` 通过。服务器专项回归（v0.1 兼容 + v0.2 新增）已通过 `21 passed`；本机没有 PyTorch，未把本地动态导入失败当作测试结果。
-- RUN/FAIL：当前代码双样本批大小 2 与单样本批大小 1 的无投影重放均完成；`official_pre_cast → authority_project` 直接姿态最大差均约 `0.018884`，超过 `0.002` M0 门。审计文件为服务器 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，总体 `FAIL`；样本级 z0、掩码、检查点/均值/标准差/调度哈希已纳入审计结构。
+- RUN/FAIL：当前代码双样本批大小 2 与单样本批大小 1 的无投影重放均完成；`official_pre_cast → authority_project` 直接姿态最大差均约 `0.018884`，超过 `0.002` M0 门。审计文件为服务器 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，总体 `FAIL`；样本级 z0 行哈希、输入快照及检查点/均值/标准差/调度哈希字段已纳入新版审计结构。
 - STOP：因严格 M0 未通过，未运行冻结端点、左侧 +2° 正式采样及后续剂量/消融。服务器连接暂时不可用，冻结提交 `46a1b04` 的第三次重放为待执行事项；不得以 `allow_m0_mismatch` 结果形成正式结论。
 - NEXT：恢复服务器后先完成第三次历史提交重放；若仍失败，归类为环境/算子复现阻塞并停止正式采样；若通过，严格按端点可行性 → 左 +2° → 右 +2°/消融/高剂量顺序继续。任何躯干安全包络或支撑约束另建 v0.2.1，不覆盖 v0.2。
 

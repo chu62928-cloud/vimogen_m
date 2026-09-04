@@ -266,6 +266,14 @@ def freeze_inputs(
             "path": str(checkpoint),
             "sha256": sha256_path(checkpoint),
         },
+        "motion_mean": {
+            "path": str(protocol["inputs"]["mean"]["path"]),
+            "sha256": sha256_path(Path(protocol["inputs"]["mean"]["path"])),
+        },
+        "motion_std": {
+            "path": str(protocol["inputs"]["std"]["path"]),
+            "sha256": sha256_path(Path(protocol["inputs"]["std"]["path"])),
+        },
         "smplx_model": {
             "path": str(smplx_path),
             "sha256": sha256_path(smplx_path),
