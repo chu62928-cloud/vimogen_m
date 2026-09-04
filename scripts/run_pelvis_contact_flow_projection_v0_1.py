@@ -85,8 +85,10 @@ def find_noise_record(cache: Path, sample_id: str, seed: int) -> dict[str, Any]:
             metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if str(metadata.get("sample_id")) == str(sample_id) and int(metadata.get("seed", -1)) == int(seed):
-            tensor_path = metadata_path.with_suffix(".pt")
+        key = metadata.get("key", {})
+        if str(key.get("sample_id")) == str(sample_id) and int(key.get("seed", -1)) == int(seed):
+            tensor_name = metadata.get("tensor_file", metadata_path.with_suffix(".pt").name)
+            tensor_path = metadata_path.parent / str(tensor_name)
             if tensor_path.is_file():
                 matches.append((metadata_path, tensor_path, metadata))
     if len(matches) != 1:
