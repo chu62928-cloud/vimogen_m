@@ -24,7 +24,7 @@
 
 ### 测试与运行命令
 
-静态 Python 编译和 `git diff --check` 已通过。服务器专项回归（v0.1 兼容测试与 v0.2 新增测试）已通过 `21 passed`；本机没有 PyTorch，动态测试必须在服务器执行。正式入口为：
+静态 Python 编译和 `git diff --check` 已通过。服务器专项回归在最近三项审计测试加入前已通过 `21 passed`；新增测试已完成静态编译，但服务器复跑因连接不可用而待执行。本机没有 PyTorch，动态测试必须在服务器执行。正式入口为：
 
 ```text
 python scripts/run_pelvis_contact_flow_projection_v0_2.py --metric kinematic_temporal --side left --target-delta-deg 2
