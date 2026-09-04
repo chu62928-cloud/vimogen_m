@@ -78,7 +78,28 @@
 - [诊断补偿（含重心指标）](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_compensated_com_v2/metrics.json)
 - [诊断补偿逐帧重心](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_compensated_com_v2/com_support_per_frame.csv)
 
-下一步保持协议和阈值不变，改造阶段 2 为可行性保持线搜索：只接受不破坏接触门的躯干更新，并额外保存“回退前候选”用于四栏诊断。目标是从当前 `1.236 mm` 向 1 mm 内推进，而不是放宽接触阈值。随后先在 sample94 观察步态连续性，再回到 sample34122 完成正式双脚接触验证。
+### v1.3 / v2 引导候选与直接 +10° 对照
+
+为判断“旧的生成过程引导是否比直接旋转更自然”，本轮在 sample94/seed0/+10° 上统一复核 M0、仅根旋转、v1.3 分层根—脊柱引导、v2 源噪声引导和当前诊断补偿。每个历史候选严格配对自己的归档 M0；跨版本比较优先使用相对自身 M0 的倍率，避免把基线差异误算成候选效果。
+
+| 候选 | 剂量 P95 误差 | 躯干变化 P95 | 关节加速度 P95 | 相对 M0 | 左足滑 P95 | 左离地 / 穿地 P95 | 重心代理位移 P95 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 仅根旋转 | `0°` | `10.00°` | `7.40 mm/帧²` | `1.02×` | `28.37 mm/帧` | `80.17 / 18.72 mm` | `41.2 mm` |
+| v1.3 引导 | `0.126°` | `0.439°` | `7.44 mm/帧²` | `1.03×` | `26.76 mm/帧` | `55.16 / 13.51 mm` | `13.3 mm` |
+| v2 源噪声 | `1.449°` | `7.59°` | `9.72 mm/帧²` | `1.30×` | `45.59 mm/帧` | `41.22 / 11.47 mm` | `234.3 mm` |
+| 当前诊断补偿 | `0°` | `15.68°` | `81.62 mm/帧²` | `11.27×` | `107.30 mm/帧` | `157.62 / 0 mm` | `91.1 mm` |
+
+主要结论是：v1.3 明显优于直接 +10° 和当前诊断补偿，它既实现剂量，也基本保持躯干和原动作的时间平滑，是目前最合适的名义动作；但其双脚垂向接触仍未严格通过。v2 的结果是混合的：右脚离地等局部指标改善，但躯干、左足滑、抖动和整体漂移明显变差，不能判为整体更自然。当前诊断补偿在躯干、足部和时间指标上最差，不应继续作为下一阶段起点。
+
+v2 的 M0 与当前/v1.3 M0 不是逐值相同，权威化后最大通道差约 `0.01481`、均方根差约 `0.00110`。归档确认两条路径的 seed、派生 seed、噪声键和噪声 SHA256 完全一致，所以这不是随机种子变化。现有证据把差异定位到生成路径和批组成：v1.3/current 来自双样本批的正式 BF16 采样，v2 来自单样本可微/正式重放；50 步中的数值差异会累积。尚未做受控的 batch1/batch2 交叉实验，因此不能把它进一步武断归结为“只由批大小导致”。
+
+- [四栏正常速度视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/videos/sample94_M0_root_only_v1_3_v2.mp4)
+- [四栏慢放视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/videos/sample94_M0_root_only_v1_3_v2_slow.mp4)
+- [完整对照说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/README.md)
+- [指标表](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/comparison.csv)
+- [严格 JSON](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/comparison.json)
+
+下一步保持协议和阈值不变，但调整技术起点：以 v1.3 引导候选作为名义动作，只在稳定接触期加入最小的下肢/根平移修正；每一步用可行性保持线搜索同时检查接触、躯干和时间平滑，不再从当前阶段 1 补偿候选继续堆叠。重心只在稳定支撑期作为软诊断/软约束。先在 sample94 检查完整步态，再回到 sample34122 完成正式双脚窗口，v3.2 继续锁定。
 
 ## 骨盆接触补偿 v3.0.1：本轮执行报告
 
