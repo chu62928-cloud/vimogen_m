@@ -11,6 +11,7 @@
 - DIAGNOSED/M0：v1.3 M0 与当前冻结 M0 权威化后最大差仅 `4.768e-7`；v2 相对当前 M0 最大差 `0.0148087`、RMS `0.00109646`。v1.3 和 v2 归档的 seed=0、派生 seed=`218553853606740484`、噪声键 SHA256=`030875...058c`、噪声 SHA256=`924c92...53d` 均一致，排除随机种子变化。差异定位到双样本正式采样与单样本可微/正式重放在 BF16、50 步中的路径/批组成数值累积；未做受控交叉运行前，不归因于单一批大小因素。
 - DECISION：下一轮以 v1.3 分层根—脊柱引导结果为名义动作，在稳定接触期只做最小下肢/根平移修正；接触、躯干与时间平滑进入每一步的可行性接受条件。重心继续作为稳定支撑期软诊断/软约束。当前诊断补偿不再作为基线，v3.2 保持锁定。
 - ARTIFACTS：本地 `results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/`；服务器同名结果位于 `/root/autodl-tmp/vimogen_pelvis_contact_walk_diagnostic_results/.../guided_comparison_v1/`。大型结果不纳入 Git。
+- REPORTING：根 README 的核心对照表已补入 `M0（当前/v1.3）` 与 `M0（v2）` 的绝对值，并为关节加速度、左足滑、左脚离地/穿地逐项列出 `候选−配对 M0`，避免只看倍率或候选绝对值造成误读。v2 仍不得与当前 M0 直接作差。
 
 ## 2026-09-04：仅根旋转接触复核与躯干/重心诊断完成
 
