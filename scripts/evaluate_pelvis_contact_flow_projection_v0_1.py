@@ -64,7 +64,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     target = float(run_record["target_delta_deg"])
     mean = torch.from_numpy(np.load(protocol["inputs"]["mean"]["path"])).float()
     std = torch.from_numpy(np.load(protocol["inputs"]["std"]["path"])).float()
-    m0_norm = torch.load(
+    replay_m0_norm = torch.load(
         run_root / "m0_artifacts" / "batch_000" / "m0_official_norm_batch.pt",
         map_location="cpu",
         weights_only=True,
@@ -77,7 +77,17 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     valid = torch.load(
         protocol_root / "valid_mask.pt", map_location="cpu", weights_only=True
     ).bool()[1:2]
-    m0 = authority_project(m0_norm * std.view(1, 1, -1) + mean.view(1, 1, -1), valid_mask=valid).physical_motion
+    # The paired baseline is the frozen v3.0.1 physical M0.  The current
+    # sampler replay is retained separately as an audit signal because the
+    # server-side sampler has a known numerical drift from that endpoint.
+    frozen_m0_physical = torch.load(
+        protocol_root / "m0_physical.pt", map_location="cpu", weights_only=True
+    ).float()[1:2]
+    m0 = authority_project(frozen_m0_physical, valid_mask=valid).physical_motion
+    replay_m0 = authority_project(
+        replay_m0_norm * std.view(1, 1, -1) + mean.view(1, 1, -1),
+        valid_mask=valid,
+    ).physical_motion
     candidate = authority_project(candidate_norm * std.view(1, 1, -1) + mean.view(1, 1, -1), valid_mask=valid).physical_motion
     model = SMPLX(
         model_path=protocol["inputs"]["smplx_model"]["path"],
@@ -120,6 +130,17 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         "side": side,
         "metric": run_record["metric"],
         "target_delta_deg": target,
+        "m0_pairing": {
+            "primary_baseline": "frozen_v3_0_1_m0_physical",
+            "replay_artifact": str(
+                run_root / "m0_artifacts" / "batch_000" / "m0_official_norm_batch.pt"
+            ),
+            "replay_direct_max_abs": float(
+                (replay_m0[..., MOTION_LAYOUT.body_pose] - m0[..., MOTION_LAYOUT.body_pose]).abs().max().item()
+            ),
+            "replay_full_max_abs": float((replay_m0 - m0).abs().max().item()),
+            "status": str(projection_log.get("m0_match_status", "UNKNOWN")),
+        },
         "primary_control": {
             "window": window,
             "window_angle": window_angle,
