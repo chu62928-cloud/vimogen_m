@@ -175,6 +175,7 @@ class FlowSampler:
         m1_guidance=None,
         absolute_mean_guidance=None,
         relative_root_forward_guidance=None,
+        pelvis_contact_projection=None,
         trace_enabled: bool = False,
         reconciliation_config: Optional[dict] = None,
         motion_mean: Optional[torch.Tensor] = None,
@@ -191,12 +192,18 @@ class FlowSampler:
         )
         guidance_count = sum(
             item is not None
-            for item in (m1_guidance, absolute_mean_guidance, relative_root_forward_guidance)
+            for item in (
+                m1_guidance,
+                absolute_mean_guidance,
+                relative_root_forward_guidance,
+                pelvis_contact_projection,
+            )
         )
         if guidance_count > 1:
             raise ValueError(
                 "m1_guidance, absolute_mean_guidance, and "
-                "relative_root_forward_guidance are mutually exclusive"
+                "relative_root_forward_guidance, and pelvis_contact_projection "
+                "are mutually exclusive"
             )
         if guidance_count and reconciliation_config and bool(reconciliation_config.get("enabled", False)):
             raise ValueError(
@@ -208,6 +215,8 @@ class FlowSampler:
             if absolute_mean_guidance is not None
             else relative_root_forward_guidance
             if relative_root_forward_guidance is not None
+            else pelvis_contact_projection
+            if pelvis_contact_projection is not None
             else m1_guidance
         )
         if batch_invariant and initial_noise.shape[0] > 1:
@@ -250,6 +259,10 @@ class FlowSampler:
                         relative_root_forward_guidance=(
                             None if relative_root_forward_guidance is None
                             else relative_root_forward_guidance.slice(index)
+                        ),
+                        pelvis_contact_projection=(
+                            None if pelvis_contact_projection is None
+                            else pelvis_contact_projection.slice(index)
                         ),
                         trace_enabled=trace_enabled,
                         reconciliation_config=reconciliation_config,
@@ -473,7 +486,10 @@ class FlowSampler:
                         )
                     if transfer_gain is not None:
                         guidance_diagnostics["transfer_gain"] = transfer_gain
-                if relative_root_forward_guidance is not None:
+                if (
+                    relative_root_forward_guidance is not None
+                    or pelvis_contact_projection is not None
+                ):
                     guidance_step_records.append({
                         key: value for key, value in guidance_diagnostics.items()
                         if key != "trace" and not isinstance(value, torch.Tensor)
@@ -555,8 +571,23 @@ class FlowSampler:
                 "metrics": relative_outputs.metrics,
                 "step_records": guidance_step_records,
             }
+        if pelvis_contact_projection is not None:
+            projection_outputs = pelvis_contact_projection.finalize_outputs(
+                official.float(), valid_mask.bool()
+            )
+            g0 = projection_outputs.g0
+            reconciled = g0.to(dtype=dtype)
+            representation_protocol = projection_outputs.protocol
+            guidance_summary = {
+                **projection_outputs.summary,
+                "step_records": guidance_step_records,
+            }
         if reconciliation_config and bool(reconciliation_config.get("enabled", False)):
-            if absolute_mean_guidance is not None or relative_root_forward_guidance is not None:
+            if (
+                absolute_mean_guidance is not None
+                or relative_root_forward_guidance is not None
+                or pelvis_contact_projection is not None
+            ):
                 raise ValueError(
                     "guided protocol owns the final reconciliation boundary; "
                     "do not also pass reconciliation_config"

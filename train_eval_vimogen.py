@@ -4,6 +4,7 @@ import contextlib
 import json
 import numpy as np
 import os
+from pathlib import Path
 import torch
 import torch.distributed as dist
 import torch.nn as nn
@@ -68,6 +69,12 @@ from sampling.relative_root_forward_guidance_v1_3 import (
     PROTOCOL_NAME as RELATIVE_ROOT_FORWARD_V1_3_PROTOCOL,
     ShadowPoseHierarchicalConfig,
     ShadowPoseHierarchicalRootForwardGuidance,
+)
+from sampling.pelvis_contact_flow_projection_v0_1 import (
+    PROTOCOL_NAME as PELVIS_CONTACT_PROJECTION_PROTOCOL,
+    PelvisContactFlowProjector,
+    ProjectorConfig,
+    write_strict_json,
 )
 from sampling.absolute_mean_pelvis_guidance import (
     AbsoluteMeanPelvisConfig,
@@ -565,9 +572,33 @@ def main(args):
     relative_target_delta_deg = float(relative_cfg.get('target_delta_deg', 5.0))
     if relative_enabled and not -10.0 <= relative_target_delta_deg <= 10.0:
         raise ValueError('relative_root_forward target_delta_deg must lie in [-10,10]')
-    if sum((m1_enabled, absolute_enabled, relative_enabled)) > 1:
+    projection_cfg = args.get('pelvis_contact_projection', {})
+    projection_config = ProjectorConfig.from_mapping(projection_cfg)
+    projection_enabled = bool(projection_cfg.get('enabled', False))
+    projection_artifact_dir = (
+        projection_cfg.get('artifact_dir', None) if projection_enabled else None
+    )
+    projection_protocol_root = projection_cfg.get('protocol_root', None)
+    projection_sample_id = str(projection_cfg.get('sample_id', '34122'))
+    projection_side = str(projection_cfg.get('side', 'left'))
+    projection_target_delta_deg = float(
+        projection_cfg.get('target_delta_deg', 2.0)
+    )
+    projection_model_path = projection_cfg.get('model_path', None)
+    if projection_enabled and str(projection_cfg.get('protocol', PELVIS_CONTACT_PROJECTION_PROTOCOL)) != PELVIS_CONTACT_PROJECTION_PROTOCOL:
+        raise ValueError('pelvis_contact_projection.protocol is not v0.1')
+    if projection_enabled and projection_artifact_dir is None:
+        raise ValueError('pelvis_contact_projection.enabled requires artifact_dir')
+    if projection_enabled and projection_protocol_root is None:
+        raise ValueError('pelvis_contact_projection.enabled requires protocol_root')
+    if projection_enabled and projection_side not in {'left', 'right'}:
+        raise ValueError('pelvis_contact_projection.side must be left or right')
+    if projection_enabled and projection_target_delta_deg not in {2.0, 5.0, 10.0}:
+        raise ValueError('pelvis_contact_projection target must be +2, +5, or +10')
+    if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled)) > 1:
         raise ValueError(
-            'm1, absolute_mean_pelvis, and relative_root_forward are mutually exclusive'
+            'm1, absolute_mean_pelvis, relative_root_forward, and '
+            'pelvis_contact_projection are mutually exclusive'
         )
     source_noise_cfg = (
         relative_cfg
@@ -595,12 +626,20 @@ def main(args):
     )
     if source_noise_enabled and not -10.0 <= source_noise_target_delta_deg <= 10.0:
         raise ValueError('source noise target_delta_deg must lie in [-10,10]')
-    if source_noise_enabled and (m1_enabled or absolute_enabled or relative_enabled):
+    if source_noise_enabled and (
+        m1_enabled or absolute_enabled or relative_enabled or projection_enabled
+    ):
         raise ValueError(
             'source-noise v2 is mutually exclusive with m1, absolute_mean_pelvis, '
             'and relative_root_forward v1.x'
         )
-    control_enabled = m1_enabled or absolute_enabled or relative_enabled or source_noise_enabled
+    control_enabled = (
+        m1_enabled
+        or absolute_enabled
+        or relative_enabled
+        or projection_enabled
+        or source_noise_enabled
+    )
 
     # Source-noise v2 begins with a strict, opt-in reproduction stop gate.
     # The gate leaves all historical samplers untouched and is deliberately
@@ -704,6 +743,7 @@ def main(args):
         m1_guidance=None,
         absolute_mean_guidance=None,
         relative_root_forward_guidance=None,
+        pelvis_contact_projection=None,
         trace_enabled: bool = False,
         motion_mean: torch.Tensor | None = None,
         motion_std: torch.Tensor | None = None,
@@ -738,6 +778,7 @@ def main(args):
             m1_guidance=m1_guidance,
             absolute_mean_guidance=absolute_mean_guidance,
             relative_root_forward_guidance=relative_root_forward_guidance,
+            pelvis_contact_projection=pelvis_contact_projection,
             trace_enabled=trace_enabled,
             reconciliation_config=(
                 None
@@ -1011,6 +1052,15 @@ def main(args):
                         relative_artifact_dir_current,
                         f'batch_{test_batch_idx:03d}',
                     )
+                projection_artifact_dir_current = projection_artifact_dir
+                if (
+                    projection_artifact_dir_current is not None
+                    and m0_sample_noise_protocol is not None
+                ):
+                    projection_artifact_dir_current = os.path.join(
+                        projection_artifact_dir_current,
+                        f'batch_{test_batch_idx:03d}',
+                    )
                 source_noise_artifact_dir_current = source_noise_artifact_dir
                 if (
                     source_noise_artifact_dir_current is not None
@@ -1075,6 +1125,19 @@ def main(args):
                     if relative_enabled else None
                 )
                 relative_summary_records = []
+                projection_raw_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if projection_enabled else None
+                )
+                projection_official_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if projection_enabled else None
+                )
+                projection_g0_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if projection_enabled else None
+                )
+                projection_summary_records = []
 
                 attend_to_text_mask_bool = attend_to_text_mask.bool()
                 text_mask = attend_to_text_mask_bool
@@ -1406,6 +1469,7 @@ def main(args):
                         condition_result = m1_result
                     absolute_result = None
                     relative_result = None
+                    projection_result = None
                     if absolute_enabled:
                         if not isinstance(m0_result, FlowSampleResult):
                             raise RuntimeError(
@@ -1499,10 +1563,79 @@ def main(args):
                         )
                         relative_m0_consistent_latents_full[sample_mask] = relative_strategy.baseline_motion_norm
                         condition_result = relative_result
+                    if projection_enabled:
+                        if not isinstance(m0_result, FlowSampleResult):
+                            raise RuntimeError(
+                                'pelvis/contact projection requires FlowSampleResult from M0'
+                            )
+                        if int(sample_mask.sum().item()) != 1:
+                            raise ValueError(
+                                'pelvis/contact projection v0.1 requires batch-one conditions'
+                            )
+                        current_ids = [
+                            str(test_sample_ids[index])
+                            for index in torch.nonzero(
+                                sample_mask, as_tuple=False
+                            ).flatten().tolist()
+                        ]
+                        if current_ids != [projection_sample_id]:
+                            raise ValueError(
+                                'pelvis/contact projection batch does not match frozen sample: '
+                                f'{current_ids} vs {projection_sample_id}'
+                            )
+                        condition_mean = motion_mean[sample_mask]
+                        condition_std = motion_std[sample_mask]
+                        projection_strategy = PelvisContactFlowProjector.from_frozen_protocol(
+                            protocol_root=Path(projection_protocol_root),
+                            sample_id=projection_sample_id,
+                            side=projection_side,
+                            baseline_motion_norm=m0_result.official_pre_cast.float(),
+                            valid_mask=latents_mask[sample_mask].bool(),
+                            motion_mean=condition_mean,
+                            motion_std=condition_std,
+                            target_dose=projection_target_delta_deg,
+                            config=projection_config,
+                            device=device,
+                            model_path=(
+                                None if projection_model_path is None
+                                else Path(projection_model_path)
+                            ),
+                        )
+                        projection_result = generate_pipe(
+                            model=model,
+                            prompt_emb=prompt_emb[sample_mask],
+                            prompt_emb_null=prompt_emb_null[sample_mask],
+                            latents=latents[sample_mask],
+                            latents_mask=latents_mask[sample_mask],
+                            ref_latents=condition_ref_latents,
+                            ref_latents_mask=ref_latents_visual_mask[sample_mask],
+                            num_inference_steps=args.experiment.get('validation_steps', 50),
+                            cfg_scale=args.experiment.get('cfg_scale', 5.0),
+                            use_ema=False,
+                            device=device,
+                            dtype=dtype,
+                            scheduler=wan_scheduler,
+                            seed=seed,
+                            logger=logger,
+                            condition_on_text=(condition_name == 'text'),
+                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                            initial_noise=condition_initial_noise,
+                            motion_mean=condition_mean,
+                            motion_std=condition_std,
+                            return_artifacts=True,
+                            batch_invariant=False,
+                            pelvis_contact_projection=projection_strategy,
+                            trace_enabled=True,
+                        )
+                        condition_result = projection_result
                     if isinstance(condition_result, FlowSampleResult):
                         condition_gen_latents = (
                             condition_result.g0
-                            if absolute_result is not None or relative_result is not None
+                            if (
+                                absolute_result is not None
+                                or relative_result is not None
+                                or projection_result is not None
+                            )
                             else condition_result.reconciled
                             if condition_result.reconciled is not None
                             else condition_result.official
@@ -1526,6 +1659,13 @@ def main(args):
                             relative_official_latents_full[sample_mask] = relative_result.official_pre_cast
                             relative_g0_latents_full[sample_mask] = relative_result.g0
                             relative_summary_records.append(relative_result.guidance_summary)
+                        if projection_result is not None:
+                            projection_raw_latents_full[sample_mask] = projection_result.raw
+                            projection_official_latents_full[sample_mask] = projection_result.official_pre_cast
+                            projection_g0_latents_full[sample_mask] = projection_result.g0
+                            projection_summary_records.append(
+                                projection_result.guidance_summary
+                            )
                     else:
                         condition_gen_latents = condition_result
                     gen_latents_full[sample_mask] = condition_gen_latents.to(gen_latents_full.dtype)
@@ -1667,6 +1807,29 @@ def main(args):
                             {key: value.detach().cpu() for key, value in relative_result.trace.items()},
                             os.path.join(relative_artifact_dir_current, 'relative_root_forward_trace.pt'),
                         )
+
+                if projection_artifact_dir_current is not None and global_rank == 0:
+                    os.makedirs(projection_artifact_dir_current, exist_ok=True)
+                    for filename, tensor in (
+                        ('projected_raw_norm_batch.pt', projection_raw_latents_full),
+                        ('projected_official_norm_batch.pt', projection_official_latents_full),
+                        ('projected_g0_norm_batch.pt', projection_g0_latents_full),
+                    ):
+                        torch.save(
+                            tensor.detach().cpu(),
+                            os.path.join(projection_artifact_dir_current, filename),
+                        )
+                    write_strict_json(
+                        Path(projection_artifact_dir_current) / 'sampling_projection_log.json',
+                        {
+                            'protocol': PELVIS_CONTACT_PROJECTION_PROTOCOL,
+                            'target_delta_deg': projection_target_delta_deg,
+                            'metric': projection_config.metric,
+                            'side': projection_side,
+                            'sample_id': projection_sample_id,
+                            'records': projection_summary_records,
+                        },
+                    )
                 
                 # Visualization
                 save_motion_visualizations = args.get('save_motion_visualizations', True)

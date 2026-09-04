@@ -1,5 +1,13 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-04：ProjFlow-inspired v0.1 实现与真实 SMPL-X 端点冒烟完成
+
+- IMPLEMENTED：在独立工作树 `vimogen0809_pelvis_contact_flow_projection_v0_1`、分支 `codex/pelvis-contact-flow-projection-v0-1` 中新增 `sampling/pelvis_contact_flow_projection_v0_1.py`、服务器运行器、离线评价器和专项测试。新协议只修改根平移、根旋转、spine1–3、双侧髋/膝/踝/脚的权威直接姿态；每次接受更新后重新做 SMPL-X/FK 与 276D 表示重建。
+- IMPLEMENTED：骨盆目标复用冻结 v3.0.1/v1.3 物理轴和符号；稳定 heel/toe 复用冻结接触掩码与足底贴片；穿地采用明确记录的 `active_equality_approximation`，没有加入躯干、头部、COM 或重心硬约束。新增 Euclidean 与 kinematic+temporal 两种配置化 metric、5°/10 mm 单步 L2 信赖域、最多 5 次重线性化、固定回溯序列和严格 JSON。
+- VERIFIED：服务器专项测试 13 项全部通过；采样器、v1.3 和冻结 v3 边界兼容回归 23 项全部通过；本地 Python 静态编译和 `git diff --check` 通过。本机没有 PyTorch，动态测试均在既有服务器环境执行。
+- VERIFIED：直接使用冻结 sample34122 M0、冻结 SMPL-X 模型和 +2° 目标的端点冒烟通过：1 次重线性化收敛，输出全有限，雅可比条件数约 `215.6`，heel/toe RMS 约 `0.05 mm`，无活动穿地约束。
+- IN PROGRESS：尚未启动真实 ViMoGen +2° 采样；左右窗口、Euclidean/kinematic+temporal 对照、v1.3 基线评价、README 执行记录和最终停止门待完成。旧 v1.3、v2/v2.1、v3/v3.0.1 结果目录保持只读。
+
 ## 2026-09-04：v1.3/v2/直接根旋转自然度统一对照完成
 
 - PURPOSE：回应“旧 v1/v2 生成引导是否比直接 +10° 更自然”，在 sample94/seed0/+10° 上用同一套完整 SMPL-X 网格、足滑/离地/穿地、躯干、重心代理和时间指标统一比较；历史候选分别配对各自归档 M0，跨版本使用相对自身 M0 的倍率。
