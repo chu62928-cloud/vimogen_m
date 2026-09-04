@@ -127,6 +127,7 @@ def main() -> None:
     protocol = {
         "protocol": PROTOCOL_NAME,
         "geometry_protocol": GEOMETRY_PROTOCOL,
+        "protocol_revision": "v3.0.1",
         "dose_sign": "v1.3: positive dose is M0_pitch minus candidate_pitch; +10 lowers M0 forward axis by 10 degrees",
         "target_root": "Rot(M0_right, -target_delta_deg) @ M0_root_rotation",
         "contact": {
@@ -138,6 +139,13 @@ def main() -> None:
             "first_frame_speed_is_valid": False,
         },
         "trust_region": {"max_rotation_deg": 30.0, "max_translation_m": 0.05, "diagnostic_expanded_bounds": {"max_rotation_deg": 45.0, "max_translation_m": 0.10, "counts_as_success": False}},
+        "uprightness": {
+            "pelvis_neck_p95_deg": 2.0,
+            "pelvis_head_p95_deg": 3.0,
+            "pelvis_support_drift_p95_m": 0.020,
+            "support_definition": "horizontal pelvis-to-frozen-M0 heel/toe support-centre offset change on flat-contact frames",
+            "mesh_centroid_role": "diagnostic_only",
+        },
         "cases": cases,
         "foot_patches": {"source": "neutral_SMPL-X_template_bottom_quartile_and_skinning_weights", "sha256": patch_hash(patches), "file": "foot_patches.json"},
         "inputs": {

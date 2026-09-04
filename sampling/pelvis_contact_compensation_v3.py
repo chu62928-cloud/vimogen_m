@@ -40,21 +40,49 @@ ACTIVE_JOINT_NAMES = (
 ACTIVE_BODY_INDICES = tuple(SMPLX_22_JOINT_INDEX[name] - 1 for name in ACTIVE_JOINT_NAMES)
 
 
+def project_trust_region(
+    body_delta: torch.Tensor,
+    translation_delta: torch.Tensor,
+    *,
+    max_rotation_deg: float = 30.0,
+    max_translation_m: float = 0.05,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Project Lie-algebra rotations and translations onto norm balls."""
+
+    if body_delta.ndim < 1 or body_delta.shape[-1] != 3:
+        raise ValueError("body_delta must end in a 3-vector")
+    if translation_delta.ndim < 1 or translation_delta.shape[-1] != 3:
+        raise ValueError("translation_delta must end in a 3-vector")
+    if max_rotation_deg <= 0.0 or max_translation_m <= 0.0:
+        raise ValueError("trust-region bounds must be positive")
+    max_rotation = math.radians(max_rotation_deg)
+    rotation_norm = torch.linalg.vector_norm(body_delta, dim=-1, keepdim=True).clamp_min(1.0e-12)
+    body_projected = body_delta * (max_rotation / rotation_norm).clamp(max=1.0)
+    translation_norm = torch.linalg.vector_norm(translation_delta, dim=-1, keepdim=True).clamp_min(1.0e-12)
+    translation_projected = translation_delta * (max_translation_m / translation_norm).clamp(max=1.0)
+    return body_projected, translation_projected
+
+
 @dataclass(frozen=True)
 class PelvisCompensationConfig:
-    protocol: str = "vimogen_pelvis_contact_compensation_v3"
+    protocol: str = "vimogen_pelvis_contact_compensation_v3_0_1"
     max_rotation_deg: float = 30.0
     max_translation_m: float = 0.05
     stable_confidence: float = STABLE_CONFIDENCE
     contact_height_m: float = CONTACT_HEIGHT_M
     contact_speed_m_per_frame: float = CONTACT_SPEED_M_PER_FRAME
     flat_gap_m: float = FLAT_GAP_M
-    outer_iterations: int = 4
-    inner_iterations: int = 30
-    learning_rate: float = 0.03
+    contact_outer_iterations: int = 6
+    trunk_outer_iterations: int = 4
+    posture_outer_iterations: int = 3
+    inner_iterations: int = 80
+    learning_rate: float = 0.01
     penalty_start: float = 10.0
-    penalty_multiplier: float = 10.0
+    penalty_multiplier: float = 5.0
     trunk_tolerance_deg: float = 2.0
+    pelvis_neck_tolerance_deg: float = 2.0
+    pelvis_head_tolerance_deg: float = 3.0
+    pelvis_support_drift_m: float = 0.020
     contact_tolerance_m: float = 0.001
     smooth_velocity_weight: float = 0.10
     smooth_acceleration_weight: float = 0.05
@@ -63,7 +91,7 @@ class PelvisCompensationConfig:
     def validate(self) -> None:
         if self.max_rotation_deg <= 0 or self.max_translation_m <= 0:
             raise ValueError("trust-region bounds must be positive")
-        if self.outer_iterations < 1 or self.inner_iterations < 1:
+        if min(self.contact_outer_iterations, self.trunk_outer_iterations, self.posture_outer_iterations, self.inner_iterations) < 1:
             raise ValueError("solver iteration counts must be positive")
         if self.learning_rate <= 0 or self.penalty_start <= 0 or self.penalty_multiplier <= 1:
             raise ValueError("invalid optimiser configuration")
@@ -135,6 +163,15 @@ class PelvisContactCompensationSolver:
             }
         trunk = self.base_joints[..., SMPLX_22_JOINT_INDEX["neck"], :] - self.base_joints[..., SMPLX_22_JOINT_INDEX["spine1"], :]
         self.base_trunk = F.normalize(trunk, dim=-1)
+        pelvis_index = SMPLX_22_JOINT_INDEX["pelvis"]
+        neck_index = SMPLX_22_JOINT_INDEX["neck"]
+        head_index = SMPLX_22_JOINT_INDEX["head"]
+        self.base_pelvis_neck = F.normalize(
+            self.base_joints[..., neck_index, :] - self.base_joints[..., pelvis_index, :], dim=-1
+        )
+        self.base_pelvis_head = F.normalize(
+            self.base_joints[..., head_index, :] - self.base_joints[..., pelvis_index, :], dim=-1
+        )
         self.floor = {side: torch.as_tensor(self.contact[side]["evidence"]["floor_height_m"], device=self.device, dtype=torch.float32) for side in ("left", "right")}
         self._target_root: torch.Tensor | None = None
 
@@ -178,7 +215,15 @@ class PelvisContactCompensationSolver:
         return self._model(body, root, translation)
 
     def _residuals(self, output: Any) -> dict[str, torch.Tensor]:
-        residuals: dict[str, list[torch.Tensor]] = {"contact": [], "orientation": [], "penetration": [], "trunk": []}
+        residuals: dict[str, list[torch.Tensor]] = {
+            "contact": [],
+            "orientation": [],
+            "penetration": [],
+            "trunk": [],
+            "pelvis_neck": [],
+            "pelvis_head": [],
+            "support_drift": [],
+        }
         for side in ("left", "right"):
             heel, toe = patch_centres(output.vertices, self.patches[side])
             evidence = self.contact[side]["evidence"]
@@ -199,8 +244,28 @@ class PelvisContactCompensationSolver:
             residuals["penetration"].append(F.relu(self.floor[side] - sole))
         trunk = output.joints[..., SMPLX_22_JOINT_INDEX["neck"], :] - output.joints[..., SMPLX_22_JOINT_INDEX["spine1"], :]
         residuals["trunk"].append(torch.cross(F.normalize(trunk, dim=-1), self.base_trunk, dim=-1))
+        pelvis_index = SMPLX_22_JOINT_INDEX["pelvis"]
+        neck = output.joints[..., SMPLX_22_JOINT_INDEX["neck"], :] - output.joints[..., pelvis_index, :]
+        head = output.joints[..., SMPLX_22_JOINT_INDEX["head"], :] - output.joints[..., pelvis_index, :]
+        residuals["pelvis_neck"].append(torch.cross(F.normalize(neck, dim=-1), self.base_pelvis_neck, dim=-1))
+        residuals["pelvis_head"].append(torch.cross(F.normalize(head, dim=-1), self.base_pelvis_head, dim=-1))
+        pelvis = output.joints[..., pelvis_index, :]
+        for side in ("left", "right"):
+            heel, toe = patch_centres(output.vertices, self.patches[side])
+            base_heel, base_toe = self.contact[side]["heel"], self.contact[side]["toe"]
+            confidence = torch.as_tensor(self.contact[side]["evidence"]["confidence"], device=self.device, dtype=torch.float32)
+            frozen_stable = self.contact[side]["stable_mask"]
+            stable = (confidence >= self.config.stable_confidence) if frozen_stable is None else frozen_stable
+            stable = stable & self.valid_mask
+            if bool(stable.any()):
+                base_anchor = 0.5 * (base_heel + base_toe)
+                candidate_anchor = 0.5 * (heel + toe)
+                drift = ((pelvis - candidate_anchor) - (self.base_joints[..., pelvis_index, :] - base_anchor))[stable, :2]
+                residuals["support_drift"].extend(drift.unbind(0))
+
+        dimensions = {"contact": 3, "orientation": 3, "penetration": 1, "trunk": 3, "pelvis_neck": 3, "pelvis_head": 3, "support_drift": 2}
         return {
-            key: torch.cat([value.reshape(-1, 3 if key in ("contact", "orientation", "trunk") else 1) for value in values], dim=0) if values else torch.zeros((0, 3 if key in ("contact", "orientation", "trunk") else 1), device=self.device)
+            key: torch.cat([value.reshape(-1, dimensions[key]) for value in values], dim=0) if values else torch.zeros((0, dimensions[key]), device=self.device)
             for key, values in residuals.items()
         }
 
@@ -211,18 +276,21 @@ class PelvisContactCompensationSolver:
         for key in ("contact", "orientation", "penetration"):
             residual = residuals[key]
             if residual.numel():
-                lam = multipliers[key]
-                if lam.shape != residual.shape:
+                lam = multipliers.get(key)
+                if lam is None or lam.shape != residual.shape:
                     lam = torch.zeros_like(residual)
                     multipliers[key] = lam
                 loss = loss + (lam * residual).mean() + 0.5 * penalty * residual.square().mean()
-        if stage >= 2 and residuals["trunk"].numel():
-            residual = residuals["trunk"]
-            lam = multipliers["trunk"]
-            if lam.shape != residual.shape:
-                lam = torch.zeros_like(residual)
-                multipliers["trunk"] = lam
-            loss = loss + (lam * residual).mean() + 0.5 * penalty * residual.square().mean()
+        if stage >= 2:
+            for key in ("trunk", "pelvis_neck", "pelvis_head", "support_drift"):
+                residual = residuals[key]
+                if not residual.numel():
+                    continue
+                lam = multipliers.get(key)
+                if lam is None or lam.shape != residual.shape:
+                    lam = torch.zeros_like(residual)
+                    multipliers[key] = lam
+                loss = loss + (lam * residual).mean() + 0.5 * penalty * residual.square().mean()
         if stage >= 3:
             loss = loss + self.config.posture_weight * (
                 (self.body_delta / math.radians(self.config.max_rotation_deg)).square().mean()
@@ -238,20 +306,65 @@ class PelvisContactCompensationSolver:
 
     def _clip_bounds(self) -> None:
         with torch.no_grad():
-            self.body_delta.clamp_(-math.radians(self.config.max_rotation_deg), math.radians(self.config.max_rotation_deg))
-            self.translation_delta.clamp_(-self.config.max_translation_m, self.config.max_translation_m)
+            body, translation = project_trust_region(
+                self.body_delta,
+                self.translation_delta,
+                max_rotation_deg=self.config.max_rotation_deg,
+                max_translation_m=self.config.max_translation_m,
+            )
+            self.body_delta.copy_(body)
+            self.translation_delta.copy_(translation)
 
-    def _optimise_stage(self, stage: int) -> dict[str, Any]:
-        multipliers = {
-            "contact": torch.zeros((max(1, self.frames * 6), 1), device=self.device),
-            "orientation": torch.zeros((max(1, self.frames), 3), device=self.device),
-            "penetration": torch.zeros((max(1, self.frames * 2), 1), device=self.device),
-            "trunk": torch.zeros((max(1, self.frames), 3), device=self.device),
+    def _stage_keys(self, stage: int) -> tuple[str, ...]:
+        base = ("contact", "orientation", "penetration")
+        if stage == 1:
+            return base
+        return base + ("trunk", "pelvis_neck", "pelvis_head", "support_drift")
+
+    def _residual_summary(self, residuals: dict[str, torch.Tensor]) -> dict[str, float]:
+        return {
+            key: float(torch.sqrt(value.square().mean()).item()) if value.numel() else 0.0
+            for key, value in residuals.items()
         }
+
+    def _stage_thresholds(self, stage: int) -> dict[str, float]:
+        thresholds = {
+            "contact": self.config.contact_tolerance_m,
+            "penetration": self.config.contact_tolerance_m,
+            "orientation": math.sin(math.radians(2.0)),
+        }
+        if stage >= 2:
+            thresholds.update(
+                {
+                    "trunk": math.sin(math.radians(self.config.trunk_tolerance_deg)),
+                    "pelvis_neck": math.sin(math.radians(self.config.pelvis_neck_tolerance_deg)),
+                    "pelvis_head": math.sin(math.radians(self.config.pelvis_head_tolerance_deg)),
+                    "support_drift": self.config.pelvis_support_drift_m,
+                }
+            )
+        return thresholds
+
+    def _stage_score(self, stage: int, summary: dict[str, float]) -> tuple[int, float, float]:
+        thresholds = self._stage_thresholds(stage)
+        violations = [max(summary.get(key, 0.0) / limit - 1.0, 0.0) for key, limit in thresholds.items()]
+        return (sum(value > 0.0 for value in violations), max(violations, default=0.0), sum(violations))
+
+    def _stage_feasible(self, stage: int, summary: dict[str, float]) -> bool:
+        thresholds = self._stage_thresholds(stage)
+        return all(summary.get(key, 0.0) <= limit for key, limit in thresholds.items())
+
+    def _optimise_stage(self, stage: int, multipliers: dict[str, torch.Tensor]) -> dict[str, Any]:
+        outer_iterations = {
+            1: self.config.contact_outer_iterations,
+            2: self.config.trunk_outer_iterations,
+            3: self.config.posture_outer_iterations,
+        }[stage]
         penalty = self.config.penalty_start
         history: list[dict[str, float]] = []
-        residuals: dict[str, torch.Tensor] = {}
-        for outer in range(self.config.outer_iterations):
+        best_state = (self.body_delta.detach().clone(), self.translation_delta.detach().clone())
+        best_summary: dict[str, float] | None = None
+        best_score: tuple[int, float, float] | None = None
+        for outer in range(outer_iterations):
             optimizer = torch.optim.Adam([self.body_delta, self.translation_delta], lr=self.config.learning_rate)
             for _ in range(self.config.inner_iterations):
                 optimizer.zero_grad(set_to_none=True)
@@ -264,14 +377,37 @@ class PelvisContactCompensationSolver:
                 self._clip_bounds()
             with torch.no_grad():
                 _, residuals = self._objective(stage, penalty, multipliers)
-                for key, residual in residuals.items():
-                    if residual.numel():
-                        if multipliers[key].shape != residual.shape:
-                            multipliers[key] = torch.zeros_like(residual)
-                        multipliers[key] = multipliers[key] + penalty * residual.detach()
-                        history.append({"stage": float(stage), "outer": float(outer), "penalty": float(penalty), f"{key}_rms": float(torch.sqrt(residual.square().mean()).item())})
+                summary = self._residual_summary(residuals)
+                score = self._stage_score(stage, summary)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_summary = dict(summary)
+                    best_state = (self.body_delta.detach().clone(), self.translation_delta.detach().clone())
+                row: dict[str, float] = {"stage": float(stage), "outer": float(outer), "penalty": float(penalty)}
+                row.update({f"{key}_rms": value for key, value in summary.items() if key in self._stage_keys(stage)})
+                history.append(row)
+                for key in self._stage_keys(stage):
+                    residual = residuals[key]
+                    if not residual.numel():
+                        continue
+                    lam = multipliers.get(key)
+                    if lam is None or lam.shape != residual.shape:
+                        lam = torch.zeros_like(residual)
+                    multipliers[key] = lam + penalty * residual.detach()
             penalty *= self.config.penalty_multiplier
-        return {"stage": stage, "history": history, "final_residuals": {key: float(torch.sqrt(value.square().mean()).item()) if value.numel() else 0.0 for key, value in residuals.items()}}
+        with torch.no_grad():
+            self.body_delta.copy_(best_state[0])
+            self.translation_delta.copy_(best_state[1])
+            self._clip_bounds()
+        if best_summary is None:
+            best_summary = {key: 0.0 for key in ("contact", "orientation", "penetration", "trunk", "pelvis_neck", "pelvis_head", "support_drift")}
+        return {
+            "stage": stage,
+            "history": history,
+            "final_residuals": best_summary,
+            "feasible": self._stage_feasible(stage, best_summary),
+            "best_score": list(best_score or (0, 0.0, 0.0)),
+        }
 
     def solve(self, target_delta_deg: float, *, initial_motion: torch.Tensor | None = None) -> dict[str, Any]:
         if not math.isfinite(float(target_delta_deg)) or not -10.0 <= float(target_delta_deg) <= 10.0:
@@ -279,19 +415,19 @@ class PelvisContactCompensationSolver:
         self._target_root = target_root_rotation(self.base_root, float(target_delta_deg))
         if initial_motion is not None:
             self._initialise_from_motion(initial_motion)
-        stages = []
+        stages: list[dict[str, Any]] = []
         try:
-            stages.append(self._optimise_stage(1))
-            stages.append(self._optimise_stage(2))
-            stages.append(self._optimise_stage(3))
+            multipliers: dict[str, torch.Tensor] = {}
+            stage1 = self._optimise_stage(1, multipliers)
+            stages.append(stage1)
+            if stage1["feasible"]:
+                stage2 = self._optimise_stage(2, multipliers)
+                stages.append(stage2)
+                if stage2["feasible"]:
+                    stages.append(self._optimise_stage(3, multipliers))
             output = self._motion_from_state()
             final = stages[-1]["final_residuals"]
-            feasible = bool(
-                final.get("contact", 0.0) <= self.config.contact_tolerance_m
-                and final.get("penetration", 0.0) <= self.config.contact_tolerance_m
-                and final.get("orientation", 0.0) <= math.sin(math.radians(2.0))
-                and final.get("trunk", 0.0) <= math.sin(math.radians(self.config.trunk_tolerance_deg))
-            )
+            feasible = bool(stages[-1]["feasible"] and self._stage_feasible(3, final))
             return {
                 "protocol": self.config.protocol,
                 "status": "FEASIBLE" if feasible else "INFEASIBLE_WITHIN_BUDGET",
@@ -313,6 +449,22 @@ class PelvisContactCompensationSolver:
                 "motion": self.m0.detach().clone(),
             }
 
+    def solve_continuation(
+        self,
+        target_doses: tuple[float, ...] = (2.0, 5.0, 10.0),
+        *,
+        initial_motion: torch.Tensor | None = None,
+    ) -> list[dict[str, Any]]:
+        """Solve a fixed dose path while always carrying the best candidate."""
+
+        current = initial_motion
+        records: list[dict[str, Any]] = []
+        for dose in target_doses:
+            result = self.solve(float(dose), initial_motion=current)
+            current = result["motion"]
+            records.append(result)
+        return records
+
     def _initialise_from_motion(self, motion: torch.Tensor) -> None:
         candidate = motion[0] if motion.ndim == 3 and motion.shape[0] == 1 else motion
         candidate = candidate[: self.frames].to(self.device).float()
@@ -332,4 +484,4 @@ class PelvisContactCompensationSolver:
         return authority_project(direct.unsqueeze(0), valid_mask=self.valid_mask.unsqueeze(0), output_dtype=torch.float32).physical_motion[0].detach().cpu()
 
 
-__all__ = ["PelvisCompensationConfig", "PelvisContactCompensationSolver", "ACTIVE_JOINT_NAMES", "ACTIVE_BODY_INDICES"]
+__all__ = ["PelvisCompensationConfig", "PelvisContactCompensationSolver", "ACTIVE_JOINT_NAMES", "ACTIVE_BODY_INDICES", "project_trust_region"]

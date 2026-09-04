@@ -24,8 +24,8 @@ from evaluation.relative_root_forward_v1 import tail_safety_metrics
 from evaluation.relative_root_trunk_v2_1 import direct_joints_from_motion
 
 
-PROTOCOL_NAME = "vimogen_pelvis_contact_compensation_v3"
-GEOMETRY_PROTOCOL = "vimogen_pelvis_sagittal_delta_v3_0"
+PROTOCOL_NAME = "vimogen_pelvis_contact_compensation_v3_0_1"
+GEOMETRY_PROTOCOL = "vimogen_pelvis_sagittal_delta_v3_0_1"
 PASS = "PASS"
 FAIL = "FAIL"
 NOT_EVALUABLE = "NOT_EVALUABLE"
@@ -36,6 +36,9 @@ FLAT_GAP_M = 0.020
 STABLE_CONFIDENCE = 0.80
 MIN_EVIDENCE = 3
 EPS = 1.0e-8
+PELVIS_NECK_P95_DEG = 2.0
+PELVIS_HEAD_P95_DEG = 3.0
+PELVIS_SUPPORT_DRIFT_P95_M = 0.020
 
 
 def wrap_angle_deg(value: torch.Tensor) -> torch.Tensor:
@@ -113,6 +116,74 @@ def _summary(values: torch.Tensor, *, absolute: bool = False) -> dict[str, Any]:
         "max": float(values.max().item()),
         "count": int(values.numel()),
     }
+
+
+def whole_body_upright_metrics(
+    m0_joints: torch.Tensor,
+    candidate_joints: torch.Tensor,
+    valid_mask: torch.Tensor,
+    *,
+    m0_vertices: torch.Tensor | None = None,
+    candidate_vertices: torch.Tensor | None = None,
+    patches: Mapping[str, Mapping[str, list[int]]] | None = None,
+) -> dict[str, Any]:
+    """Measure global uprightness and pelvis-to-support drift against M0.
+
+    The original v3 trunk gate only compares the ``spine1 -> neck`` segment.
+    These paired metrics add two whole-body axes and a contact-relative pelvis
+    displacement without changing the frozen foot contact definitions.
+    """
+
+    if m0_joints.shape != candidate_joints.shape or m0_joints.ndim != 4:
+        raise ValueError("joint tensors must both have shape [B,T,J,3]")
+    if valid_mask.shape != m0_joints.shape[:2]:
+        raise ValueError("valid_mask must match [B,T]")
+    pelvis = SMPLX_22_JOINT_INDEX["pelvis"]
+    neck = SMPLX_22_JOINT_INDEX["neck"]
+    head = SMPLX_22_JOINT_INDEX["head"]
+
+    def axis_change(index: int) -> dict[str, Any]:
+        base = m0_joints[..., index, :] - m0_joints[..., pelvis, :]
+        candidate = candidate_joints[..., index, :] - candidate_joints[..., pelvis, :]
+        cosine = (torch.nn.functional.normalize(base, dim=-1) * torch.nn.functional.normalize(candidate, dim=-1)).sum(-1).clamp(-1.0, 1.0)
+        values = torch.acos(cosine) * (180.0 / math.pi)
+        return _summary(values[valid_mask.bool()])
+
+    result: dict[str, Any] = {
+        "pelvis_neck": axis_change(neck),
+        "pelvis_head": axis_change(head),
+    }
+    if m0_vertices is None or candidate_vertices is None or patches is None:
+        result["pelvis_support_drift"] = _summary(torch.zeros(0, dtype=m0_joints.dtype))
+        return result
+    if m0_vertices.shape != candidate_vertices.shape or m0_vertices.ndim != 3 or m0_vertices.shape[0] != m0_joints.shape[1]:
+        raise ValueError("vertex tensors must both have shape [T,V,3]")
+    if m0_joints.shape[0] != 1:
+        raise ValueError("uprightness vertex metrics currently require batch size 1")
+
+    values: list[torch.Tensor] = []
+    side_rows: dict[str, Any] = {}
+    valid = valid_mask[0].bool()
+    pelvis_m0 = m0_joints[0, :, pelvis]
+    pelvis_candidate = candidate_joints[0, :, pelvis]
+    for side in ("left", "right"):
+        m0_heel, m0_toe = patch_centres(m0_vertices, patches[side])
+        candidate_heel, candidate_toe = patch_centres(candidate_vertices, patches[side])
+        m0_anchor = 0.5 * (m0_heel + m0_toe)
+        candidate_anchor = 0.5 * (candidate_heel + candidate_toe)
+        evidence = contact_evidence(m0_heel, m0_toe)
+        stable = torch.as_tensor(evidence["valid_masks"]["flat_contact"], device=m0_vertices.device, dtype=torch.bool) & valid
+        if bool(stable.any()):
+            drift = torch.linalg.vector_norm(
+                ((pelvis_candidate - candidate_anchor) - (pelvis_m0 - m0_anchor))[stable, :2], dim=-1
+            )
+            values.append(drift)
+            side_rows[side] = _summary(drift)
+        else:
+            side_rows[side] = _summary(torch.zeros(0, dtype=m0_vertices.dtype, device=m0_vertices.device))
+    result["pelvis_support_drift"] = _summary(torch.cat(values) if values else torch.zeros(0, dtype=m0_vertices.dtype, device=m0_vertices.device))
+    result["per_side"] = side_rows
+    return result
 
 
 def contact_evidence(
@@ -419,6 +490,14 @@ def evaluate_v3_pair(
     tail = tail_safety_metrics(m0_auth, candidate_auth, valid_mask)
     consistency = consistency_report(candidate_auth, valid_mask)
     consistency_pass = all(bool(record.get("passed", False)) for record in consistency)
+    uprightness = whole_body_upright_metrics(
+        b_joints,
+        c_joints,
+        valid_mask,
+        m0_vertices=m0_vertices,
+        candidate_vertices=candidate_vertices,
+        patches=patches,
+    )
     result: dict[str, Any] = {
         "protocol": PROTOCOL_NAME,
         "target_delta_deg": float(target_delta_deg),
@@ -427,6 +506,7 @@ def evaluate_v3_pair(
         "heading": _summary(heading_change[mask], absolute=False),
         "root_change": _summary(root_change[mask], absolute=False),
         "q_rigid": q_rigid,
+        "uprightness": uprightness,
         "tail_safety": tail,
         "consistency": consistency,
         "finite_values": bool(torch.isfinite(m0_auth).all() and torch.isfinite(candidate_auth).all()),
@@ -451,6 +531,9 @@ def evaluate_v3_pair(
         _gate("tail_extra_pitch_step", tail["per_sample"][0]["tail_extra_pitch_step_max_deg"], 2.0, tail["per_sample"][0]["tail_pair_count"]),
         _gate("representation_consistency", consistency_pass, True, len(consistency)),
         _gate("finite_values", result["finite_values"], True, int(mask.sum().item())),
+        _gate("pelvis_neck_upright_p95", uprightness["pelvis_neck"]["p95"], PELVIS_NECK_P95_DEG, uprightness["pelvis_neck"]["count"]),
+        _gate("pelvis_head_upright_p95", uprightness["pelvis_head"]["p95"], PELVIS_HEAD_P95_DEG, uprightness["pelvis_head"]["count"]),
+        _gate("pelvis_support_drift_p95", uprightness["pelvis_support_drift"]["p95"], PELVIS_SUPPORT_DRIFT_P95_M, uprightness["pelvis_support_drift"]["count"]),
     ]
     if foot_rows:
         for side, row in foot_rows.items():
@@ -471,7 +554,7 @@ def evaluate_v3_pair(
 __all__ = [
     "PROTOCOL_NAME", "GEOMETRY_PROTOCOL", "PASS", "FAIL", "NOT_EVALUABLE",
     "CONTACT_HEIGHT_M", "CONTACT_SPEED_M_PER_FRAME", "FLAT_GAP_M", "STABLE_CONFIDENCE",
-    "pelvis_pitch_delta_deg", "target_root_rotation", "m0_sagittal_frame",
+    "pelvis_pitch_delta_deg", "target_root_rotation", "m0_sagittal_frame", "whole_body_upright_metrics",
     "contact_evidence", "longest_true_run", "select_stable_window", "foot_patches", "patch_hash", "patch_centres",
     "evaluate_paired_foot", "evaluate_v3_pair", "combine_statuses",
 ]

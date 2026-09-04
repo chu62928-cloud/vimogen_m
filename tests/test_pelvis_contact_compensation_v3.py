@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import types
 
 import pytest
 import torch
@@ -17,7 +18,9 @@ from evaluation.pelvis_contact_compensation_v3 import (
     pelvis_pitch_delta_deg,
     select_stable_window,
     target_root_rotation,
+    whole_body_upright_metrics,
 )
+from sampling.pelvis_contact_compensation_v3 import project_trust_region
 from motion_rep.rotation_transform import axis_angle_to_mat3x3
 
 
@@ -87,4 +90,44 @@ def test_missing_flat_evidence_is_not_evaluable() -> None:
     toe = heel.clone()
     result = evaluate_paired_foot(heel, toe, heel, toe)
     assert result["toe_contact"]["status"] == NOT_EVALUABLE
+
+
+def test_norm_trust_region_projects_vectors_not_components() -> None:
+    body = torch.tensor([[[math.radians(30.0), math.radians(30.0), math.radians(30.0)]]])
+    translation = torch.tensor([[0.05, 0.05, 0.05]])
+    body_out, translation_out = project_trust_region(body, translation)
+    assert float(torch.linalg.vector_norm(body_out, dim=-1).max()) == pytest.approx(math.radians(30.0), abs=1e-6)
+    assert float(torch.linalg.vector_norm(translation_out, dim=-1).max()) == pytest.approx(0.05, abs=1e-7)
+
+
+def test_whole_body_upright_metrics_detect_global_lean() -> None:
+    joints = torch.zeros((1, 4, 22, 3), dtype=torch.float32)
+    pelvis, neck, head = 0, 12, 15
+    joints[:, :, neck, 2] = 0.55
+    joints[:, :, head, 2] = 0.90
+    candidate = joints.clone()
+    candidate[:, :, neck, 0] = 0.55 * math.tan(math.radians(4.0))
+    candidate[:, :, head, 0] = 0.90 * math.tan(math.radians(4.0))
+    result = whole_body_upright_metrics(joints, candidate, torch.ones((1, 4), dtype=torch.bool))
+    assert result["pelvis_neck"]["p95"] == pytest.approx(4.0, abs=0.2)
+    assert result["pelvis_head"]["p95"] == pytest.approx(4.0, abs=0.2)
+
+
+def test_continuation_carries_infeasible_best_candidate() -> None:
+    from sampling.pelvis_contact_compensation_v3 import PelvisContactCompensationSolver
+
+    solver = object.__new__(PelvisContactCompensationSolver)
+    seen: list[tuple[float, torch.Tensor | None]] = []
+
+    def fake_solve(self, dose: float, *, initial_motion: torch.Tensor | None = None) -> dict[str, object]:
+        seen.append((dose, initial_motion))
+        return {"motion": torch.tensor([[dose]]), "feasible": False, "status": "INFEASIBLE_WITHIN_BUDGET"}
+
+    solver.solve = types.MethodType(fake_solve, solver)
+    records = solver.solve_continuation((2.0, 5.0, 10.0))
+    assert [dose for dose, _ in seen] == [2.0, 5.0, 10.0]
+    assert seen[0][1] is None
+    assert torch.equal(seen[1][1], torch.tensor([[2.0]]))
+    assert torch.equal(seen[2][1], torch.tensor([[5.0]]))
+    assert len(records) == 3
     assert result["status"] == NOT_EVALUABLE
