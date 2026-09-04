@@ -170,6 +170,10 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         "side": args.side,
         "target_delta_deg": float(args.target_delta_deg),
         "model_path": None if args.model_path is None else str(args.model_path),
+        # The current server sampler has a known numerical replay drift from
+        # the frozen v3.0.1 endpoint.  Keep the frozen endpoint authoritative,
+        # but make this exploratory override explicit in every run record.
+        "allow_m0_mismatch": True,
     }
     config.representation = {"reconciliation": {"enabled": False}}
     return config

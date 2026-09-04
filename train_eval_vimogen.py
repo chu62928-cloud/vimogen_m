@@ -1633,6 +1633,9 @@ def main(args):
                                 None if projection_model_path is None
                                 else Path(projection_model_path)
                             ),
+                            allow_m0_mismatch=bool(
+                                projection_cfg.get('allow_m0_mismatch', False)
+                            ),
                         )
                         projection_baseline_latents_full[sample_mask] = projection_baseline_norm
                         projection_result = generate_pipe(

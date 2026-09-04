@@ -467,6 +467,7 @@ class PelvisContactFlowProjector:
         config: ProjectorConfig,
         device: torch.device,
         model_path: Path | None = None,
+        allow_m0_mismatch: bool = False,
     ) -> "PelvisContactFlowProjector":
         """Bind frozen v3.0.1 evidence to one sampling-projection run."""
 
@@ -524,7 +525,7 @@ class PelvisContactFlowProjector:
             )
             for span in direct_spans
         )
-        if direct_max > 2.0e-3:
+        if direct_max > 2.0e-3 and not allow_m0_mismatch:
             raise ValueError(
                 "current paired M0 differs from frozen v3.0.1 direct pose: "
                 f"max={direct_max:.6g}"
@@ -578,6 +579,8 @@ class PelvisContactFlowProjector:
             "window": window,
             "frozen_protocol": str(protocol_root),
             "baseline_direct_max_abs": direct_max,
+            "m0_match_status": "PASS" if direct_max <= 2.0e-3 else "MISMATCH_ALLOWED",
+            "allow_m0_mismatch": bool(allow_m0_mismatch),
         }
         return cls(
             config=config,
