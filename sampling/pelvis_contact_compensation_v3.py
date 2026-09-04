@@ -420,11 +420,49 @@ class PelvisContactCompensationSolver:
             multipliers: dict[str, torch.Tensor] = {}
             stage1 = self._optimise_stage(1, multipliers)
             stages.append(stage1)
+            stage1_motion = self._motion_from_state()
             if stage1["feasible"]:
                 stage2 = self._optimise_stage(2, multipliers)
+                # Later stages are lexicographic refinements.  A trunk/posture
+                # update is not allowed to spend contact feasibility.  The
+                # penalty terms remain useful for optimization, but the
+                # acceptance rule below is an explicit hard guard over the
+                # frozen previous-stage constraints.
+                stage2["protected_stage"] = 1
+                stage2["preserved_previous_stage"] = self._stage_feasible(1, stage2["final_residuals"])
+                if not stage2["preserved_previous_stage"]:
+                    stage2["final_residuals_before_restore"] = dict(stage2["final_residuals"])
+                    self._initialise_from_motion(stage1_motion)
+                    stage2["restored_to_previous_stage"] = True
+                    stage2["feasible"] = False
+                    stage2["final_residuals"] = dict(stage1["final_residuals"])
+                    stages.append(stage2)
+                    output = stage1_motion
+                    final = stage1["final_residuals"]
+                    return {
+                        "protocol": self.config.protocol,
+                        "status": "INFEASIBLE_WITHIN_BUDGET",
+                        "feasible": False,
+                        "target_delta_deg": float(target_delta_deg),
+                        "frames": self.frames,
+                        "active_joint_names": list(ACTIVE_JOINT_NAMES),
+                        "trust_region": {"max_rotation_deg": self.config.max_rotation_deg, "max_translation_m": self.config.max_translation_m},
+                        "stages": stages,
+                        "motion": output,
+                    }
                 stages.append(stage2)
                 if stage2["feasible"]:
-                    stages.append(self._optimise_stage(3, multipliers))
+                    stage2_motion = self._motion_from_state()
+                    stage3 = self._optimise_stage(3, multipliers)
+                    stage3["protected_stage"] = 2
+                    stage3["preserved_previous_stage"] = self._stage_feasible(2, stage3["final_residuals"])
+                    if not stage3["preserved_previous_stage"]:
+                        stage3["final_residuals_before_restore"] = dict(stage3["final_residuals"])
+                        self._initialise_from_motion(stage2_motion)
+                        stage3["restored_to_previous_stage"] = True
+                        stage3["feasible"] = False
+                        stage3["final_residuals"] = dict(stage2["final_residuals"])
+                    stages.append(stage3)
             output = self._motion_from_state()
             final = stages[-1]["final_residuals"]
             feasible = bool(stages[-1]["feasible"] and self._stage_feasible(3, final))
