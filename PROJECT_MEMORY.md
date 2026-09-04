@@ -1,5 +1,17 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-04：骨盆接触补偿 v3.0.1 重跑完成，按严格门停止
+
+- BRANCH：从 `805a6a5` 建立 `codex/pelvis-contact-compensation-v3-0-1`。本轮新增实现提交为 `46c06ea`、`a2c34ae`、`f337f71`；旧分支 `codex/pelvis-contact-compensation-v3` 与其结果保持不变。
+- FROZEN：协议 `vimogen_pelvis_contact_compensation_v3_0_1` 位于服务器 `/root/autodl-tmp/vimogen_pelvis_contact_v3_0_1_results/protocol_v3_0_1_final/`，协议 SHA256=`6884e256e23f6c3d268c3e04c6ed6a22c565e9eccf676abc3386dccd181b937a`；足底贴片 SHA256=`1f76af485fa969fc4d813bd61415b69ac8baf5e8cce715ecdd170f9efd4a87ae`；SMPL-X 模型目录 SHA256=`c4721f0dbbc741438cac9961efea31d832aa212cf65e34a3f3be82706af55896`。正剂量、M0 离散接触掩码、最长窗口、整体直立门和信赖域在运行后均未修改。
+- IMPLEMENTED：新增骨盆-颈部/头部方向与骨盆相对支撑中心漂移指标；旋转/平移信赖域改为范数球投影；延续路径始终传递上一个最佳候选；分层增广拉格朗日加入阶段保护，后续阶段破坏前级接触时恢复前级候选并记录 `restored_to_previous_stage=true`。
+- VERIFIED：服务器专项测试 `11 passed in 2.41 s`。原服务器工作区 `/root/autodl-tmp/vimogen_clean` 的既有完整回归为 `246 passed in 51.29 s`；独立动态树不含历史工作区若干未归档兼容模块，直接收集全部旧测试会有 17 个导入错误，不能把该收集结果解释为 v3 代码回归失败。
+- RUN：服务器运行目录为 `/root/autodl-tmp/vimogen_pelvis_contact_v3_0_1_results/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/`，源提交记录为 `f337f71`，耗时 `256.09 s`，状态 `STOP_V3_2`，`v3_2_allowed=false`。sample34122 左窗口帧 `14–25`、稳定帧 8；右窗口帧 `78–90`、稳定帧 11。
+- RESULT：左侧 +10° 接触 RMS=`1.029 mm`，超过 1 mm 门，阶段 1 不可行。右侧阶段 1 接触 RMS=`0.831 mm`，但阶段 2 最佳候选接触约 `7.012 mm`，触发阶段保护并恢复阶段 1 候选；右侧 +2/+5/+10 均记录 `preserved_previous_stage=false`、`restored_to_previous_stage=true`，整体仍不可行。严格评价的最佳不可行候选中，骨盆剂量为精确 +10°，但骨盆-颈部/头部 P95 分别为左 `12.94°/15.25°`、右 `12.85°/12.83°`，支撑漂移 P95 分别为 `35.8/234.0 mm`，脚部也有滑动/离地/脚尖门失败。正式选定运动按规则回退 M0，最佳不可行候选另存，未冒充成功。
+- ARTIFACTS：严格评价目录为 `attempt_02/evaluation_left_best/evaluation/` 与 `attempt_02/evaluation_right_best/evaluation/`，含 `gates.json`、`metrics.json`、`paired_summary.json` 和逐帧角度 CSV。诊断视频已渲染并下载到本分支 `results/phase8/pelvis_contact_compensation_v3_0_1/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/`；视频只用于窗口诊断，不计为 v3.2 成功。
+- DECISION：v3.1 严格可达性门未通过，故不执行 v3.2、不生成 sample94 全序列补偿、不训练残差适配器，也不进入 v3.3/v3.4。当前结果只证明“冻结协议及当前求解器预算内未通过”，不能单独证明几何不可达。
+- NEXT：保持协议和阈值不变，增加带可行性线搜索的阶段锁定/约束 SQP 或接触约束零空间步；记录逐点残差、雅可比秩和信赖域活跃边界。先将左 +10° 接触压至 1 mm 内，再验证右侧在不破坏接触时能否满足整体直立门；只有左右 `+2/+5/+10` 全部通过才解锁 v3.2。
+
 ## 2026-09-01：骨盆接触补偿 v3.0–v3.2 已实现并在 v3.1 停止
 
 - IMPLEMENTED：从提交 `805a6a5` 建立独立工作树与分支 `codex/pelvis-contact-compensation-v3`，当前最新提交为 `e3f0396`。新增 `evaluation/pelvis_contact_compensation_v3.py`、`sampling/pelvis_contact_compensation_v3.py`、协议冻结/运行/评价/渲染脚本及专项测试；ViMoGen 与 v1.3/v2.1 代码未覆盖。

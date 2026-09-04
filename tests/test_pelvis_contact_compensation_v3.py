@@ -131,3 +131,43 @@ def test_continuation_carries_infeasible_best_candidate() -> None:
     assert torch.equal(seen[1][1], torch.tensor([[2.0]]))
     assert torch.equal(seen[2][1], torch.tensor([[5.0]]))
     assert len(records) == 3
+
+
+def test_later_stage_regression_restores_previous_feasible_motion() -> None:
+    from sampling.pelvis_contact_compensation_v3 import PelvisCompensationConfig, PelvisContactCompensationSolver
+
+    solver = object.__new__(PelvisContactCompensationSolver)
+    solver.config = PelvisCompensationConfig()
+    solver.base_root = axis_angle_to_mat3x3(torch.tensor([0.0, math.pi / 2.0, 0.0]))
+    solver.frames = 1
+    stage1_motion = torch.tensor([[1.0]])
+    stage2_motion = torch.tensor([[2.0]])
+    states = iter((stage1_motion, stage2_motion))
+    restored: list[torch.Tensor] = []
+
+    def fake_stage(self, stage: int, multipliers: dict[str, torch.Tensor]) -> dict[str, object]:
+        if stage == 1:
+            return {
+                "stage": 1,
+                "history": [],
+                "final_residuals": {"contact": 0.0, "orientation": 0.0, "penetration": 0.0},
+                "feasible": True,
+                "best_score": [0, 0.0, 0.0],
+            }
+        return {
+            "stage": 2,
+            "history": [],
+            "final_residuals": {"contact": 0.01, "orientation": 0.0, "penetration": 0.0, "trunk": 0.0, "pelvis_neck": 0.0, "pelvis_head": 0.0, "support_drift": 0.0},
+            "feasible": False,
+            "best_score": [1, 9.0, 9.0],
+        }
+
+    solver._optimise_stage = types.MethodType(fake_stage, solver)
+    solver._motion_from_state = types.MethodType(lambda self: next(states), solver)
+    solver._initialise_from_motion = types.MethodType(lambda self, motion: restored.append(motion.clone()), solver)
+    result = solver.solve(10.0)
+    assert result["status"] == "INFEASIBLE_WITHIN_BUDGET"
+    assert torch.equal(result["motion"], stage1_motion)
+    assert torch.equal(restored[0], stage1_motion)
+    assert result["stages"][1]["restored_to_previous_stage"] is True
+    assert result["stages"][1]["preserved_previous_stage"] is False
