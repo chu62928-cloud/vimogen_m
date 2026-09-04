@@ -33,6 +33,7 @@ from motion_rep.rotation_transform import axis_angle_to_mat3x3, mat3x3_to_axis_a
 
 
 PROTOCOL_NAME = "vimogen_pelvis_contact_flow_projection_v0_1"
+TEMPORAL_CONTACT_PROTOCOL = "vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact"
 METHOD_NAME = "ProjFlow-inspired iterative kinematic sampling projection"
 EUCLIDEAN_METRIC = "euclidean"
 KINEMATIC_TEMPORAL_METRIC = "kinematic_temporal"
@@ -194,10 +195,16 @@ class ProjectorConfig:
     max_joint_increment_deg: float = 5.0
     max_root_translation_m: float = 0.010
     backtracking_alphas: tuple[float, ...] = (1.0, 0.5, 0.25, 0.125, 0.0625)
+    contact_velocity_weight: float = 0.0
+    contact_velocity_tolerance_m_per_frame: float = 0.001
+    transition_pair_weight: float = 0.25
+    boundary_halo_frames: int = 0
 
     def validate(self) -> None:
-        if self.protocol != PROTOCOL_NAME:
-            raise ValueError(f"protocol must be {PROTOCOL_NAME}")
+        if self.protocol not in {PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL}:
+            raise ValueError(
+                f"protocol must be {PROTOCOL_NAME} or {TEMPORAL_CONTACT_PROTOCOL}"
+            )
         if self.metric not in {EUCLIDEAN_METRIC, KINEMATIC_TEMPORAL_METRIC}:
             raise ValueError("metric must be euclidean or kinematic_temporal")
         if not 0.0 <= self.sigma_min <= self.sigma_max <= 1.0:
@@ -213,8 +220,19 @@ class ProjectorConfig:
         )
         if any(value <= 0.0 for value in positive):
             raise ValueError("positive projector bounds and weights are required")
-        if min(self.lambda_skel, self.lambda_vel, self.lambda_acc) < 0.0:
+        if min(self.lambda_skel, self.lambda_vel, self.lambda_acc, self.contact_velocity_weight) < 0.0:
             raise ValueError("metric regularisation weights cannot be negative")
+        if self.contact_velocity_tolerance_m_per_frame <= 0.0:
+            raise ValueError("contact velocity tolerance must be positive")
+        if not 0.0 <= self.transition_pair_weight <= 1.0:
+            raise ValueError("transition pair weight must lie in [0,1]")
+        if self.boundary_halo_frames < 0:
+            raise ValueError("boundary_halo_frames cannot be negative")
+        if self.protocol == TEMPORAL_CONTACT_PROTOCOL:
+            if self.contact_velocity_weight <= 0.0:
+                raise ValueError("v0.2 requires a positive contact velocity weight")
+            if self.boundary_halo_frames < 1:
+                raise ValueError("v0.2 requires at least one boundary halo frame")
         if self.max_relinearization_iters < 1:
             raise ValueError("max_relinearization_iters must be positive")
 
@@ -239,6 +257,8 @@ class ProjectionResult:
     pelvis_residual: float
     heel_residual: float
     toe_residual: float
+    heel_velocity_residual: float
+    toe_velocity_residual: float
     penetration_residual: float
     delta_q_norm: float
     delta_root_translation_norm: float
@@ -334,6 +354,7 @@ def solve_local_projection(
     penetration_target: torch.Tensor,
     *,
     contact_weight: float,
+    contact_row_weights: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, dict[str, float | int | None]]:
     """Solve the equality-constrained local quadratic projection."""
 
@@ -343,8 +364,20 @@ def solve_local_projection(
     q = metric.clone()
     rhs = torch.zeros(variables, device=metric.device, dtype=metric.dtype)
     if contact_jacobian.numel():
-        q = q + contact_weight * contact_jacobian.T @ contact_jacobian
-        rhs = rhs + contact_weight * contact_jacobian.T @ contact_target
+        if contact_row_weights is None:
+            row_weights = torch.ones(
+                contact_jacobian.shape[0], device=q.device, dtype=q.dtype
+            )
+        else:
+            row_weights = contact_row_weights.to(device=q.device, dtype=q.dtype)
+            if row_weights.shape != (contact_jacobian.shape[0],):
+                raise ValueError("contact_row_weights must match contact rows")
+            if torch.any(row_weights < 0.0) or not torch.isfinite(row_weights).all():
+                raise ValueError("contact_row_weights must be finite and non-negative")
+        weighted_jacobian = contact_jacobian * row_weights.sqrt().unsqueeze(-1)
+        weighted_target = contact_target * row_weights.sqrt()
+        q = q + contact_weight * weighted_jacobian.T @ weighted_jacobian
+        rhs = rhs + contact_weight * weighted_jacobian.T @ weighted_target
     equality_parts = [
         item for item in (pelvis_jacobian, penetration_jacobian) if item.numel()
     ]
@@ -548,26 +581,49 @@ class PelvisContactFlowProjector:
                         "smplx", Path(__file__).resolve().parents[1]
                     )
                 )
-        from smplx import SMPLX
-
-        model = SMPLX(
-            model_path=str(model_path),
-            gender="neutral",
-            num_betas=10,
-            batch_size=len(window["frames"]),
-            use_pca=False,
-        ).to(device)
         projection_mask = torch.zeros(
             expected_valid.shape[-1], dtype=torch.bool, device=device
         )
         projection_mask[
             int(window["window_start"]) : int(window["window_end_exclusive"])
         ] = True
+        context_mask = projection_mask.clone()
+        if config.boundary_halo_frames:
+            context_mask[:] = False
+            context_start = max(
+                0, int(window["window_start"]) - config.boundary_halo_frames
+            )
+            context_end = min(
+                expected_valid.shape[-1],
+                int(window["window_end_exclusive"]) + config.boundary_halo_frames,
+            )
+            context_mask[context_start:context_end] = True
+        from smplx import SMPLX
+
+        model = SMPLX(
+            model_path=str(model_path),
+            gender="neutral",
+            num_betas=10,
+            batch_size=int((expected_valid[0] & context_mask).sum().item()),
+            use_pca=False,
+        ).to(device)
+        velocity_pair_masks: dict[str, list[bool]] = {}
+        velocity_pair_weights: dict[str, list[float]] = {}
+        for name in ("left", "right"):
+            evidence = case["sides"][name]["evidence"]
+            pair_mask = list(evidence["valid_masks"]["continuous_contact_pair"])
+            flat_pair = list(evidence["valid_masks"]["continuous_flat_pair"])
+            velocity_pair_masks[name] = pair_mask
+            velocity_pair_weights[name] = [
+                1.0 if is_flat else config.transition_pair_weight
+                for is_flat in flat_pair
+            ]
         contact_data = {
             "model": model,
             "model_path": str(model_path),
             "patches": patches,
             "projection_mask": projection_mask,
+            "context_mask": context_mask,
             "stable_masks": {
                 name: torch.as_tensor(
                     case["sides"][name]["evidence"]["valid_masks"]["flat_contact"],
@@ -580,6 +636,8 @@ class PelvisContactFlowProjector:
                 name: float(case["sides"][name]["evidence"]["floor_height_m"])
                 for name in ("left", "right")
             },
+            "velocity_pair_masks": velocity_pair_masks,
+            "velocity_pair_weights": velocity_pair_weights,
             "sample_id": str(sample_id),
             "side": side,
             "window": window,
@@ -706,6 +764,8 @@ class PelvisContactFlowProjector:
         anchors: Mapping[str, Mapping[str, torch.Tensor]],
         floors: Mapping[str, float],
         active_penetration: Mapping[str, torch.Tensor] | None,
+        velocity_pairs: Mapping[str, torch.Tensor] | None = None,
+        velocity_pair_weights: Mapping[str, torch.Tensor] | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, dict[str, torch.Tensor]]:
         next_body, next_root, next_translation = self._apply_increment(
             body, root, translation, increment
@@ -713,8 +773,11 @@ class PelvisContactFlowProjector:
         output = self._model_output(model, next_body, next_root, next_translation)
         pelvis = so3_log(target_root.transpose(-1, -2) @ next_root).reshape(-1)
         contact_parts: list[torch.Tensor] = []
+        contact_weights: list[torch.Tensor] = []
         heel_values: list[torch.Tensor] = []
         toe_values: list[torch.Tensor] = []
+        heel_velocity_values: list[torch.Tensor] = []
+        toe_velocity_values: list[torch.Tensor] = []
         penetration_values: list[torch.Tensor] = []
         for side in ("left", "right"):
             heel, toe = patch_centres(output.vertices, patches[side])
@@ -723,8 +786,58 @@ class PelvisContactFlowProjector:
             toe_error = toe[stable] - anchors[side]["toe"][stable]
             if heel_error.numel():
                 contact_parts.extend((heel_error.reshape(-1), toe_error.reshape(-1)))
+                contact_weights.extend(
+                    (
+                        torch.ones(
+                            heel_error.numel(), device=heel_error.device, dtype=heel_error.dtype
+                        ),
+                        torch.ones(
+                            toe_error.numel(), device=toe_error.device, dtype=toe_error.dtype
+                        ),
+                    )
+                )
                 heel_values.append(heel_error)
                 toe_values.append(toe_error)
+            pair_mask = None if velocity_pairs is None else velocity_pairs.get(side)
+            if pair_mask is not None and pair_mask.numel():
+                pair_mask = pair_mask.to(device=heel.device, dtype=torch.bool)
+                if pair_mask.shape != (heel.shape[0] - 1,):
+                    raise ValueError("velocity_pairs must match adjacent model frames")
+                heel_velocity = heel[1:] - heel[:-1]
+                toe_velocity = toe[1:] - toe[:-1]
+                heel_velocity_error = (
+                    heel_velocity - (anchors[side]["heel"][1:] - anchors[side]["heel"][:-1])
+                )[pair_mask]
+                toe_velocity_error = (
+                    toe_velocity - (anchors[side]["toe"][1:] - anchors[side]["toe"][:-1])
+                )[pair_mask]
+                configured_pair_weights = (
+                    None if velocity_pair_weights is None else velocity_pair_weights.get(side)
+                )
+                if configured_pair_weights is not None:
+                    configured_pair_weights = configured_pair_weights.to(
+                        device=heel.device, dtype=heel.dtype
+                    )
+                    if configured_pair_weights.shape != pair_mask.shape:
+                        raise ValueError("velocity_pair_weights must match velocity_pairs")
+                pair_weights = (
+                    torch.ones(pair_mask.sum(), device=heel.device, dtype=heel.dtype)
+                    if configured_pair_weights is None
+                    else configured_pair_weights[pair_mask]
+                )
+                if pair_weights.shape != (int(pair_mask.sum().item()),):
+                    raise ValueError("velocity_pair_weights must match velocity_pairs")
+                # Store physical residuals for diagnostics, while scaling the
+                # optimisation rows through contact_row_weights below.
+                heel_velocity_values.append(heel_velocity_error)
+                toe_velocity_values.append(toe_velocity_error)
+                contact_parts.extend((heel_velocity_error.reshape(-1), toe_velocity_error.reshape(-1)))
+                contact_weights.extend(
+                    (
+                        pair_weights.repeat_interleave(3),
+                        pair_weights.repeat_interleave(3),
+                    )
+                )
             if active_penetration is not None:
                 marker = torch.cat((heel[:, 2], toe[:, 2]))
                 active = active_penetration[side]
@@ -748,6 +861,19 @@ class PelvisContactFlowProjector:
             "toe": torch.cat([value.reshape(-1, 3) for value in toe_values], dim=0)
             if toe_values
             else torch.zeros((0, 3), device=body.device, dtype=body.dtype),
+            "heel_velocity": torch.cat(
+                [value.reshape(-1, 3) for value in heel_velocity_values], dim=0
+            )
+            if heel_velocity_values
+            else torch.zeros((0, 3), device=body.device, dtype=body.dtype),
+            "toe_velocity": torch.cat(
+                [value.reshape(-1, 3) for value in toe_velocity_values], dim=0
+            )
+            if toe_velocity_values
+            else torch.zeros((0, 3), device=body.device, dtype=body.dtype),
+            "contact_row_weights": torch.cat(contact_weights)
+            if contact_weights
+            else torch.zeros(0, device=body.device, dtype=body.dtype),
             "next_body": next_body,
             "next_root": next_root,
             "next_translation": next_translation,
@@ -771,20 +897,50 @@ class PelvisContactFlowProjector:
             "pelvis_geodesic_rms_deg": self._rms(pelvis) * 180.0 / math.pi,
             "heel_rms_m": self._rms(diagnostics["heel"]),
             "toe_rms_m": self._rms(diagnostics["toe"]),
+            "heel_velocity_rms_m_per_frame": self._rms(diagnostics["heel_velocity"]),
+            "toe_velocity_rms_m_per_frame": self._rms(diagnostics["toe_velocity"]),
             "penetration_active_rms_m": self._rms(penetration),
             "active_penetration_count": int(penetration.numel()),
         }
 
     def _violation(self, summary: Mapping[str, float | int | None]) -> float:
-        values = (
-            float(summary["pelvis_geodesic_rms_deg"] or 0.0)
+        return max(self._violation_components(summary).values())
+
+    def _violation_components(
+        self, summary: Mapping[str, float | int | None]
+    ) -> dict[str, float]:
+        return {
+            "pelvis": float(summary["pelvis_geodesic_rms_deg"] or 0.0)
             / self.config.pelvis_tolerance_deg,
-            float(summary["heel_rms_m"] or 0.0) / self.config.contact_tolerance_m,
-            float(summary["toe_rms_m"] or 0.0) / self.config.contact_tolerance_m,
-            float(summary["penetration_active_rms_m"] or 0.0)
+            "heel_position": float(summary["heel_rms_m"] or 0.0)
             / self.config.contact_tolerance_m,
-        )
-        return max(values)
+            "toe_position": float(summary["toe_rms_m"] or 0.0)
+            / self.config.contact_tolerance_m,
+            "heel_velocity": float(
+                summary["heel_velocity_rms_m_per_frame"] or 0.0
+            )
+            / self.config.contact_velocity_tolerance_m_per_frame,
+            "toe_velocity": float(
+                summary["toe_velocity_rms_m_per_frame"] or 0.0
+            )
+            / self.config.contact_velocity_tolerance_m_per_frame,
+            "penetration": float(summary["penetration_active_rms_m"] or 0.0)
+            / self.config.contact_tolerance_m,
+        }
+
+    @staticmethod
+    def _accept_merit(
+        before: Mapping[str, float], after: Mapping[str, float]
+    ) -> bool:
+        if max(after.values()) >= max(before.values()) - 1.0e-9:
+            return False
+        for name, previous in before.items():
+            current = float(after[name])
+            if previous <= 1.0 and current > 1.0 + 1.0e-6:
+                return False
+            if previous > 1.0 and current > previous * 1.05 + 1.0e-9:
+                return False
+        return True
 
     def project_clean_endpoint(
         self,
@@ -813,7 +969,13 @@ class PelvisContactFlowProjector:
             device=clean_motion.device,
             dtype=torch.bool,
         ) & valid_mask
-        frame_indices = torch.nonzero(projection_mask, as_tuple=False).flatten()
+        dose_mask = projection_mask.clone()
+        context_mask = torch.as_tensor(
+            contact_data.get("context_mask", projection_mask),
+            device=clean_motion.device,
+            dtype=torch.bool,
+        ) & valid_mask
+        frame_indices = torch.nonzero(context_mask, as_tuple=False).flatten()
         if not frame_indices.numel():
             raise ValueError("projection mask contains no valid frames")
         physical = self._physical(clean_motion)
@@ -828,7 +990,12 @@ class PelvisContactFlowProjector:
         base_translation = source[:, MOTION_LAYOUT.root_translation][frame_indices]
         m0_source = m0_physical[0]
         m0_root = decode_rot6d_safe(m0_source[:, MOTION_LAYOUT.root_rotation])[frame_indices]
-        target_root = target_root_rotation(m0_root, float(target_dose))
+        target_root = m0_root.clone()
+        dose_local = dose_mask[frame_indices]
+        if bool(dose_local.any()):
+            target_root[dose_local] = target_root_rotation(
+                m0_root[dose_local], float(target_dose)
+            )
         model = contact_data["model"]
         patches = contact_data["patches"]
         stable_masks = {
@@ -852,6 +1019,46 @@ class PelvisContactFlowProjector:
                 heel, toe = patch_centres(m0_output.vertices, patches[side])
                 anchors[side] = {"heel": heel.detach(), "toe": toe.detach()}
                 floors[side] = float(contact_data["floor_height_m"][side])
+        velocity_pairs: dict[str, torch.Tensor] | None = None
+        velocity_pair_weights: dict[str, torch.Tensor] | None = None
+        if self.config.contact_velocity_weight > 0.0:
+            velocity_pairs = {}
+            velocity_pair_weights = {}
+            global_pair_count = max(int(m0_source.shape[0]) - 1, 0)
+            local_global = frame_indices.detach().cpu().tolist()
+            for side in ("left", "right"):
+                pair_source = torch.as_tensor(
+                    contact_data.get("velocity_pair_masks", {}).get(
+                        side, [False] * global_pair_count
+                    ),
+                    device=clean_motion.device,
+                    dtype=torch.bool,
+                )
+                pair_weight_source = torch.as_tensor(
+                    contact_data.get("velocity_pair_weights", {}).get(
+                        side, [self.config.transition_pair_weight] * global_pair_count
+                    ),
+                    device=clean_motion.device,
+                    dtype=torch.float32,
+                )
+                if pair_source.shape != (global_pair_count,):
+                    raise ValueError("frozen velocity pair mask must have length T-1")
+                if pair_weight_source.shape != (global_pair_count,):
+                    raise ValueError("frozen velocity pair weights must have length T-1")
+                local_pair = torch.zeros(
+                    max(len(local_global) - 1, 0), device=clean_motion.device, dtype=torch.bool
+                )
+                local_weights = torch.zeros(
+                    max(len(local_global) - 1, 0), device=clean_motion.device, dtype=torch.float32
+                )
+                for local_index, (left_global, right_global) in enumerate(
+                    zip(local_global[:-1], local_global[1:])
+                ):
+                    if right_global == left_global + 1:
+                        local_pair[local_index] = pair_source[left_global]
+                        local_weights[local_index] = pair_weight_source[left_global]
+                velocity_pairs[side] = local_pair
+                velocity_pair_weights[side] = local_weights
         zero = torch.zeros(
             (frame_indices.numel(), VARIABLES_PER_FRAME),
             device=clean_motion.device,
@@ -899,6 +1106,8 @@ class PelvisContactFlowProjector:
                     anchors=anchors,
                     floors=floors,
                     active_penetration=active_penetration,
+                    velocity_pairs=velocity_pairs,
+                    velocity_pair_weights=velocity_pair_weights,
                 )
                 return torch.cat((pelvis, contact, penetration))
 
@@ -915,6 +1124,8 @@ class PelvisContactFlowProjector:
                     anchors=anchors,
                     floors=floors,
                     active_penetration=active_penetration,
+                    velocity_pairs=velocity_pairs,
+                    velocity_pair_weights=velocity_pair_weights,
                 )
                 rows = (pelvis0.numel(), contact0.numel(), penetration0.numel())
                 jacobian = autograd_jacobian(residual_vector, zero)
@@ -934,6 +1145,17 @@ class PelvisContactFlowProjector:
                 device=clean_motion.device,
                 dtype=torch.float32,
             )
+            # Boundary halo frames provide fixed context for velocity
+            # residuals but are not optimisation variables.  Mask their
+            # Jacobian columns and make their metric block an identity.
+            variable_columns = dose_local.repeat_interleave(VARIABLES_PER_FRAME)
+            if not bool(variable_columns.all()):
+                metric = metric.clone()
+                metric[~variable_columns, :] = 0.0
+                metric[:, ~variable_columns] = 0.0
+                metric[~variable_columns, ~variable_columns] = 1.0
+                jacobian = jacobian.clone()
+                jacobian[:, ~variable_columns] = 0.0
             flat_step, solve_diagnostics = solve_local_projection(
                 metric,
                 pelvis_jacobian,
@@ -943,6 +1165,7 @@ class PelvisContactFlowProjector:
                 penetration_jacobian,
                 -penetration0.detach(),
                 contact_weight=self.config.contact_weight,
+                contact_row_weights=diagnostics0["contact_row_weights"],
             )
             condition = solve_diagnostics["jacobian_condition"]
             proposed = project_increment_norms(
@@ -951,6 +1174,7 @@ class PelvisContactFlowProjector:
                 max_root_translation_m=self.config.max_root_translation_m,
             )
             violation_before = self._violation(summary_before)
+            merit_before = self._violation_components(summary_before)
             accepted_alpha = None
             accepted_state = None
             accepted_summary = None
@@ -969,9 +1193,12 @@ class PelvisContactFlowProjector:
                         anchors=anchors,
                         floors=floors,
                         active_penetration=active_penetration,
+                        velocity_pairs=velocity_pairs,
+                        velocity_pair_weights=velocity_pair_weights,
                     )
                     summary_after = self._residual_summary(p1, g1, d1)
-                    if self._violation(summary_after) < violation_before - 1.0e-9:
+                    merit_after = self._violation_components(summary_after)
+                    if self._accept_merit(merit_before, merit_after):
                         accepted_alpha = float(alpha)
                         accepted_state = (
                             d1["next_body"].detach(),
@@ -990,6 +1217,8 @@ class PelvisContactFlowProjector:
                         "backtracking_alpha": None,
                         "accepted": False,
                         "penetration_method": PENETRATION_METHOD,
+                        "normalized_violation_before": merit_before,
+                        "normalized_violation_after": merit_before,
                     }
                 )
                 break
@@ -1005,6 +1234,18 @@ class PelvisContactFlowProjector:
                 "heel_residual_after_m": accepted_summary["heel_rms_m"],
                 "toe_residual_before_m": summary_before["toe_rms_m"],
                 "toe_residual_after_m": accepted_summary["toe_rms_m"],
+                "heel_velocity_before_m_per_frame": summary_before[
+                    "heel_velocity_rms_m_per_frame"
+                ],
+                "heel_velocity_after_m_per_frame": accepted_summary[
+                    "heel_velocity_rms_m_per_frame"
+                ],
+                "toe_velocity_before_m_per_frame": summary_before[
+                    "toe_velocity_rms_m_per_frame"
+                ],
+                "toe_velocity_after_m_per_frame": accepted_summary[
+                    "toe_velocity_rms_m_per_frame"
+                ],
                 "penetration_before_m": summary_before["penetration_active_rms_m"],
                 "penetration_after_m": accepted_summary["penetration_active_rms_m"],
                 "delta_q_norm": float(torch.linalg.vector_norm(proposed).cpu()),
@@ -1023,6 +1264,10 @@ class PelvisContactFlowProjector:
                 "backtracking_alpha": accepted_alpha,
                 "accepted": True,
                 "penetration_method": PENETRATION_METHOD,
+                "normalized_violation_before": merit_before,
+                "normalized_violation_after": self._violation_components(
+                    accepted_summary
+                ),
             }
             records.append(record)
             violation_after = self._violation(accepted_summary)
@@ -1035,6 +1280,14 @@ class PelvisContactFlowProjector:
                 <= self.config.contact_tolerance_m
                 and float(accepted_summary["penetration_active_rms_m"] or 0.0)
                 <= self.config.contact_tolerance_m
+                and float(
+                    accepted_summary["heel_velocity_rms_m_per_frame"] or 0.0
+                )
+                <= self.config.contact_velocity_tolerance_m_per_frame
+                and float(
+                    accepted_summary["toe_velocity_rms_m_per_frame"] or 0.0
+                )
+                <= self.config.contact_velocity_tolerance_m_per_frame
             ):
                 converged = True
                 break
@@ -1078,6 +1331,12 @@ class PelvisContactFlowProjector:
             pelvis_residual=float(final_summary["pelvis_geodesic_rms_deg"] or 0.0),
             heel_residual=float(final_summary["heel_rms_m"] or 0.0),
             toe_residual=float(final_summary["toe_rms_m"] or 0.0),
+            heel_velocity_residual=float(
+                final_summary["heel_velocity_rms_m_per_frame"] or 0.0
+            ),
+            toe_velocity_residual=float(
+                final_summary["toe_velocity_rms_m_per_frame"] or 0.0
+            ),
             penetration_residual=float(
                 final_summary["penetration_active_rms_m"] or 0.0
             ),
@@ -1106,7 +1365,7 @@ class PelvisContactFlowProjector:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         sigma_value = float(torch.as_tensor(sigma).detach().cpu())
         diagnostics: dict[str, Any] = {
-            "protocol": PROTOCOL_NAME,
+            "protocol": self.config.protocol,
             "method": METHOD_NAME,
             "metric": self.config.metric,
             "sigma": sigma_value,
@@ -1223,13 +1482,13 @@ class PelvisContactFlowProjector:
         g0 = self._normalised(rebuilt)
         return ProjectionFinalOutputs(
             g0=g0,
-            protocol=PROTOCOL_NAME,
+            protocol=self.config.protocol,
             summary=self.protocol_record(),
         )
 
     def protocol_record(self) -> dict[str, Any]:
         return {
-            "protocol": PROTOCOL_NAME,
+            "protocol": self.config.protocol,
             "method": METHOD_NAME,
             "config": asdict(self.config),
             "target_delta_deg": self.target_dose,
@@ -1247,6 +1506,9 @@ class PelvisContactFlowProjector:
                     "m0_match_status",
                     "allow_m0_mismatch",
                     "projection_baseline",
+                    "context_mask",
+                    "velocity_pair_masks",
+                    "velocity_pair_weights",
                 )
                 if key in self.contact_data
             },
@@ -1262,6 +1524,7 @@ __all__ = [
     "METHOD_NAME",
     "PENETRATION_METHOD",
     "PROTOCOL_NAME",
+    "TEMPORAL_CONTACT_PROTOCOL",
     "PelvisContactFlowProjector",
     "ProjectionResult",
     "ProjectorConfig",

@@ -25,6 +25,7 @@ from sampling.pelvis_contact_flow_projection_v0_1 import (  # noqa: E402
     EUCLIDEAN_METRIC,
     KINEMATIC_TEMPORAL_METRIC,
     PROTOCOL_NAME,
+    TEMPORAL_CONTACT_PROTOCOL,
     ProjectorConfig,
     write_strict_json,
 )
@@ -127,7 +128,7 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
     config.experiment.auto_resume = False
     config.experiment.eval_steps = 1
     config.experiment.result_dir = str(run_root / "trainer")
-    config.dataloader.test_local_batch = 1
+    config.dataloader.test_local_batch = int(args.test_local_batch)
     config.dataloader.num_workers = 2
     config.dataset.test_json_file_list = [str(manifest)]
     config.dataset.text_key = "prompt_motion_detailed"
@@ -144,6 +145,7 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
     config.relative_root_forward = {"enabled": False}
     config.source_noise = {"enabled": False}
     projector = ProjectorConfig(
+        protocol=args.protocol,
         metric=args.metric,
         sigma_min=0.0662879,
         sigma_max=0.65,
@@ -159,11 +161,15 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         penetration_epsilon_m=0.0005,
         max_joint_increment_deg=5.0,
         max_root_translation_m=0.010,
+        contact_velocity_weight=args.contact_velocity_weight,
+        contact_velocity_tolerance_m_per_frame=args.contact_velocity_tolerance_m_per_frame,
+        transition_pair_weight=args.transition_pair_weight,
+        boundary_halo_frames=args.boundary_halo_frames,
     )
     projector.validate()
     config.pelvis_contact_projection = {
         **asdict(projector),
-        "enabled": True,
+        "enabled": not bool(args.m0_only),
         "protocol_root": str(args.protocol_root),
         "artifact_dir": str(run_root / "projection_artifacts"),
         "sample_id": "34122",
@@ -173,7 +179,7 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         # The current server sampler has a known numerical replay drift from
         # the frozen v3.0.1 endpoint.  Keep the frozen endpoint authoritative,
         # but make this exploratory override explicit in every run record.
-        "allow_m0_mismatch": True,
+        "allow_m0_mismatch": bool(args.allow_m0_mismatch),
     }
     config.representation = {"reconciliation": {"enabled": False}}
     return config
@@ -211,7 +217,7 @@ def freeze_inputs(
     if smplx_path is None:
         smplx_path = Path(protocol["inputs"]["smplx_model"]["path"])
     snapshot = {
-        "protocol": PROTOCOL_NAME,
+        "protocol": args.protocol,
         "status": "INPUTS_FROZEN_BEFORE_GENERATION",
         "source_revision": git_value("rev-parse", "HEAD"),
         "source_branch": git_value("branch", "--show-current"),
@@ -260,6 +266,11 @@ def freeze_inputs(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metric", choices=(EUCLIDEAN_METRIC, KINEMATIC_TEMPORAL_METRIC), required=True)
+    parser.add_argument(
+        "--protocol",
+        choices=(PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL),
+        default=PROTOCOL_NAME,
+    )
     parser.add_argument("--side", choices=("left", "right"), required=True)
     parser.add_argument("--target-delta-deg", type=float, choices=(2.0, 5.0, 10.0), required=True)
     parser.add_argument("--protocol-root", type=Path, default=DEFAULT_PROTOCOL_ROOT)
@@ -271,11 +282,29 @@ def main() -> None:
     parser.add_argument("--lambda-vel", type=float, default=1.0)
     parser.add_argument("--lambda-acc", type=float, default=5.0)
     parser.add_argument("--contact-weight", type=float, default=1.0e6)
+    parser.add_argument("--contact-velocity-weight", type=float, default=0.0)
+    parser.add_argument(
+        "--contact-velocity-tolerance-m-per-frame",
+        type=float,
+        default=0.001,
+    )
+    parser.add_argument("--transition-pair-weight", type=float, default=0.25)
+    parser.add_argument("--boundary-halo-frames", type=int, default=0)
+    parser.add_argument("--allow-m0-mismatch", action="store_true")
+    parser.add_argument("--m0-only", action="store_true")
+    parser.add_argument("--manifest", type=Path, default=None)
+    parser.add_argument("--test-local-batch", type=int, default=1)
+    parser.add_argument("--audit-label", default="default")
     args = parser.parse_args()
-    manifest = ensure_manifest(args.output_root)
+    if args.m0_only and args.protocol != PROTOCOL_NAME:
+        raise ValueError("--m0-only uses the legacy projection-disabled protocol")
+    manifest = args.manifest if args.manifest is not None else ensure_manifest(args.output_root)
+    if not manifest.is_file():
+        raise FileNotFoundError(f"manifest does not exist: {manifest}")
     parent = (
         args.output_root
-        / "pilot_sample34122"
+        / ("m0_audit" if args.m0_only else "pilot_sample34122")
+        / args.audit_label
         / args.side
         / args.metric
         / f"dose_{args.target_delta_deg:+g}deg"
@@ -286,7 +315,7 @@ def main() -> None:
     OmegaConf.save(config, config_path)
     snapshot = freeze_inputs(args, run_root, config_path, manifest)
     record = {
-        "protocol": PROTOCOL_NAME,
+        "protocol": args.protocol,
         "status": "RUNNING",
         "run_root": str(run_root),
         "input_snapshot": str(run_root / "input_snapshot.json"),

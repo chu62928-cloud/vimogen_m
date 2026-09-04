@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 import torch
+import yaml
 from smplx import SMPLX
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,6 +28,124 @@ from evaluation.relative_root_trunk_v2_1 import direct_smpl_parameters  # noqa: 
 from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe  # noqa: E402
 from motion_rep.pose_authority import authority_project  # noqa: E402
 from sampling.pelvis_contact_flow_projection_v0_1 import write_strict_json  # noqa: E402
+from sampling.pelvis_contact_flow_projection_v0_2 import (  # noqa: E402
+    PROTOCOL_NAME as TEMPORAL_CONTACT_PROTOCOL,
+)
+
+
+def _summary(values: torch.Tensor) -> dict[str, Any]:
+    values = values.detach().float().reshape(-1)
+    if not values.numel():
+        return {"count": 0, "mean": None, "p95": None, "max": None}
+    return {
+        "count": int(values.numel()),
+        "mean": float(values.mean().item()),
+        "p95": float(torch.quantile(values, 0.95).item()),
+        "max": float(values.max().item()),
+    }
+
+
+def _paired_status(candidate: dict[str, Any], baseline: dict[str, Any]) -> str:
+    if candidate["count"] < 3 or baseline["count"] < 3:
+        return "NOT_EVALUABLE"
+    for key in ("mean", "p95"):
+        tolerance = max(abs(float(baseline[key])) * 0.05, 0.001)
+        if float(candidate[key]) > float(baseline[key]) + tolerance:
+            return "FAIL"
+    return "PASS"
+
+
+def _frozen_window_foot(
+    m0_vertices: torch.Tensor,
+    candidate_vertices: torch.Tensor,
+    patches: dict[str, dict[str, list[int]]],
+    evidence: dict[str, Any],
+    *,
+    window_start: int,
+    window_end: int,
+    boundary_halo: int,
+) -> dict[str, Any]:
+    """Evaluate contact using frozen full-sequence masks and floor heights."""
+
+    if m0_vertices.ndim != 3 or candidate_vertices.shape != m0_vertices.shape:
+        raise ValueError("vertices must both have shape [T,V,3]")
+    context_start = max(0, window_start - boundary_halo)
+    context_end = min(m0_vertices.shape[0], window_end + boundary_halo)
+    rows: dict[str, Any] = {}
+    for side in ("left", "right"):
+        patch = patches[side]
+        indices_heel = torch.as_tensor(patch["heel"], dtype=torch.long)
+        indices_toe = torch.as_tensor(patch["toe"], dtype=torch.long)
+        m0_heel = m0_vertices[:, indices_heel].mean(1)
+        m0_toe = m0_vertices[:, indices_toe].mean(1)
+        c_heel = candidate_vertices[:, indices_heel].mean(1)
+        c_toe = candidate_vertices[:, indices_toe].mean(1)
+        side_evidence = evidence[side]["evidence"]
+        masks = side_evidence["valid_masks"]
+        general = torch.as_tensor(masks["general_contact"], dtype=torch.bool)
+        pairs = torch.as_tensor(masks["continuous_contact_pair"], dtype=torch.bool)
+        flat = torch.as_tensor(masks["flat_contact"], dtype=torch.bool)
+        frame_mask = torch.zeros(m0_vertices.shape[0], dtype=torch.bool)
+        frame_mask[window_start:window_end] = True
+        pair_mask = torch.zeros(max(m0_vertices.shape[0] - 1, 0), dtype=torch.bool)
+        pair_start = max(0, context_start - 1)
+        pair_end = min(m0_vertices.shape[0] - 1, context_end - 1)
+        if pair_end > pair_start:
+            pair_mask[pair_start:pair_end] = True
+        pair_mask &= pairs
+        floor = float(side_evidence["floor_height_m"])
+        m0_sole = torch.minimum(m0_heel[:, 2], m0_toe[:, 2])
+        c_sole = torch.minimum(c_heel[:, 2], c_toe[:, 2])
+        m0_center = 0.5 * (m0_heel + m0_toe)
+        c_center = 0.5 * (c_heel + c_toe)
+        m0_speed = torch.linalg.vector_norm(m0_center[1:, :2] - m0_center[:-1, :2], dim=-1)
+        c_speed = torch.linalg.vector_norm(c_center[1:, :2] - c_center[:-1, :2], dim=-1)
+        baseline = {
+            "sliding_m_per_frame": _summary(m0_speed[pair_mask]),
+            "lift_m": _summary((m0_sole - floor).clamp_min(0.0)[general & frame_mask]),
+            "penetration_m": _summary((floor - m0_sole).clamp_min(0.0)[general & frame_mask]),
+        }
+        candidate = {
+            "sliding_m_per_frame": _summary(c_speed[pair_mask]),
+            "lift_m": _summary((c_sole - floor).clamp_min(0.0)[general & frame_mask]),
+            "penetration_m": _summary((floor - c_sole).clamp_min(0.0)[general & frame_mask]),
+        }
+        statuses = {
+            key: _paired_status(candidate[key], baseline[key]) for key in baseline
+        }
+        flat_window = flat & frame_mask
+        m0_gap = m0_heel[:, 2] - m0_toe[:, 2]
+        c_gap = c_heel[:, 2] - c_toe[:, 2]
+        if int(flat_window.sum().item()) < 3:
+            toe_status = "NOT_EVALUABLE"
+            m0_fraction = c_fraction = None
+        else:
+            m0_fraction = float((m0_gap[flat_window] >= 0.035).float().mean().item())
+            c_fraction = float((c_gap[flat_window] >= 0.035).float().mean().item())
+            toe_status = "PASS" if c_fraction <= m0_fraction + 0.05 else "FAIL"
+        all_statuses = list(statuses.values()) + [toe_status]
+        status = "FAIL" if "FAIL" in all_statuses else (
+            "NOT_EVALUABLE" if "NOT_EVALUABLE" in all_statuses else "PASS"
+        )
+        rows[side] = {
+            "status": status,
+            "baseline": baseline,
+            "candidate": candidate,
+            "statuses": statuses,
+            "toe_contact": {
+                "status": toe_status,
+                "baseline_fraction": m0_fraction,
+                "candidate_fraction": c_fraction,
+            },
+            "contact_evidence": side_evidence,
+            "window": {
+                "start": window_start,
+                "end_exclusive": window_end,
+                "context_start": context_start,
+                "context_end_exclusive": context_end,
+            },
+        }
+    return rows
 
 
 def _vertices(model: SMPLX, motion: torch.Tensor, device: torch.device) -> torch.Tensor:
@@ -61,6 +180,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     protocol = json.loads((protocol_root / "protocol.json").read_text(encoding="utf-8"))
     case = next(item for item in protocol["cases"] if str(item["sample_id"]) == "34122")
     side = str(run_record["side"])
+    is_temporal = str(run_record.get("protocol")) == TEMPORAL_CONTACT_PROTOCOL
     target = float(run_record["target_delta_deg"])
     mean = torch.from_numpy(np.load(protocol["inputs"]["mean"]["path"])).float()
     std = torch.from_numpy(np.load(protocol["inputs"]["std"]["path"])).float()
@@ -148,14 +268,6 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         candidate_vertices=candidate_vertices[window_start:window_end],
         patches=patches,
     )
-    foot = paired_window["feet"].get(side, {})
-    contact_status = foot.get("status", "NOT_EVALUABLE")
-    primary_pass = bool(
-        window_angle["pass"]
-        and contact_status != "FAIL"
-        and paired["finite_values"]
-        and foot.get("candidate", {}).get("penetration_m", {}).get("p95") is not None
-    )
     projection_log = json.loads(
         (run_root / "projection_artifacts" / "batch_000" / "sampling_projection_log.json").read_text(encoding="utf-8")
     )
@@ -167,6 +279,36 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     pairing_status = projection_case.get("m0_match_status", "UNKNOWN")
     if pairing_status == "UNKNOWN" and float((replay_m0 - m0).abs().max()) > 2.0e-3:
         pairing_status = "MISMATCH_ALLOWED"
+    resolved_config = {}
+    config_path = run_root / "resolved_config.yaml"
+    if config_path.is_file():
+        resolved_config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    projection_config = resolved_config.get("pelvis_contact_projection", {})
+    if is_temporal:
+        frozen_feet = _frozen_window_foot(
+            replay_m0_vertices,
+            candidate_vertices,
+            patches,
+            case["sides"],
+            window_start=window_start,
+            window_end=window_end,
+            boundary_halo=int(
+                projection_config.get("boundary_halo_frames", 1)
+            )
+            if projection_config else 1,
+        )
+        foot = frozen_feet.get(side, {})
+    else:
+        frozen_feet = None
+        foot = paired_window["feet"].get(side, {})
+    contact_status = foot.get("status", "NOT_EVALUABLE")
+    primary_pass = bool(
+        window_angle["pass"]
+        and contact_status == "PASS"
+        and pairing_status == "PASS"
+        and paired["finite_values"]
+        and foot.get("candidate", {}).get("penetration_m", {}).get("p95") is not None
+    )
     result = {
         "protocol": run_record["protocol"],
         "sample_id": "34122",
@@ -193,6 +335,7 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
             "pass": primary_pass,
         },
         "contact": foot,
+        "frozen_window_contact": frozen_feet,
         "full_sequence_evaluation": paired,
         "window_evaluation": paired_window,
         "frozen_baseline_evaluation": paired_frozen,
@@ -200,7 +343,11 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         "interpretation": (
             "PRIMARY_PASS_WINDOW_CONTROL_AND_NO_CONTACT_REGRESSION"
             if primary_pass
-            else "PRIMARY_FAIL_OR_NOT_EVALUABLE"
+            else (
+                "INELIGIBLE_M0_MISMATCH"
+                if pairing_status != "PASS"
+                else "PRIMARY_FAIL_OR_NOT_EVALUABLE"
+            )
         ),
     }
     write_strict_json(run_root / "evaluation.json", result)

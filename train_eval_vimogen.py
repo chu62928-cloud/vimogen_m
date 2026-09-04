@@ -76,6 +76,9 @@ from sampling.pelvis_contact_flow_projection_v0_1 import (
     ProjectorConfig,
     write_strict_json,
 )
+from sampling.pelvis_contact_flow_projection_v0_2 import (
+    PROTOCOL_NAME as PELVIS_CONTACT_PROJECTION_V0_2_PROTOCOL,
+)
 from sampling.absolute_mean_pelvis_guidance import (
     AbsoluteMeanPelvisConfig,
     AbsoluteMeanPelvisGuidance,
@@ -96,6 +99,7 @@ from sampling.absolute_mean_pelvis_guidance_v4 import (
     AbsoluteMeanPelvisGuidanceV4,
 )
 from motion_rep.baselines import build_b0
+from motion_rep.pose_authority import authority_project
 
 # yapf: enable
 
@@ -211,6 +215,25 @@ def canonicalize_m0_batch(
     physical = motion_norm.float() * motion_std[:, None, :].float() + motion_mean[:, None, :].float()
     canonical = torch.stack([build_b0(sample).motion for sample in physical], dim=0)
     return (canonical - motion_mean[:, None, :].float()) / motion_std[:, None, :].float()
+
+
+def authority_canonicalize_m0_batch(
+    motion_norm: torch.Tensor,
+    motion_mean: torch.Tensor,
+    motion_std: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Apply the frozen official_pre_cast -> authority M0 boundary."""
+
+    if motion_norm.ndim != 3 or motion_norm.shape[-1] != 276:
+        raise ValueError("motion_norm must have shape [B,T,276]")
+    physical = motion_norm.float() * motion_std[:, None, :].float() + motion_mean[:, None, :].float()
+    projected = authority_project(
+        physical,
+        valid_mask=valid_mask.bool(),
+        output_dtype=torch.float32,
+    ).physical_motion
+    return (projected - motion_mean[:, None, :].float()) / motion_std[:, None, :].float()
 
 
 def sample_data(loader, sampler, start_epoch, start_iter):
@@ -573,6 +596,9 @@ def main(args):
     if relative_enabled and not -10.0 <= relative_target_delta_deg <= 10.0:
         raise ValueError('relative_root_forward target_delta_deg must lie in [-10,10]')
     projection_cfg = args.get('pelvis_contact_projection', {})
+    projection_protocol_requested = str(
+        projection_cfg.get('protocol', PELVIS_CONTACT_PROJECTION_PROTOCOL)
+    )
     projection_config = ProjectorConfig.from_mapping(projection_cfg)
     projection_enabled = bool(projection_cfg.get('enabled', False))
     projection_artifact_dir = (
@@ -585,8 +611,13 @@ def main(args):
         projection_cfg.get('target_delta_deg', 2.0)
     )
     projection_model_path = projection_cfg.get('model_path', None)
-    if projection_enabled and str(projection_cfg.get('protocol', PELVIS_CONTACT_PROJECTION_PROTOCOL)) != PELVIS_CONTACT_PROJECTION_PROTOCOL:
-        raise ValueError('pelvis_contact_projection.protocol is not v0.1')
+    if projection_enabled and projection_protocol_requested not in {
+        PELVIS_CONTACT_PROJECTION_PROTOCOL,
+        PELVIS_CONTACT_PROJECTION_V0_2_PROTOCOL,
+    }:
+        raise ValueError(
+            'pelvis_contact_projection.protocol must be v0.1 or v0.2 temporal-contact'
+        )
     if projection_enabled and projection_artifact_dir is None:
         raise ValueError('pelvis_contact_projection.enabled requires artifact_dir')
     if projection_enabled and projection_protocol_root is None:
@@ -1081,6 +1112,11 @@ def main(args):
                     if m0_artifact_dir is not None
                     else None
                 )
+                official_post_cast_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if m0_artifact_dir is not None
+                    else None
+                )
                 m1_raw_latents_full = (
                     torch.zeros_like(latents, dtype=torch.float32)
                     if m1_enabled
@@ -1216,6 +1252,10 @@ def main(args):
                             m0_result.official_pre_cast.detach().float().cpu(),
                             os.path.join(m0_artifact_dir_current, f'm0_official_{condition_name}.pt'),
                         )
+                        torch.save(
+                            m0_result.official.detach().float().cpu(),
+                            os.path.join(m0_artifact_dir_current, f'm0_official_post_cast_{condition_name}.pt'),
+                        )
                     if (
                         source_noise_enabled
                         and isinstance(m0_result, FlowSampleResult)
@@ -1223,6 +1263,8 @@ def main(args):
                     ):
                         raw_latents_full[sample_mask] = m0_result.raw
                         official_latents_full[sample_mask] = m0_result.official_pre_cast
+                        if official_post_cast_latents_full is not None:
+                            official_post_cast_latents_full[sample_mask] = m0_result.official
                     if source_noise_gate_enabled:
                         if not isinstance(m0_result, FlowSampleResult):
                             raise RuntimeError('source_noise_gate requires FlowSampleResult')
@@ -1613,10 +1655,11 @@ def main(args):
                         # Rebuild that same boundary before comparing or
                         # projecting so the current run and frozen M0 speak
                         # the identical 276D representation.
-                        projection_baseline_norm = canonicalize_m0_batch(
-                            m0_result.raw,
+                        projection_baseline_norm = authority_canonicalize_m0_batch(
+                            m0_result.official_pre_cast,
                             condition_mean,
                             condition_std,
+                            latents_mask[sample_mask].bool(),
                         )
                         projection_strategy = PelvisContactFlowProjector.from_frozen_protocol(
                             protocol_root=Path(projection_protocol_root),
@@ -1721,6 +1764,14 @@ def main(args):
                         official_latents_full.detach().cpu(),
                         os.path.join(m0_artifact_dir_current, 'm0_official_norm_batch.pt'),
                     )
+                    if official_post_cast_latents_full is not None:
+                        torch.save(
+                            official_post_cast_latents_full.detach().cpu(),
+                            os.path.join(
+                                m0_artifact_dir_current,
+                                'm0_official_post_cast_norm_batch.pt',
+                            ),
+                        )
                     if m0_noise_records is not None:
                         with open(
                             os.path.join(m0_artifact_dir_current, 'sample_noise_manifest.json'),
@@ -1860,7 +1911,7 @@ def main(args):
                     write_strict_json(
                         Path(projection_artifact_dir_current) / 'sampling_projection_log.json',
                         {
-                            'protocol': PELVIS_CONTACT_PROJECTION_PROTOCOL,
+                            'protocol': projection_protocol_requested,
                             'target_delta_deg': projection_target_delta_deg,
                             'metric': projection_config.metric,
                             'side': projection_side,
