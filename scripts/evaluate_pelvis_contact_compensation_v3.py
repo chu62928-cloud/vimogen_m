@@ -195,7 +195,12 @@ def main() -> None:
     run_record_path = args.run_root / "run_record.json"
     run_record = json.loads(run_record_path.read_text(encoding="utf-8")) if run_record_path.is_file() else {}
     if run_record.get("feasible") is False or run_record.get("fallback_is_m0") is True:
-        result["gates"].append({"name": "solver_feasible", "status": "FAIL", "threshold": True, "observed": run_record.get("feasible", False), "valid_count": 1, "reason": "selected_motion is the required M0 fallback; best infeasible candidate is retained separately"})
+        reason = (
+            "diagnostic candidate is explicitly ineligible; the official selected motion remains M0"
+            if args.diagnostic_only
+            else "selected_motion is the required M0 fallback; best infeasible candidate is retained separately"
+        )
+        result["gates"].append({"name": "solver_feasible", "status": "FAIL", "threshold": True, "observed": run_record.get("feasible", False), "valid_count": 1, "reason": reason})
         result["status"] = "FAIL"
     result["diagnostic_only"] = bool(args.diagnostic_only)
     result["eligible"] = not bool(args.diagnostic_only)
@@ -234,7 +239,7 @@ def main() -> None:
             "",
             "Naturalness comparison:",
             "",
-            "| Group | Metric | Unit | M0 mean | M0 P95 | Candidate mean | Candidate P95 | |delta| P95 | Status |",
+            "| Group | Metric | Unit | M0 mean | M0 P95 | Candidate mean | Candidate P95 | abs(delta) P95 | Status |",
             "|---|---|---:|---:|---:|---:|---:|---:|---|",
         ]
     )

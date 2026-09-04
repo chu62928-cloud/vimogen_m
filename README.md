@@ -17,6 +17,42 @@
 
 本仓库不是 ViMoGen 官方仓库。上游代码及其模型、数据和第三方依赖仍受各自条款约束；本仓库只记录本研究中的新增或修改内容，不对上游资产授予额外许可。
 
+## sample94 完整步行诊断
+
+本分支新增 `v3_1_walk_diagnostic`，使用 sample94 的完整 100 帧步行动作观察骨盆 +10°、全身姿态与足部自然度。该阶段固定为 `diagnostic_only=true`、`eligible=false`、`can_unlock_v3_2=false`；正式选定动作仍回退 M0，诊断候选单独保存。sample94 左脚只有 5 帧平足证据、右脚没有平足证据，因此它只负责直观诊断，不能替代 sample34122 的严格双脚接触门。
+
+服务器 `attempt_01` 完成于源提交 `433319d`，100 帧求解耗时 `54.07 s`。接触阶段 RMS 为 `0.861 mm`，通过 1 mm 内部门；躯干阶段把接触改善到 `1.236 mm`，但仍超门，因此阶段保护恢复到接触阶段候选。最终状态为 `DIAGNOSTIC_COMPLETED`，求解状态为 `INFEASIBLE_WITHIN_BUDGET`。
+
+自然度对照如下。速度单位换算为 mm/帧，加速度为 mm/帧²：
+
+| 指标 | M0 | 诊断候选 | 结果 |
+|---|---:|---:|---|
+| 骨盆剂量 MAE / P95 | — | `0° / 0°` | PASS |
+| 根速度 P95 | `10.79` | `46.97` | 约 `4.35×`，仅报告 |
+| 平均关节速度 P95 | `19.82` | `64.58` | 约 `3.26×`，仅报告 |
+| 根加速度 P95 | `5.74` | `54.85` | 约 `9.56×`，仅报告 |
+| 平均关节加速度 P95 | `7.24` | `81.62` | 约 `11.27×`，仅报告 |
+| 根轨迹长度 | `0.659 m` | `1.445 m` | 约 `2.19×`，仅报告 |
+| 左脚足滑均值 / P95 | `23.58 / 29.16` | `53.19 / 107.30` | FAIL |
+| 左脚离地均值 / P95 | `14.69 / 22.52 mm` | `64.80 / 157.62 mm` | FAIL |
+| 右脚足滑均值 / P95 | `24.53 / 25.21` | `26.22 / 28.37` | NOT_EVALUABLE（仅 2 个帧对） |
+| 右脚离地均值 / P95 | `17.84 / 23.85 mm` | `104.65 / 182.62 mm` | FAIL |
+| 左右脚穿地 | `0` | `0` | PASS |
+| 躯干方向变化 P95 | `0°` | `15.68°` | FAIL |
+| 骨盆-颈部 / 头部变化 P95 | `0° / 0°` | `14.15° / 14.86°` | FAIL |
+| 骨盆相对支撑漂移 P95 | `0` | `75.73 mm` | FAIL |
+| 水平朝向变化 P95 | `0°` | `0.020°` | PASS |
+
+三栏视频依次显示 M0、仅改变根旋转、诊断补偿。固定相机下，诊断补偿在大多数帧仍接近“仅根旋转”，整体前倾没有恢复，同时根平移和时间变化显著放大。这与运行记录一致：能恢复躯干的阶段 2 候选因接触超出 1 mm 而被整体回退。
+
+- [正常速度三栏视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_M0_root_only_compensated.mp4)
+- [慢放三栏视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_M0_root_only_compensated_slow.mp4)
+- [足部局部视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_foot_local.mp4)
+- [自然度对照表](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation/naturalness_comparison.csv)
+- [完整评价说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation/README.md)
+
+下一步保持协议和阈值不变，改造阶段 2 为可行性保持线搜索：只接受不破坏接触门的躯干更新，并额外保存“回退前候选”用于四栏诊断。目标是从当前 `1.236 mm` 向 1 mm 内推进，而不是放宽接触阈值。随后先在 sample94 观察步态连续性，再回到 sample34122 完成正式双脚接触验证。
+
 ## 骨盆接触补偿 v3.0.1：本轮执行报告
 
 ### 目的

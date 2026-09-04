@@ -1,11 +1,22 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-04：sample94 完整步行诊断完成
+
+- BRANCH：当前分支为 `codex/pelvis-contact-compensation-walk-diagnostic`，从 v3.0.1 提交 `ad2c3af` 切出；实现提交为 `433319d`。新增 `v3_1_walk_diagnostic`、全序列时间自然度指标、M0/仅根旋转/诊断补偿三栏渲染和自然度 CSV。该阶段固定 `diagnostic_only=true`、`eligible=false`、`can_unlock_v3_2=false`，不改变 v3.0.1 协议与 sample34122 停止门。
+- VERIFIED/TEST：服务器专项测试 `13 passed in 3.26 s`。原服务器工作区完整回归仍为上一里程碑已验证的 `246 passed in 51.29 s`；新动态树仍不含若干历史未归档兼容模块，未把其旧测试收集错误解释为本轮回归。
+- RUN：服务器代码树 `/root/autodl-tmp/vimogen_pelvis_contact_walk_diagnostic`；结果目录 `/root/autodl-tmp/vimogen_pelvis_contact_walk_diagnostic_results/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/`。运行记录源提交 `433319d`，协议 SHA256=`6884e256e23f6c3d268c3e04c6ed6a22c565e9eccf676abc3386dccd181b937a`，耗时 `54.07 s`，100 帧，状态 `DIAGNOSTIC_COMPLETED`，求解状态 `INFEASIBLE_WITHIN_BUDGET`。
+- RESULT/SOLVER：阶段 1 接触 RMS=`0.861 mm`，达到 1 mm 内部门；阶段 2 的回退前候选接触 RMS=`1.236 mm`，但躯干、骨盆-颈部/头部和支撑漂移残差已经进入各自门内。因接触仍超门，阶段保护恢复阶段 1 候选。该结果表明当前主要问题是阶段 2 缺少可行性保持步，而不是根剂量构造失败。
+- RESULT/NATURALNESS：诊断候选骨盆剂量 MAE/P95=`0°/0°`；躯干方向 P95=`15.68°`、骨盆-颈部/头部 P95=`14.15°/14.86°`、支撑漂移 P95=`75.73 mm`。根速度、平均关节速度、根加速度、平均关节加速度 P95 相对 M0 约为 `4.35×/3.26×/9.56×/11.27×`；根轨迹长度从 `0.659 m` 增至 `1.445 m`。左脚足滑均值/P95 从 `23.58/29.16` 增至 `53.19/107.30 mm/帧`，左脚离地从 `14.69/22.52` 增至 `64.80/157.62 mm`；右脚离地从 `17.84/23.85` 增至 `104.65/182.62 mm`。左右穿地均为 0；右脚足滑只有 2 个连续帧对、脚尖平足证据为 0，正式状态为 `NOT_EVALUABLE`。
+- ARTIFACTS：本地目录 `results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/` 含运行记录、严格评价、`naturalness_comparison.csv`、正常速度/慢放三栏视频和足部局部视频。三段视频为 1920×1080、20 fps；正常版 100 帧/5.00 s，慢放版 199 帧/9.95 s，足部版 100 帧/5.00 s；SHA256 分别为 `775ab1a17c777a2e91fca99397f5844d5a9db9f7471dd1feb9ef02d86049de54`、`926330c7b1b23286c6b3562fab8165f6b283dd82527ea040dc91cb4cf8d2b787`、`0de15bf518d16d2fa1b56688c346c6ce4032fa80a499799c575e8c9f042aaa10`。
+- DECISION：sample94 作为视觉诊断主案例保留，但因右脚平足证据不足，不能替代 sample34122 的正式接触案例。正式选定动作仍为 M0；诊断候选只用于定位问题，不训练适配器、不解锁 v3.2。
+- IMMEDIATE_CONTINUATION：保持 1 mm 接触门不变，把阶段 2 改为可行性保持线搜索或接触约束零空间步，并保存回退前候选用于四栏视频。先验证 sample94 在接触可行域内能否恢复躯干并降低速度/加速度，再回到 sample34122 左右窗口完成正式门。
+
 ## 2026-09-04：骨盆接触补偿 v3.0.1 重跑完成，按严格门停止
 
 - BRANCH：从 `805a6a5` 建立 `codex/pelvis-contact-compensation-v3-0-1`。本轮新增实现提交为 `46c06ea`、`a2c34ae`、`f337f71`；旧分支 `codex/pelvis-contact-compensation-v3` 与其结果保持不变。
 - FROZEN：协议 `vimogen_pelvis_contact_compensation_v3_0_1` 位于服务器 `/root/autodl-tmp/vimogen_pelvis_contact_v3_0_1_results/protocol_v3_0_1_final/`，协议 SHA256=`6884e256e23f6c3d268c3e04c6ed6a22c565e9eccf676abc3386dccd181b937a`；足底贴片 SHA256=`1f76af485fa969fc4d813bd61415b69ac8baf5e8cce715ecdd170f9efd4a87ae`；SMPL-X 模型目录 SHA256=`c4721f0dbbc741438cac9961efea31d832aa212cf65e34a3f3be82706af55896`。正剂量、M0 离散接触掩码、最长窗口、整体直立门和信赖域在运行后均未修改。
 - IMPLEMENTED：新增骨盆-颈部/头部方向与骨盆相对支撑中心漂移指标；旋转/平移信赖域改为范数球投影；延续路径始终传递上一个最佳候选；分层增广拉格朗日加入阶段保护，后续阶段破坏前级接触时恢复前级候选并记录 `restored_to_previous_stage=true`。
-- VERIFIED：服务器专项测试 `11 passed in 2.41 s`。原服务器工作区 `/root/autodl-tmp/vimogen_clean` 的既有完整回归为 `246 passed in 51.29 s`；独立动态树不含历史工作区若干未归档兼容模块，直接收集全部旧测试会有 17 个导入错误，不能把该收集结果解释为 v3 代码回归失败。
+- VERIFIED：v3.0.1 最终服务器专项测试为 `12 passed`（阶段保护回归测试已包含）。原服务器工作区 `/root/autodl-tmp/vimogen_clean` 的既有完整回归为 `246 passed in 51.29 s`；独立动态树不含历史工作区若干未归档兼容模块，直接收集全部旧测试会有 17 个导入错误，不能把该收集结果解释为 v3 代码回归失败。
 - RUN：服务器运行目录为 `/root/autodl-tmp/vimogen_pelvis_contact_v3_0_1_results/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/`，源提交记录为 `f337f71`，耗时 `256.09 s`，状态 `STOP_V3_2`，`v3_2_allowed=false`。sample34122 左窗口帧 `14–25`、稳定帧 8；右窗口帧 `78–90`、稳定帧 11。
 - RESULT：左侧 +10° 接触 RMS=`1.029 mm`，超过 1 mm 门，阶段 1 不可行。右侧阶段 1 接触 RMS=`0.831 mm`，但阶段 2 最佳候选接触约 `7.012 mm`，触发阶段保护并恢复阶段 1 候选；右侧 +2/+5/+10 均记录 `preserved_previous_stage=false`、`restored_to_previous_stage=true`，整体仍不可行。严格评价的最佳不可行候选中，骨盆剂量为精确 +10°，但骨盆-颈部/头部 P95 分别为左 `12.94°/15.25°`、右 `12.85°/12.83°`，支撑漂移 P95 分别为 `35.8/234.0 mm`，脚部也有滑动/离地/脚尖门失败。正式选定运动按规则回退 M0，最佳不可行候选另存，未冒充成功。
 - ARTIFACTS：严格评价目录为 `attempt_02/evaluation_left_best/evaluation/` 与 `attempt_02/evaluation_right_best/evaluation/`，含 `gates.json`、`metrics.json`、`paired_summary.json` 和逐帧角度 CSV。诊断视频已渲染并下载到本分支 `results/phase8/pelvis_contact_compensation_v3_0_1/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/`；视频只用于窗口诊断，不计为 v3.2 成功。
