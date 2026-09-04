@@ -18,6 +18,7 @@ from evaluation.pelvis_contact_compensation_v3 import (
     pelvis_pitch_delta_deg,
     select_stable_window,
     target_root_rotation,
+    temporal_naturalness_metrics,
     whole_body_upright_metrics,
 )
 from sampling.pelvis_contact_compensation_v3 import project_trust_region
@@ -112,6 +113,19 @@ def test_whole_body_upright_metrics_detect_global_lean() -> None:
     result = whole_body_upright_metrics(joints, candidate, torch.ones((1, 4), dtype=torch.bool))
     assert result["pelvis_neck"]["p95"] == pytest.approx(4.0, abs=0.2)
     assert result["pelvis_head"]["p95"] == pytest.approx(4.0, abs=0.2)
+
+
+def test_temporal_naturalness_reports_speed_and_acceleration_against_m0() -> None:
+    m0 = torch.zeros((1, 4, 2, 3), dtype=torch.float32)
+    candidate = m0.clone()
+    candidate[0, :, 0, 0] = torch.arange(4, dtype=torch.float32)
+    result = temporal_naturalness_metrics(m0, candidate, torch.ones((1, 4), dtype=torch.bool))
+    assert result["root_speed"]["m0"]["mean"] == pytest.approx(0.0)
+    assert result["root_speed"]["candidate"]["mean"] == pytest.approx(1.0)
+    assert result["root_speed"]["absolute_delta"]["p95"] == pytest.approx(1.0)
+    assert result["root_acceleration"]["candidate"]["p95"] == pytest.approx(0.0)
+    assert result["mean_joint_speed"]["candidate"]["mean"] == pytest.approx(0.5)
+    assert result["root_path_length"]["candidate"] == pytest.approx(3.0)
 
 
 def test_continuation_carries_infeasible_best_candidate() -> None:

@@ -209,6 +209,30 @@ def _run_case(
     result = solver.solve(float(dose), initial_motion=initial_motion)
     best_candidate = result["motion"]
     feasible = bool(result.get("feasible", False))
+    if phase == "v3_1_walk_diagnostic":
+        if case_id != "94":
+            raise ValueError("the frozen walk diagnostic case is sample94")
+        torch.save(base.cpu(), output_root / "m0_physical.pt")
+        torch.save(base.cpu(), output_root / "selected_motion.pt")
+        torch.save(best_candidate, output_root / "diagnostic_motion.pt")
+        if not feasible:
+            torch.save(best_candidate, output_root / "best_infeasible_motion.pt")
+        return {
+            "phase": phase,
+            "sample_id": case_id,
+            "status": "DIAGNOSTIC_COMPLETED" if result.get("status") != "FAILED" else "DIAGNOSTIC_FAILED",
+            "solver_status": result["status"],
+            "feasible": feasible,
+            "eligible": False,
+            "diagnostic_only": True,
+            "can_unlock_v3_2": False,
+            "target_delta_deg": float(dose),
+            "frames": length,
+            "solver": {key: value for key, value in result.items() if key != "motion"},
+            "selected_motion": "selected_motion.pt",
+            "diagnostic_motion": "diagnostic_motion.pt",
+            "fallback_is_m0": True,
+        }
     candidate = best_candidate if feasible else base.cpu()
     torch.save(base.cpu(), output_root / "m0_physical.pt")
     torch.save(candidate, output_root / "selected_motion.pt")
@@ -230,7 +254,11 @@ def _run_case(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--protocol-root", type=Path, required=True)
-    parser.add_argument("--phase", choices=("v3_1_window_feasibility", "v3_2_full_sequence"), required=True)
+    parser.add_argument(
+        "--phase",
+        choices=("v3_1_window_feasibility", "v3_1_walk_diagnostic", "v3_2_full_sequence"),
+        required=True,
+    )
     parser.add_argument("--sample-id", default=None)
     parser.add_argument("--target-delta-deg", type=float, default=10.0)
     parser.add_argument("--output-root", type=Path, default=None)
@@ -261,6 +289,10 @@ def main() -> None:
                     "v3.2 is frozen until the sample-34122 v3.1 gate passes; "
                     f"latest gate={gate.get('status') if gate else None}"
                 )
+    if args.phase == "v3_1_walk_diagnostic":
+        non_walk = [case for case in cases if str(case["sample_id"]) != "94"]
+        if non_walk:
+            raise ValueError("v3.1 walk diagnostic accepts only frozen sample94")
     output_base = output_base / args.phase
     records = []
     for case in cases:

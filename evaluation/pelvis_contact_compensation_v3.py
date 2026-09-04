@@ -118,6 +118,74 @@ def _summary(values: torch.Tensor, *, absolute: bool = False) -> dict[str, Any]:
     }
 
 
+def temporal_naturalness_metrics(
+    m0_joints: torch.Tensor,
+    candidate_joints: torch.Tensor,
+    valid_mask: torch.Tensor,
+) -> dict[str, Any]:
+    """Compare full-sequence velocity and acceleration without adding gates.
+
+    The values stay in the native per-frame units used by this project.  They
+    are report-only in v3.0.1: the frozen protocol deliberately does not add
+    post-hoc thresholds for full-sequence speed or acceleration.
+    """
+
+    if m0_joints.shape != candidate_joints.shape or m0_joints.ndim != 4 or m0_joints.shape[-1] != 3:
+        raise ValueError("joint tensors must have equal shape [B,T,J,3]")
+    if valid_mask.shape != m0_joints.shape[:2]:
+        raise ValueError("valid_mask must match the joint batch and frame dimensions")
+
+    pair_mask = valid_mask[:, 1:] & valid_mask[:, :-1]
+    triple_mask = valid_mask[:, 2:] & valid_mask[:, 1:-1] & valid_mask[:, :-2]
+    m0_velocity = m0_joints[:, 1:] - m0_joints[:, :-1]
+    candidate_velocity = candidate_joints[:, 1:] - candidate_joints[:, :-1]
+    m0_acceleration = m0_velocity[:, 1:] - m0_velocity[:, :-1]
+    candidate_acceleration = candidate_velocity[:, 1:] - candidate_velocity[:, :-1]
+
+    curves = {
+        "root_speed": (
+            torch.linalg.vector_norm(m0_velocity[..., 0, :], dim=-1),
+            torch.linalg.vector_norm(candidate_velocity[..., 0, :], dim=-1),
+            pair_mask,
+            "m/frame",
+        ),
+        "mean_joint_speed": (
+            torch.linalg.vector_norm(m0_velocity, dim=-1).mean(dim=-1),
+            torch.linalg.vector_norm(candidate_velocity, dim=-1).mean(dim=-1),
+            pair_mask,
+            "m/frame",
+        ),
+        "root_acceleration": (
+            torch.linalg.vector_norm(m0_acceleration[..., 0, :], dim=-1),
+            torch.linalg.vector_norm(candidate_acceleration[..., 0, :], dim=-1),
+            triple_mask,
+            "m/frame^2",
+        ),
+        "mean_joint_acceleration": (
+            torch.linalg.vector_norm(m0_acceleration, dim=-1).mean(dim=-1),
+            torch.linalg.vector_norm(candidate_acceleration, dim=-1).mean(dim=-1),
+            triple_mask,
+            "m/frame^2",
+        ),
+    }
+    result: dict[str, Any] = {}
+    for name, (m0_curve, candidate_curve, mask, unit) in curves.items():
+        m0_values = m0_curve[mask]
+        candidate_values = candidate_curve[mask]
+        result[name] = {
+            "unit": unit,
+            "m0": _summary(m0_values),
+            "candidate": _summary(candidate_values),
+            "absolute_delta": _summary((candidate_values - m0_values).abs()),
+        }
+    result["root_path_length"] = {
+        "unit": "m",
+        "m0": float(curves["root_speed"][0][pair_mask].sum().item()),
+        "candidate": float(curves["root_speed"][1][pair_mask].sum().item()),
+    }
+    return result
+
+
 def whole_body_upright_metrics(
     m0_joints: torch.Tensor,
     candidate_joints: torch.Tensor,
@@ -554,7 +622,7 @@ def evaluate_v3_pair(
 __all__ = [
     "PROTOCOL_NAME", "GEOMETRY_PROTOCOL", "PASS", "FAIL", "NOT_EVALUABLE",
     "CONTACT_HEIGHT_M", "CONTACT_SPEED_M_PER_FRAME", "FLAT_GAP_M", "STABLE_CONFIDENCE",
-    "pelvis_pitch_delta_deg", "target_root_rotation", "m0_sagittal_frame", "whole_body_upright_metrics",
+    "pelvis_pitch_delta_deg", "target_root_rotation", "m0_sagittal_frame", "whole_body_upright_metrics", "temporal_naturalness_metrics",
     "contact_evidence", "longest_true_run", "select_stable_window", "foot_patches", "patch_hash", "patch_centres",
     "evaluate_paired_foot", "evaluate_v3_pair", "combine_statuses",
 ]
