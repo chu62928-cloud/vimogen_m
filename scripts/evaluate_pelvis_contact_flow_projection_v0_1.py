@@ -132,13 +132,20 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     # The v0.1 actuator is explicitly window-local.  Evaluate the primary
     # contact gate on that same window; retain the full-sequence paired result
     # as a separate regression diagnostic.
+    window_start = int(window["window_start"])
+    window_end = int(window["window_end_exclusive"])
+    window_m0 = replay_m0[:, window_start:window_end]
+    window_candidate = candidate[:, window_start:window_end]
+    window_valid = torch.ones(
+        (1, window_end - window_start), dtype=torch.bool
+    )
     paired_window = evaluate_v3_pair(
-        replay_m0,
-        candidate,
-        window_mask,
+        window_m0,
+        window_candidate,
+        window_valid,
         target_delta_deg=target,
-        m0_vertices=replay_m0_vertices,
-        candidate_vertices=candidate_vertices,
+        m0_vertices=replay_m0_vertices[window_start:window_end],
+        candidate_vertices=candidate_vertices[window_start:window_end],
         patches=patches,
     )
     foot = paired_window["feet"].get(side, {})
