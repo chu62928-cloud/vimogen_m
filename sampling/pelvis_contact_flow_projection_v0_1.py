@@ -1244,6 +1244,9 @@ class PelvisContactFlowProjector:
                     "frozen_protocol",
                     "model_path",
                     "baseline_direct_max_abs",
+                    "m0_match_status",
+                    "allow_m0_mismatch",
+                    "projection_baseline",
                 )
                 if key in self.contact_data
             },
