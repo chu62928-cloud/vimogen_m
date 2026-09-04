@@ -1128,13 +1128,27 @@ class PelvisContactFlowProjector:
         if self.baseline_motion is None or not self.contact_data:
             raise RuntimeError("active projection requires frozen M0 and contact data")
         try:
-            result = self.project_clean_endpoint(
-                endpoint,
-                self.baseline_motion.to(endpoint.device),
-                self.contact_data,
-                self.target_dose,
-                {"valid_mask": valid_mask},
-            )
+            # The flow sampler invokes hooks inside its bfloat16 autocast
+            # region.  SMPL-X/LBS and the KKT solve are deliberately FP32;
+            # disable autocast locally to avoid mixed Float/BFloat16 kernels.
+            autocast_device = endpoint.device.type
+            if autocast_device == "cuda":
+                with torch.autocast(device_type="cuda", enabled=False):
+                    result = self.project_clean_endpoint(
+                        endpoint,
+                        self.baseline_motion.to(endpoint.device),
+                        self.contact_data,
+                        self.target_dose,
+                        {"valid_mask": valid_mask},
+                    )
+            else:
+                result = self.project_clean_endpoint(
+                    endpoint,
+                    self.baseline_motion.to(endpoint.device),
+                    self.contact_data,
+                    self.target_dose,
+                    {"valid_mask": valid_mask},
+                )
             corrected = recompose_velocity(
                 x_sigma.float(), result.projected_clean_motion, sigma_value
             ).to(dtype=velocity.dtype)
