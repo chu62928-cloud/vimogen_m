@@ -90,6 +90,7 @@ def test_missing_flat_evidence_is_not_evaluable() -> None:
     toe = heel.clone()
     result = evaluate_paired_foot(heel, toe, heel, toe)
     assert result["toe_contact"]["status"] == NOT_EVALUABLE
+    assert result["status"] == NOT_EVALUABLE
 
 
 def test_norm_trust_region_projects_vectors_not_components() -> None:
@@ -130,4 +131,3 @@ def test_continuation_carries_infeasible_best_candidate() -> None:
     assert torch.equal(seen[1][1], torch.tensor([[2.0]]))
     assert torch.equal(seen[2][1], torch.tensor([[5.0]]))
     assert len(records) == 3
-    assert result["status"] == NOT_EVALUABLE
