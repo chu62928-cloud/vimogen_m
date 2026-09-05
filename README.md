@@ -85,6 +85,8 @@ v0.3 已证明：在当前 RTX 4080 SUPER 环境中，M0 可以在双样本重�
 旧服务器 M0 与当前 M0 混合计算均值、显著性或通过率。失败右 +5° 的逐步诊断保存在其
 `diagnostics_v0_3/`，包括 CSV、严格 JSON 和六面板 PNG，记录骨盆剂量、脚跟/脚尖位置与速度、
 根平移单步/累计值、接受步长、六类归一化违反量以及启用步与端点误差对比。
+所有已执行案例的逐门汇总另存为服务器结果根目录下的
+`results/phase8/pelvis_contact_flow_projection_v0_3/v0_3_gate_summary.json`。
 
 ### 后续分流
 

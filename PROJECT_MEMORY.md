@@ -31,6 +31,8 @@
 - ARTIFACTS：右时间运动学 +5°失败目录保留逐步诊断 `diagnostics_v0_3/`（CSV、严格 JSON、
   六面板 PNG）；左右 +2°通过案例的视频位于服务器 `.../videos/formal_left_2deg/rendered/`
   和 `.../videos/formal_right_2deg/rendered/`，均为可视化产物。
+- SUMMARY：所有已执行案例和停止原因汇总在服务器
+  `results/phase8/pelvis_contact_flow_projection_v0_3/v0_3_gate_summary.json`。
 
 ### 失败结果与停止门
 
