@@ -4,6 +4,96 @@
 
 当前主线新增独立协议 `vimogen_absolute_mean_pelvis_v4_anatomical_local`：它在 v3 完整前向运动学和末端安全融合基础上，使用冻结的项目专用 LASI/RASI/LPSI/RPSI 标志，并提供局部骨盆主导与防作弊审计。v3 仍是只读历史基线。
 
+## ViMoGen 骨盆—接触时间一致性投影 v0.3（当前服务器配对基线，2026-09-05）
+
+### 本次运行目的
+
+本轮建立独立协议 `vimogen_pelvis_contact_flow_projection_v0_3_current_env_paired`，分支为
+`codex/pelvis-contact-flow-projection-v0-3-current-env-paired`，结果根目录为
+`results/phase8/pelvis_contact_flow_projection_v0_3/`。由于旧 RTX 5090 环境与当前 RTX 4080
+SUPER 服务器的采样算子路径不能逐位复现，v0.3 不再把旧服务器 M0 当作当前环境的正式门，
+而是冻结当前环境自己的 M0；旧 v3 M0 只作跨环境诊断。v0.2 保持
+`INELIGIBLE_M0_MISMATCH`，没有被改写或覆盖。
+
+### 固定条件与具体实现
+
+运行在当前服务器 RTX 4080 SUPER 32 GB 上，运行时指纹为 Python 3.10.20、PyTorch
+`2.7.0+cu128`、CUDA 12.8、cuDNN 90701、驱动 580.142；TF32 矩阵乘关闭，确定性算法关闭，
+Flash/Memory/Math 注意力后端均可用。固定 sample94、sample34122 双样本清单，batch size 2、
+`batch_invariant=true`、seed 0、50 步、BF16、CFG 5、原始样本级噪声以及现有检查点、文本条件、
+均值/标准差和 SMPL-X。当前代码来源提交标记为 `83bcfb7`，服务器工作区保持原有脏状态，
+并在 `v0_3_source_revision.txt` 中记录来源。
+
+v0.3 的 M0 边界固定为 `official_pre_cast → authority_project → frozen physical M0`。冻结目录
+`protocol_current_env_refreeze_01/` 只读保存 `m0_physical.pt`、有效帧掩码、脚跟/脚尖贴片、
+接触窗口、协议哈希和环境指纹。采样器沿用 v0.2 的位置约束、脚跟/脚尖位移约束（1 mm/帧）、
+边界上下文、非线性重线性化、范数信赖域和六类回溯规则；v0.3 通过协议集合识别时间约束，
+不使用 `allow_m0_mismatch`。每个候选都保存同次运行的 M0、候选、噪声和配对差异。
+
+### 测试与运行命令
+
+服务器静态编译通过；专项测试为 `23 passed in 6.39 s`，完整兼容回归为 `280 passed in
+54.09 s`。结果目录内 80 个严格 JSON 均可解析，未发现 NaN 或 Infinity。本机没有 PyTorch，
+动态测试均在服务器执行。主要命令为：
+
+```text
+python scripts/run_pelvis_contact_flow_projection_v0_3.py --protocol vimogen_pelvis_contact_flow_projection_v0_3_current_env_paired --metric kinematic_temporal --side left --target-delta-deg 2
+python scripts/evaluate_pelvis_contact_flow_projection_v0_3.py --run-root <attempt> --protocol-root results/phase8/pelvis_contact_flow_projection_v0_3/protocol_current_env_refreeze_01
+python scripts/diagnose_pelvis_contact_flow_projection_v0_3.py --run-root <failed-attempt>
+```
+
+### M0 复现与冻结结果
+
+当前代码双样本重放两次（`m0_audit/dual_01/`、`dual_02/`），sample34122 单样本重放一次
+（`m0_audit/singleton_01/`）。三次的 sample34122 噪声行、有效帧掩码、`raw` 和
+`official_pre_cast` 均逐位一致，检查点、均值、标准差、采样调度和环境指纹一致。以第一次
+双样本的 `official_pre_cast` 冻结当前 M0 后，权威重建直接差为 `0`；每次重放相对该 M0
+的直接姿态最大差为 `1.1920929e-7`，因此当前协议状态为 `M0_PAIRING_PASS`。完整审计见
+`results/phase8/pelvis_contact_flow_projection_v0_3/m0_replay_audit.json`。
+
+旧 v3 M0 与当前 M0 的权威姿态最大差为 `0.0188842`，仅写入 `legacy_v3_diagnostic`，
+不参与 v0.3 通过状态。这说明硬件/驱动/算子环境确实会改变 BF16 采样轨迹，但不说明任一
+环境的动作“绝对更好”；v0.3 只比较同一当前环境中同输入、同噪声、同 M0 的候选。
+
+### 阶段结果
+
+| 阶段/案例 | 剂量窗口 MAE / P95 | 接触主门 | 当前协议解释 |
+|---|---:|---|---|
+| 左端点 +2°（可行性） | `0.0246° / 0.0528°` | 脚跟/脚尖速度 P95 约 `0.041 mm/帧`，PASS | PASS |
+| 左 `kinematic_temporal` +2° | `0.0246° / 0.0528°` | PASS | `PRIMARY_PASS...` |
+| 右 `kinematic_temporal` +2° | `0.0192° / 0.0402°` | PASS，速度 P95 约 `0.343 mm/帧` | `PRIMARY_PASS...` |
+| 左 Euclidean +2° | `0.0284° / 0.1642°` | PASS | 消融 PASS |
+| 右 Euclidean +2° | `0.0577° / 0.2512°` | 速度 P95 约 `1.883 mm/帧`，FAIL | 消融 FAIL（不阻止时间方案） |
+| 左 `kinematic_temporal` +5° | `0.0215° / 0.0503°` | PASS，速度 P95 < `0.058 mm/帧` | 主接触/剂量 PASS；躯干安全诊断超阈值 |
+| 右 `kinematic_temporal` +5° | `0.0798° / 0.2036°` | 脚跟/脚尖速度 P95 `1.515/1.518 mm/帧`，FAIL | `PRIMARY_FAIL_OR_NOT_EVALUABLE` |
+| 左 Euclidean +5° | `0.0457° / 0.1590°` | PASS | 消融 PASS |
+| 右 Euclidean +5° | `0.1184° / 0.4653°` | 速度 P95 `19.387/19.357 mm/帧`，滑动/抬脚 FAIL | 消融 FAIL |
+
+左、右 +2° 时间运动学案例都通过后，已在服务器保存全身三栏、慢放和足部局部视频，
+位于 `results/phase8/pelvis_contact_flow_projection_v0_3/videos/formal_left_2deg/rendered/`
+和 `.../formal_right_2deg/rendered/`。视频来自同一批配对 M0，仅作可视化，不改变评价门。
+
+### 结果解读与停止原因
+
+v0.3 已证明：在当前 RTX 4080 SUPER 环境中，M0 可以在双样本重复和单样本重放之间稳定配对；
+时间接触投影在左右 +2° 以及左 +5° 窗口能把脚跟/脚尖位移残差压到 1 mm/帧以内，同时保持
+骨盆剂量。右 +5° 的失败是实质接触速度回归，而不是旧 M0 不一致伪影。左 +5° 虽然主接触和
+剂量通过，但躯干方向 P95 `3.98°`、骨盆—颈部 P95 `4.20°`、骨盆—头部 P95 `3.96°`，
+已触发计划中的躯干安全包络分流。右 +5° 还出现躯干方向 P95 `4.02°`，进一步支持该分流。
+
+因此本轮在同剂量 Euclidean 消融完成后停止，不运行 +10°，不把失败候选当作成功，也不把
+旧服务器 M0 与当前 M0 混合计算均值、显著性或通过率。失败右 +5° 的逐步诊断保存在其
+`diagnostics_v0_3/`，包括 CSV、严格 JSON 和六面板 PNG，记录骨盆剂量、脚跟/脚尖位置与速度、
+根平移单步/累计值、接受步长、六类归一化违反量以及启用步与端点误差对比。
+
+### 后续分流
+
+下一步应新建 `v0.3.1 trunk safety envelope`，只在稳定接触帧对超过阈值时加入铰链型躯干软约束，
+不修改 v0.3 结果；先用左/右 +2° 通过案例验证不会破坏接触，再决定是否重新评估 +5°。若只剩
+支撑漂移超过 20 mm，另行规划支撑关系约束；几何重心仍只作诊断。后续大规模实验必须在同一
+服务器活动期内统一重新生成所有方法的 M0 和候选；再次更换 GPU、驱动或镜像时，必须重新冻结
+基线或整批重跑，不能只重跑单个方法。
+
 ## ViMoGen 骨盆—接触时间一致性投影 v0.2（2026-09-04）
 
 ### 本次运行目的

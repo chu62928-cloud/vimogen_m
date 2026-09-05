@@ -1,5 +1,52 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-05：v0.3 当前服务器配对基线冻结，+5° 时间接触门停止
+
+### 已验证事实
+
+- BRANCH/PROTOCOL：分支 `codex/pelvis-contact-flow-projection-v0-3-current-env-paired`，协议
+  `vimogen_pelvis_contact_flow_projection_v0_3_current_env_paired`，结果根目录
+  `results/phase8/pelvis_contact_flow_projection_v0_3/`。v0.2 仍保持
+  `INELIGIBLE_M0_MISMATCH`，未被覆盖。
+- ENVIRONMENT：当前服务器为 RTX 4080 SUPER 32 GB，驱动 `580.142`，Python `3.10.20`，
+  PyTorch `2.7.0+cu128`，CUDA `12.8`，cuDNN `90701`；TF32 矩阵乘关闭，确定性算法关闭，
+  Flash/Memory/Math 注意力后端开启。连接脚本使用当前主机端口和运行时凭据，不在仓库保存密码。
+- IMPLEMENTED：当前环境协议冻结入口、v0.3 运行器/评价器包装、时间接触协议集合、v0.3 M0 审计、
+  严格 M0 配对字段以及失败运行逐步诊断脚本已完成。代码提交 `83bcfb7`，诊断脚本提交
+  `7076392`，均已推送。
+- TEST：服务器专项测试 `23 passed in 6.39 s`，完整兼容回归 `280 passed in 54.09 s`；v0.3
+  结果目录 80 个 JSON 均通过严格解析，未发现 NaN/Infinity。服务器静态编译通过。
+- M0：当前代码双样本重复两次和 sample34122 单样本一次的噪声行、有效帧掩码、`raw`、
+  `official_pre_cast`、检查点/均值/标准差/调度和环境指纹逐位一致。以 dual_01 的
+  `official_pre_cast → authority_project` 冻结 M0，冻结重建直接差为 0；重放相对冻结 M0
+  直接姿态最大差 `1.1920929e-7`，状态 `M0_PAIRING_PASS`。审计为服务器
+  `results/phase8/pelvis_contact_flow_projection_v0_3/m0_replay_audit.json`。
+- LEGACY_DIAGNOSTIC：旧 v3 M0 与当前 M0 权威姿态最大差 `0.0188842`，标记为
+  `legacy_v3_relation=reference_only`，不参与 v0.3 通过状态。
+- STAGES：左端点 +2°、左/右 `kinematic_temporal/+2°`、左 Euclidean/+2°通过；右
+  Euclidean/+2°速度 P95 约 `1.883 mm/帧`失败。左 `kinematic_temporal/+5°`主接触/剂量通过，
+  但躯干方向/骨盆—颈部/头部 P95 分别约 `3.98/4.20/3.96°`；右 `kinematic_temporal/+5°`
+  脚跟/脚尖速度 P95 `1.515/1.518 mm/帧`失败。左 Euclidean/+5°通过，右 Euclidean/+5°
+  速度 P95 `19.387/19.357 mm/帧`且滑动/抬脚失败。
+- ARTIFACTS：右时间运动学 +5°失败目录保留逐步诊断 `diagnostics_v0_3/`（CSV、严格 JSON、
+  六面板 PNG）；左右 +2°通过案例的视频位于服务器 `.../videos/formal_left_2deg/rendered/`
+  和 `.../videos/formal_right_2deg/rendered/`，均为可视化产物。
+
+### 失败结果与停止门
+
+- STOP：按 v0.3 计划，左 +5°已触发躯干安全包络分流，右 +5°又触发脚跟/脚尖时间接触
+  速度门；同剂量 Euclidean 消融完成后停止，不运行 +10°，不生成正式高剂量结论。
+- INTERPRETATION：当前环境配对基线和 +2°时间接触投影得到验证；右 +5°失败是当前候选的
+  接触速度回归，不能归因于旧 M0 差异。旧服务器与当前服务器结果不能混合计算统计量。
+
+### 待执行事项
+
+- 新建独立 `v0.3.1 trunk safety envelope` 消融：只在稳定接触帧对超过阈值时加入铰链型躯干
+  软约束，先在左右 +2°通过案例上验证不破坏接触，再决定是否重新评估 +5°。
+- 若后续仅支撑漂移超过 20 mm，另行版本化支撑关系约束；几何重心继续只作诊断。
+- 大规模实验必须在同一服务器活动期内统一重新生成所有方法的 M0 和候选。再次更换 GPU、
+  驱动或镜像时，重新冻结基线或整批重跑，不能只重跑一个方法。
+
 ## 2026-09-05：v0.2 第三次冻结核心入口重放仍失败，阶段 A 判定环境阻塞
 
 - RUN：通过 `connect.westc.seetacloud.com:20602` 连接服务器；现有连接脚本原为旧的 `westd:10090`，已改为读取环境变量/SSH 密钥，不再保存明文密码。服务器工作区仍使用 `/root/autodl-tmp/vimogen_clean`，未切换分支；冻结重放结果为 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/frozen_46a1b04_dual_batch2/attempt_01/`。
