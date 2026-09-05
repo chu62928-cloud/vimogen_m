@@ -15,7 +15,7 @@
   严格 M0 配对字段以及失败运行逐步诊断脚本已完成。代码提交 `83bcfb7`，诊断脚本提交
   `7076392`，均已推送。
 - TEST：服务器专项测试 `23 passed in 6.39 s`，完整兼容回归 `280 passed in 54.09 s`；v0.3
-  结果目录 80 个 JSON 均通过严格解析，未发现 NaN/Infinity。服务器静态编译通过。
+  结果目录 81 个 JSON 均通过严格解析，未发现 NaN/Infinity。服务器静态编译通过。
 - M0：当前代码双样本重复两次和 sample34122 单样本一次的噪声行、有效帧掩码、`raw`、
   `official_pre_cast`、检查点/均值/标准差/调度和环境指纹逐位一致。以 dual_01 的
   `official_pre_cast → authority_project` 冻结 M0，冻结重建直接差为 0；重放相对冻结 M0

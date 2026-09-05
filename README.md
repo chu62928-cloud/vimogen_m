@@ -33,7 +33,7 @@ v0.3 的 M0 边界固定为 `official_pre_cast → authority_project → frozen 
 ### 测试与运行命令
 
 服务器静态编译通过；专项测试为 `23 passed in 6.39 s`，完整兼容回归为 `280 passed in
-54.09 s`。结果目录内 80 个严格 JSON 均可解析，未发现 NaN 或 Infinity。本机没有 PyTorch，
+54.09 s`。结果目录内 81 个严格 JSON 均可解析，未发现 NaN 或 Infinity。本机没有 PyTorch，
 动态测试均在服务器执行。主要命令为：
 
 ```text
