@@ -26,6 +26,7 @@ from .pelvis_contact_flow_projection_v0_1 import (  # noqa: F401
     so3_exp,
     so3_log,
     solve_local_projection,
+    temporal_contact_residual,
     write_strict_json,
 )
 
@@ -52,5 +53,6 @@ __all__ = [
     "so3_exp",
     "so3_log",
     "solve_local_projection",
+    "temporal_contact_residual",
     "write_strict_json",
 ]

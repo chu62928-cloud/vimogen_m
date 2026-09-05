@@ -209,9 +209,27 @@ def audit(
     metadata_complete = bool(fingerprints) and all(
         all(key in item for key in fingerprint_keys) for item in fingerprints
     )
+    # The singleton replay intentionally uses a one-sample manifest, while the
+    # frozen and dual replays use the original two-sample manifest.  The M0
+    # pairing gate therefore compares the immutable model/normalization/
+    # schedule inputs, but reports manifest equality separately instead of
+    # treating the diagnostic batch-size replay as an input mismatch.
+    pairing_keys = (
+        "vimogen_checkpoint",
+        "motion_mean",
+        "motion_std",
+        "smplx_model",
+        "frozen_v3_protocol",
+        "sampling_schedule",
+        "guidance_step_mask",
+    )
     metadata_consistent = metadata_complete and all(
         all(item.get(key) == fingerprints[0].get(key) for item in fingerprints)
-        for key in fingerprint_keys
+        for key in pairing_keys
+    )
+    manifest_consistent = metadata_complete and all(
+        item.get("manifest") == fingerprints[0].get("manifest")
+        for item in fingerprints
     )
     row_hashes = [record["z0_row_sha256"] for record in records]
     sample_noise_consistent = bool(row_hashes) and len(set(row_hashes)) == 1
@@ -232,6 +250,7 @@ def audit(
             "valid_mask_artifacts_present": valid_masks_present,
             "input_fingerprints_complete": metadata_complete,
             "checkpoint_mean_std_schedule_equal": metadata_consistent,
+            "manifest_equal": manifest_consistent,
         },
         "records": records,
         "status": (

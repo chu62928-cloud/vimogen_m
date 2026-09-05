@@ -24,7 +24,7 @@
 
 ### 测试与运行命令
 
-静态 Python 编译和 `git diff --check` 已通过。服务器专项回归在最近三项审计测试加入前已通过 `21 passed`；新增测试已完成静态编译，但服务器复跑因连接不可用而待执行。本机没有 PyTorch，动态测试必须在服务器执行。正式入口为：
+静态 Python 编译和本次代码变更的 `git diff --check` 已通过。服务器专项回归（采样器、v0.1、v0.2）为 `22 passed`，随后完整兼容回归为 `279 passed in 38.41 s`。服务器第一次完整收集曾因临时源码备份目录含有同名测试而触发导入文件不一致；备份已移到项目目录外的 `/root/autodl-tmp/vimogen_source_backups/frozen_46a1b04_dual_batch2/`，移除收集干扰后完整回归通过。本机没有 PyTorch，动态测试必须在服务器执行。正式入口为：
 
 ```text
 python scripts/run_pelvis_contact_flow_projection_v0_2.py --metric kinematic_temporal --side left --target-delta-deg 2
@@ -47,7 +47,10 @@ python scripts/evaluate_pelvis_contact_flow_projection_v0_1.py --run-root <run> 
 `2e-3`；冻结提交核心入口的输出与当前 dual 重放逐位一致。当前 GPU 为 RTX 4080 SUPER，
 PyTorch 为 `2.7.0+cu128`，CUDA 为 `12.8`，驱动为 `580.142`，运行环境指纹保存在冻结重放目录的
 `runtime_environment.json`。三次结果的严格审计位于
-`results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，总体状态为 `FAIL`。
+`results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，其中检查点、均值、标准差、
+SMPL-X、冻结协议、采样调度和引导掩码一致，sample34122 噪声行哈希与有效帧掩码一致；singleton
+清单与双样本清单按设计不同，单独记录为 `manifest_equal=false`。总体状态为 `M0_PAIRING_FAIL`。
+诊断摘要位于 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_diagnosis.json`。
 因此阶段 A 判定为 `ENVIRONMENT_OR_OPERATOR_REPRODUCTION_BLOCKED`；阶段 B 端点投影和阶段 C–E
 正式采样均未执行。
 
