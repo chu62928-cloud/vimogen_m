@@ -1,9 +1,4 @@
-"""Versioned entry point for the temporal-contact projection protocol.
-
-The numerical implementation remains shared with v0.1 so that the original
-protocol can be regression-tested unchanged.  v0.2 is selected by its
-configuration protocol and enables the velocity residuals and boundary halo.
-"""
+"""Versioned entry point for the current-environment paired protocol."""
 
 from .pelvis_contact_flow_projection_v0_1 import (  # noqa: F401
     ACTIVE_BODY_INDICES,
@@ -32,22 +27,23 @@ from .pelvis_contact_flow_projection_v0_1 import (  # noqa: F401
     write_strict_json,
 )
 
-PROTOCOL_NAME = TEMPORAL_CONTACT_PROTOCOL
+PROTOCOL_NAME = CURRENT_ENV_PAIRED_PROTOCOL
 
 __all__ = [
     "ACTIVE_BODY_INDICES",
     "ACTIVE_JOINT_NAMES",
+    "CURRENT_ENV_PAIRED_PROTOCOL",
     "EUCLIDEAN_METRIC",
     "KINEMATIC_TEMPORAL_METRIC",
     "METHOD_NAME",
     "PENETRATION_METHOD",
     "PROTOCOL_NAME",
-    "CURRENT_ENV_PAIRED_PROTOCOL",
-    "TEMPORAL_CONTACT_PROTOCOLS",
     "PelvisContactFlowProjector",
     "ProjectionFinalOutputs",
     "ProjectionResult",
     "ProjectorConfig",
+    "TEMPORAL_CONTACT_PROTOCOL",
+    "TEMPORAL_CONTACT_PROTOCOLS",
     "autograd_jacobian",
     "build_projection_metric",
     "finite_difference_jacobian",

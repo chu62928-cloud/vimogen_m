@@ -28,8 +28,10 @@ from evaluation.relative_root_trunk_v2_1 import direct_smpl_parameters  # noqa: 
 from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe  # noqa: E402
 from motion_rep.pose_authority import authority_project  # noqa: E402
 from sampling.pelvis_contact_flow_projection_v0_1 import write_strict_json  # noqa: E402
-from sampling.pelvis_contact_flow_projection_v0_2 import (  # noqa: E402
-    PROTOCOL_NAME as TEMPORAL_CONTACT_PROTOCOL,
+from sampling.pelvis_contact_flow_projection_v0_1 import (  # noqa: E402
+    CURRENT_ENV_PAIRED_PROTOCOL,
+    TEMPORAL_CONTACT_PROTOCOL,
+    TEMPORAL_CONTACT_PROTOCOLS,
 )
 
 
@@ -106,13 +108,24 @@ def _frozen_window_foot(
         c_center = 0.5 * (c_heel + c_toe)
         m0_speed = torch.linalg.vector_norm(m0_center[1:, :2] - m0_center[:-1, :2], dim=-1)
         c_speed = torch.linalg.vector_norm(c_center[1:, :2] - c_center[:-1, :2], dim=-1)
+        heel_velocity_error = torch.linalg.vector_norm(
+            (c_heel[1:] - c_heel[:-1]) - (m0_heel[1:] - m0_heel[:-1]), dim=-1
+        )
+        toe_velocity_error = torch.linalg.vector_norm(
+            (c_toe[1:] - c_toe[:-1]) - (m0_toe[1:] - m0_toe[:-1]), dim=-1
+        )
+        zero_velocity = torch.zeros_like(heel_velocity_error[pair_mask])
         baseline = {
             "sliding_m_per_frame": _summary(m0_speed[pair_mask]),
+            "heel_velocity_residual_m_per_frame": _summary(zero_velocity),
+            "toe_velocity_residual_m_per_frame": _summary(zero_velocity),
             "lift_m": _summary((m0_sole - floor).clamp_min(0.0)[general & frame_mask]),
             "penetration_m": _summary((floor - m0_sole).clamp_min(0.0)[general & frame_mask]),
         }
         candidate = {
             "sliding_m_per_frame": _summary(c_speed[pair_mask]),
+            "heel_velocity_residual_m_per_frame": _summary(heel_velocity_error[pair_mask]),
+            "toe_velocity_residual_m_per_frame": _summary(toe_velocity_error[pair_mask]),
             "lift_m": _summary((c_sole - floor).clamp_min(0.0)[general & frame_mask]),
             "penetration_m": _summary((floor - c_sole).clamp_min(0.0)[general & frame_mask]),
         }
@@ -186,7 +199,8 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     protocol = json.loads((protocol_root / "protocol.json").read_text(encoding="utf-8"))
     case = next(item for item in protocol["cases"] if str(item["sample_id"]) == "34122")
     side = str(run_record["side"])
-    is_temporal = str(run_record.get("protocol")) == TEMPORAL_CONTACT_PROTOCOL
+    run_protocol = str(run_record.get("protocol"))
+    is_temporal = run_protocol in TEMPORAL_CONTACT_PROTOCOLS
     target = float(run_record["target_delta_deg"])
     mean = torch.from_numpy(np.load(protocol["inputs"]["mean"]["path"])).float()
     std = torch.from_numpy(np.load(protocol["inputs"]["std"]["path"])).float()
@@ -284,6 +298,12 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
     pairing_status = projection_case.get("m0_match_status", "UNKNOWN")
     if pairing_status == "UNKNOWN" and float((replay_m0 - m0).abs().max()) > 2.0e-3:
         pairing_status = "MISMATCH_ALLOWED"
+    if run_protocol == CURRENT_ENV_PAIRED_PROTOCOL:
+        # v0.3 is always paired to its immutable current-environment
+        # re-frozen protocol.  A missing or diagnostic pairing status can
+        # never be promoted to a formal pass.
+        if bool(run_record.get("allow_m0_mismatch")):
+            pairing_status = "DIAGNOSTIC_INELIGIBLE"
     resolved_config = {}
     config_path = run_root / "resolved_config.yaml"
     if config_path.is_file():
@@ -323,7 +343,14 @@ def evaluate(run_root: Path, protocol_root: Path, *, device: str = "cuda:0") -> 
         "metric": run_record["metric"],
         "target_delta_deg": target,
         "m0_pairing": {
-            "primary_baseline": "frozen_v3_0_1_m0_physical",
+            "primary_baseline": (
+                "current_environment_refreeze_m0_physical"
+                if run_protocol == CURRENT_ENV_PAIRED_PROTOCOL
+                else "frozen_v3_0_1_m0_physical"
+            ),
+            "m0_reference_protocol": str(protocol.get("protocol", "")),
+            "baseline_origin": protocol.get("baseline_origin"),
+            "legacy_v3_relation": protocol.get("legacy_v3_relation", "reference_only"),
             "replay_artifact": str(
                 run_root / "m0_artifacts" / "batch_000" / "m0_official_norm_batch.pt"
             ),

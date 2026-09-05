@@ -8,6 +8,7 @@ from dataclasses import asdict
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import subprocess
 import sys
@@ -24,8 +25,10 @@ if str(ROOT) not in sys.path:
 from sampling.pelvis_contact_flow_projection_v0_1 import (  # noqa: E402
     EUCLIDEAN_METRIC,
     KINEMATIC_TEMPORAL_METRIC,
+    CURRENT_ENV_PAIRED_PROTOCOL,
     PROTOCOL_NAME,
     TEMPORAL_CONTACT_PROTOCOL,
+    TEMPORAL_CONTACT_PROTOCOLS,
     ProjectorConfig,
     write_strict_json,
 )
@@ -37,6 +40,7 @@ DEFAULT_PROTOCOL_ROOT = Path(
 )
 DEFAULT_NOISE_CACHE = ROOT / "results/phase6/absolute_mean_pelvis_v2/noise_cache"
 DEFAULT_OUTPUT = ROOT / "results/phase8/pelvis_contact_flow_projection_v0_2"
+DEFAULT_OUTPUT_V0_3 = ROOT / "results/phase8/pelvis_contact_flow_projection_v0_3"
 
 
 def sha256_path(path: Path) -> str:
@@ -63,6 +67,42 @@ def git_value(*arguments: str) -> str | None:
         ).strip()
     except Exception:
         return None
+
+
+def runtime_fingerprint() -> dict[str, Any]:
+    import torch
+
+    result: dict[str, Any] = {
+        "python": platform.python_version(),
+        "platform": platform.platform(),
+        "torch": torch.__version__,
+        "torch_cuda": torch.version.cuda,
+        "cudnn": torch.backends.cudnn.version(),
+        "cuda_available": bool(torch.cuda.is_available()),
+        "tf32_matmul": bool(torch.backends.cuda.matmul.allow_tf32),
+        "tf32_cudnn": bool(torch.backends.cudnn.allow_tf32),
+        "deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
+        "sdp_flash": bool(torch.backends.cuda.flash_sdp_enabled()),
+        "sdp_mem_efficient": bool(torch.backends.cuda.mem_efficient_sdp_enabled()),
+        "sdp_math": bool(torch.backends.cuda.math_sdp_enabled()),
+    }
+    if torch.cuda.is_available():
+        result["cuda_devices"] = [
+            {
+                "index": index,
+                "name": torch.cuda.get_device_name(index),
+                "capability": list(torch.cuda.get_device_capability(index)),
+                "total_memory": int(torch.cuda.get_device_properties(index).total_memory),
+            }
+            for index in range(torch.cuda.device_count())
+        ]
+    result["nvidia_smi"] = subprocess.run(
+        ["nvidia-smi", "--query-gpu=name,driver_version,memory.total", "--format=csv,noheader"],
+        capture_output=True,
+        text=True,
+        check=False,
+    ).stdout.strip()
+    return result
 
 
 def ensure_manifest(output_root: Path) -> Path:
@@ -164,7 +204,7 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
     contact_velocity_weight = (
         1.0e6
         if args.contact_velocity_weight is None
-        and args.protocol == TEMPORAL_CONTACT_PROTOCOL
+        and args.protocol in TEMPORAL_CONTACT_PROTOCOLS
         else 0.0
         if args.contact_velocity_weight is None
         else args.contact_velocity_weight
@@ -172,7 +212,7 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
     boundary_halo_frames = (
         1
         if args.boundary_halo_frames is None
-        and args.protocol == TEMPORAL_CONTACT_PROTOCOL
+        and args.protocol in TEMPORAL_CONTACT_PROTOCOLS
         else 0
         if args.boundary_halo_frames is None
         else args.boundary_halo_frames
@@ -278,6 +318,12 @@ def freeze_inputs(
             "path": str(smplx_path),
             "sha256": sha256_path(smplx_path),
         },
+        "reference_protocol": {
+            "path": str(args.protocol_root / "protocol.json"),
+            "sha256": sha256_path(args.protocol_root / "protocol.json"),
+        },
+        # Kept as a compatibility alias for the v0.2 audit reader.  In v0.3
+        # this path is only the legacy/reference input used during replay.
         "frozen_v3_protocol": {
             "path": str(args.protocol_root / "protocol.json"),
             "sha256": sha256_path(args.protocol_root / "protocol.json"),
@@ -286,6 +332,7 @@ def freeze_inputs(
         "heel_toe_marker_index_sha256": sha256_path(
             args.protocol_root / "foot_patches.json"
         ),
+        "reference_m0_motion_sha256": sha256_path(args.protocol_root / "m0_physical.pt"),
         "m0_motion_sha256": sha256_path(args.protocol_root / "m0_physical.pt"),
         "initial_noise": find_noise_record(args.noise_cache, "34122", 0),
         "sampling_schedule": {
@@ -303,24 +350,29 @@ def freeze_inputs(
         "sample_id": "34122",
         "side": args.side,
         "torch_version": torch.__version__,
+        "runtime_fingerprint": runtime_fingerprint(),
     }
     write_strict_json(run_root / "input_snapshot.json", snapshot)
     return snapshot
 
 
-def main(*, default_protocol: str = PROTOCOL_NAME) -> None:
+def main(
+    *,
+    default_protocol: str = PROTOCOL_NAME,
+    default_output: Path = DEFAULT_OUTPUT,
+) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metric", choices=(EUCLIDEAN_METRIC, KINEMATIC_TEMPORAL_METRIC), required=True)
     parser.add_argument(
         "--protocol",
-        choices=(PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL),
+        choices=(PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL, CURRENT_ENV_PAIRED_PROTOCOL),
         default=default_protocol,
     )
     parser.add_argument("--side", choices=("left", "right"), required=True)
     parser.add_argument("--target-delta-deg", type=float, choices=(2.0, 5.0, 10.0), required=True)
     parser.add_argument("--protocol-root", type=Path, default=DEFAULT_PROTOCOL_ROOT)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE_CACHE)
-    parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--output-root", type=Path, default=default_output)
     parser.add_argument("--model-path", type=Path, default=None)
     parser.add_argument("--lambda-root", type=float, default=10.0)
     parser.add_argument("--lambda-skel", type=float, default=1.0)
@@ -341,8 +393,10 @@ def main(*, default_protocol: str = PROTOCOL_NAME) -> None:
     parser.add_argument("--test-local-batch", type=int, default=1)
     parser.add_argument("--audit-label", default="default")
     args = parser.parse_args()
-    if args.m0_only and args.protocol != PROTOCOL_NAME:
-        raise ValueError("--m0-only uses the legacy projection-disabled protocol")
+    if args.protocol == CURRENT_ENV_PAIRED_PROTOCOL and args.allow_m0_mismatch:
+        raise ValueError("v0.3 forbids --allow-m0-mismatch")
+    if args.m0_only and args.protocol not in {PROTOCOL_NAME, CURRENT_ENV_PAIRED_PROTOCOL}:
+        raise ValueError("--m0-only is supported only for v0.1 or v0.3 baseline generation")
     manifest = args.manifest if args.manifest is not None else ensure_manifest(args.output_root)
     if not manifest.is_file():
         raise FileNotFoundError(f"manifest does not exist: {manifest}")
@@ -361,6 +415,13 @@ def main(*, default_protocol: str = PROTOCOL_NAME) -> None:
     snapshot = freeze_inputs(args, run_root, config_path, manifest)
     record = {
         "protocol": args.protocol,
+        "m0_reference_protocol": args.protocol,
+        "baseline_origin": (
+            "current_environment_refreeze"
+            if args.protocol == CURRENT_ENV_PAIRED_PROTOCOL
+            else "legacy_v3_reference"
+        ),
+        "legacy_v3_relation": "reference_only" if args.protocol == CURRENT_ENV_PAIRED_PROTOCOL else None,
         "status": "RUNNING",
         "run_root": str(run_root),
         "input_snapshot": str(run_root / "input_snapshot.json"),
@@ -371,6 +432,7 @@ def main(*, default_protocol: str = PROTOCOL_NAME) -> None:
         "side": args.side,
         "metric": args.metric,
         "target_delta_deg": float(args.target_delta_deg),
+        "allow_m0_mismatch": bool(args.allow_m0_mismatch),
     }
     write_strict_json(run_root / "run_record.json", record)
     started = time.perf_counter()

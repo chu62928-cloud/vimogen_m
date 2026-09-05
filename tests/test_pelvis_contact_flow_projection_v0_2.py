@@ -10,6 +10,7 @@ from scripts.evaluate_pelvis_contact_flow_projection_v0_1 import (
     m0_pairing_eligible,
 )
 from sampling.pelvis_contact_flow_projection_v0_2 import (
+    CURRENT_ENV_PAIRED_PROTOCOL,
     KINEMATIC_TEMPORAL_METRIC,
     PelvisContactFlowProjector,
     ProjectorConfig,
@@ -40,6 +41,13 @@ def test_temporal_mapping_uses_strict_defaults() -> None:
     config = ProjectorConfig.from_mapping({"protocol": PROTOCOL_NAME})
     assert config.contact_velocity_weight == pytest.approx(1.0e6)
     assert config.boundary_halo_frames == 1
+
+
+def test_current_environment_protocol_uses_temporal_defaults() -> None:
+    config = ProjectorConfig.from_mapping({"protocol": CURRENT_ENV_PAIRED_PROTOCOL})
+    assert config.contact_velocity_weight == pytest.approx(1.0e6)
+    assert config.boundary_halo_frames == 1
+    config.validate()
 
 
 def test_m0_mismatch_and_not_evaluable_cannot_unlock_formal_pass() -> None:

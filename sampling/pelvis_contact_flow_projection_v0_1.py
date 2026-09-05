@@ -34,6 +34,10 @@ from motion_rep.rotation_transform import axis_angle_to_mat3x3, mat3x3_to_axis_a
 
 PROTOCOL_NAME = "vimogen_pelvis_contact_flow_projection_v0_1"
 TEMPORAL_CONTACT_PROTOCOL = "vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact"
+CURRENT_ENV_PAIRED_PROTOCOL = "vimogen_pelvis_contact_flow_projection_v0_3_current_env_paired"
+TEMPORAL_CONTACT_PROTOCOLS = frozenset(
+    {TEMPORAL_CONTACT_PROTOCOL, CURRENT_ENV_PAIRED_PROTOCOL}
+)
 METHOD_NAME = "ProjFlow-inspired iterative kinematic sampling projection"
 EUCLIDEAN_METRIC = "euclidean"
 KINEMATIC_TEMPORAL_METRIC = "kinematic_temporal"
@@ -224,9 +228,11 @@ class ProjectorConfig:
     boundary_halo_frames: int = 0
 
     def validate(self) -> None:
-        if self.protocol not in {PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL}:
+        if self.protocol not in {PROTOCOL_NAME, *TEMPORAL_CONTACT_PROTOCOLS}:
             raise ValueError(
-                f"protocol must be {PROTOCOL_NAME} or {TEMPORAL_CONTACT_PROTOCOL}"
+                "protocol must be one of "
+                f"{PROTOCOL_NAME}, {TEMPORAL_CONTACT_PROTOCOL}, "
+                f"{CURRENT_ENV_PAIRED_PROTOCOL}"
             )
         if self.metric not in {EUCLIDEAN_METRIC, KINEMATIC_TEMPORAL_METRIC}:
             raise ValueError("metric must be euclidean or kinematic_temporal")
@@ -251,11 +257,11 @@ class ProjectorConfig:
             raise ValueError("transition pair weight must lie in [0,1]")
         if self.boundary_halo_frames < 0:
             raise ValueError("boundary_halo_frames cannot be negative")
-        if self.protocol == TEMPORAL_CONTACT_PROTOCOL:
+        if self.protocol in TEMPORAL_CONTACT_PROTOCOLS:
             if self.contact_velocity_weight <= 0.0:
-                raise ValueError("v0.2 requires a positive contact velocity weight")
+                raise ValueError("temporal-contact protocols require a positive contact velocity weight")
             if self.boundary_halo_frames < 1:
-                raise ValueError("v0.2 requires at least one boundary halo frame")
+                raise ValueError("temporal-contact protocols require at least one boundary halo frame")
         if self.max_relinearization_iters < 1:
             raise ValueError("max_relinearization_iters must be positive")
 
@@ -267,7 +273,7 @@ class ProjectorConfig:
         # temporal-contact protocol has an explicit safe default so a
         # minimal YAML block cannot silently disable the new constraint.
         protocol = str(values.get("protocol", defaults["protocol"]))
-        if protocol == TEMPORAL_CONTACT_PROTOCOL:
+        if protocol in TEMPORAL_CONTACT_PROTOCOLS:
             defaults["contact_velocity_weight"] = 1.0e6
             defaults["boundary_halo_frames"] = 1
         for key in defaults:
@@ -536,6 +542,10 @@ class PelvisContactFlowProjector:
     ) -> "PelvisContactFlowProjector":
         """Bind frozen v3.0.1 evidence to one sampling-projection run."""
 
+        if config.protocol == CURRENT_ENV_PAIRED_PROTOCOL and allow_m0_mismatch:
+            raise ValueError(
+                "v0.3 current-environment paired runs cannot enable allow_m0_mismatch"
+            )
         if side not in {"left", "right"}:
             raise ValueError("side must be left or right")
         protocol_root = Path(protocol_root)
@@ -678,7 +688,14 @@ class PelvisContactFlowProjector:
             "m0_match_status": (
                 "M0_PAIRING_PASS" if direct_max <= 2.0e-3 else "DIAGNOSTIC_INELIGIBLE"
             ),
-            "projection_baseline": "current_replay" if allow_m0_mismatch else "frozen_v3_0_1",
+            "projection_baseline": "current_replay" if allow_m0_mismatch else (
+                "current_environment_refreeze"
+                if str(protocol.get("protocol")) == CURRENT_ENV_PAIRED_PROTOCOL
+                else "frozen_v3_0_1"
+            ),
+            "m0_reference_protocol": str(protocol.get("protocol", "")),
+            "baseline_origin": protocol.get("baseline_origin"),
+            "legacy_v3_relation": protocol.get("legacy_v3_relation", "reference_only"),
             "allow_m0_mismatch": bool(allow_m0_mismatch),
         }
         return cls(
@@ -1553,6 +1570,9 @@ class PelvisContactFlowProjector:
                     "m0_match_status",
                     "allow_m0_mismatch",
                     "projection_baseline",
+                    "m0_reference_protocol",
+                    "baseline_origin",
+                    "legacy_v3_relation",
                     "context_mask",
                     "velocity_pair_masks",
                     "velocity_pair_weights",
@@ -1572,6 +1592,8 @@ __all__ = [
     "PENETRATION_METHOD",
     "PROTOCOL_NAME",
     "TEMPORAL_CONTACT_PROTOCOL",
+    "CURRENT_ENV_PAIRED_PROTOCOL",
+    "TEMPORAL_CONTACT_PROTOCOLS",
     "PelvisContactFlowProjector",
     "ProjectionResult",
     "ProjectorConfig",

@@ -71,6 +71,7 @@ from sampling.relative_root_forward_guidance_v1_3 import (
     ShadowPoseHierarchicalRootForwardGuidance,
 )
 from sampling.pelvis_contact_flow_projection_v0_1 import (
+    CURRENT_ENV_PAIRED_PROTOCOL,
     PROTOCOL_NAME as PELVIS_CONTACT_PROJECTION_PROTOCOL,
     PelvisContactFlowProjector,
     ProjectorConfig,
@@ -611,12 +612,18 @@ def main(args):
         projection_cfg.get('target_delta_deg', 2.0)
     )
     projection_model_path = projection_cfg.get('model_path', None)
+    if (
+        projection_protocol_requested == CURRENT_ENV_PAIRED_PROTOCOL
+        and bool(projection_cfg.get('allow_m0_mismatch', False))
+    ):
+        raise ValueError('v0.3 current-environment paired protocol forbids allow_m0_mismatch')
     if projection_enabled and projection_protocol_requested not in {
         PELVIS_CONTACT_PROJECTION_PROTOCOL,
         PELVIS_CONTACT_PROJECTION_V0_2_PROTOCOL,
+        CURRENT_ENV_PAIRED_PROTOCOL,
     }:
         raise ValueError(
-            'pelvis_contact_projection.protocol must be v0.1 or v0.2 temporal-contact'
+            'pelvis_contact_projection.protocol must be v0.1, v0.2, or v0.3 current-environment paired'
         )
     if projection_enabled and projection_artifact_dir is None:
         raise ValueError('pelvis_contact_projection.enabled requires artifact_dir')
