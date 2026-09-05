@@ -23,6 +23,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sampling.pelvis_contact_flow_projection_v0_1 import (  # noqa: E402
+    DOSE_FIRST_CONTACT_ABLATION_PROTOCOL,
+    DOSE_FIRST_CONTACT_MODES,
     EUCLIDEAN_METRIC,
     KINEMATIC_TEMPORAL_METRIC,
     CURRENT_ENV_PAIRED_PROTOCOL,
@@ -41,6 +43,7 @@ DEFAULT_PROTOCOL_ROOT = Path(
 DEFAULT_NOISE_CACHE = ROOT / "results/phase6/absolute_mean_pelvis_v2/noise_cache"
 DEFAULT_OUTPUT = ROOT / "results/phase8/pelvis_contact_flow_projection_v0_2"
 DEFAULT_OUTPUT_V0_3 = ROOT / "results/phase8/pelvis_contact_flow_projection_v0_3"
+DEFAULT_OUTPUT_V0_4 = ROOT / "results/phase8/pelvis_guided_walk_v0_4"
 
 
 def sha256_path(path: Path) -> str:
@@ -105,15 +108,15 @@ def runtime_fingerprint() -> dict[str, Any]:
     return result
 
 
-def ensure_manifest(output_root: Path) -> Path:
-    destination = output_root / "data/sample34122.json"
+def ensure_manifest(output_root: Path, sample_id: str = "34122") -> Path:
+    destination = output_root / f"data/sample{sample_id}.json"
     if destination.is_file():
         return destination
     source = ROOT / "results/phase7/relative_root_forward_v1/data/smoke_sample94_34122.json"
     rows = json.loads(source.read_text(encoding="utf-8"))
-    selected = [row for row in rows if str(row.get("sample_id", row.get("global_id"))) == "34122"]
+    selected = [row for row in rows if str(row.get("sample_id", row.get("global_id"))) == str(sample_id)]
     if len(selected) != 1:
-        raise RuntimeError(f"expected one sample34122 row, found {len(selected)}")
+        raise RuntimeError(f"expected one sample{sample_id} row, found {len(selected)}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_strict_json(destination, selected)
     return destination
@@ -178,7 +181,8 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
     config = OmegaConf.load(ROOT / "configs/tm2m_infer.yaml")
     config.mode = "eval"
     config.mbench_name = (
-        f"pelvis_contact_projection_{args.metric}_{args.side}_dose"
+        f"pelvis_guided_walk_{args.sample_id}_{args.contact_mode or 'legacy'}_"
+        f"{args.metric}_{args.side or 'full'}_dose"
         f"{args.target_delta_deg:g}_seed0"
     )
     config.experiment.global_seed = 0
@@ -217,6 +221,20 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         if args.boundary_halo_frames is None
         else args.boundary_halo_frames
     )
+    if args.protocol == DOSE_FIRST_CONTACT_ABLATION_PROTOCOL:
+        mode_position, mode_velocity = DOSE_FIRST_CONTACT_MODES[args.contact_mode]
+        contact_position_weight = mode_position if args.contact_position_weight is None else args.contact_position_weight
+        contact_velocity_weight = mode_velocity if args.contact_velocity_weight is None else args.contact_velocity_weight
+        contact_weight = args.contact_weight
+        projection_scope = "full_sequence"
+        acceptance_mode = "dose_first"
+        if args.boundary_halo_frames is None:
+            boundary_halo_frames = 0
+    else:
+        contact_position_weight = None
+        contact_weight = args.contact_weight
+        projection_scope = "stable_window"
+        acceptance_mode = "legacy_contact"
     projector = ProjectorConfig(
         protocol=args.protocol,
         metric=args.metric,
@@ -227,7 +245,8 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         lambda_vel=args.lambda_vel,
         lambda_acc=args.lambda_acc,
         epsilon=1.0e-6,
-        contact_weight=args.contact_weight,
+        contact_weight=contact_weight,
+        contact_position_weight=contact_position_weight,
         max_relinearization_iters=5,
         pelvis_tolerance_deg=0.25,
         contact_tolerance_m=0.001,
@@ -238,6 +257,10 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         contact_velocity_tolerance_m_per_frame=args.contact_velocity_tolerance_m_per_frame,
         transition_pair_weight=args.transition_pair_weight,
         boundary_halo_frames=boundary_halo_frames,
+        projection_scope=projection_scope,
+        contact_mode=args.contact_mode or "legacy",
+        acceptance_mode=acceptance_mode,
+        artifact_dir=str(run_root / "projection_artifacts"),
     )
     projector.validate()
     config.pelvis_contact_projection = {
@@ -245,8 +268,10 @@ def build_config(args: argparse.Namespace, run_root: Path, manifest: Path) -> An
         "enabled": not bool(args.m0_only),
         "protocol_root": str(args.protocol_root),
         "artifact_dir": str(run_root / "projection_artifacts"),
-        "sample_id": "34122",
+        "sample_id": str(args.sample_id),
         "side": args.side,
+        "projection_scope": projection_scope,
+        "contact_mode": args.contact_mode,
         "target_delta_deg": float(args.target_delta_deg),
         "model_path": None if args.model_path is None else str(args.model_path),
         # The current server sampler has a known numerical replay drift from
@@ -269,7 +294,7 @@ def freeze_inputs(
 
     protocol = json.loads((args.protocol_root / "protocol.json").read_text(encoding="utf-8"))
     case = next(
-        item for item in protocol["cases"] if str(item["sample_id"]) == "34122"
+        item for item in protocol["cases"] if str(item["sample_id"]) == str(args.sample_id)
     )
     contact_payload = {
         side: case["sides"][side]["evidence"]["valid_masks"]
@@ -334,21 +359,30 @@ def freeze_inputs(
         ),
         "reference_m0_motion_sha256": sha256_path(args.protocol_root / "m0_physical.pt"),
         "m0_motion_sha256": sha256_path(args.protocol_root / "m0_physical.pt"),
-        "initial_noise": find_noise_record(args.noise_cache, "34122", 0),
+        "initial_noise": find_noise_record(args.noise_cache, str(args.sample_id), 0),
         "sampling_schedule": {
             "num_inference_steps": 50,
             "denoising_strength": 0.7,
             "sigmas": sigmas,
         },
         "guidance_step_mask": guidance_mask,
-        "projection_window": case["sides"][args.side]["stable_window"],
+        "projection_window": (
+            {"scope": "full_sequence", "window_start": 0,
+             "window_end_exclusive": int(torch.load(
+                 args.protocol_root / "valid_mask.pt", map_location="cpu", weights_only=True
+             ).shape[-1])}
+            if args.protocol == DOSE_FIRST_CONTACT_ABLATION_PROTOCOL
+            else case["sides"][args.side]["stable_window"]
+        ),
         "metric": args.metric,
         "target_delta_deg": float(args.target_delta_deg),
         "allow_m0_mismatch": bool(args.allow_m0_mismatch),
         "eligible": not bool(args.allow_m0_mismatch),
         "seed": 0,
-        "sample_id": "34122",
+        "sample_id": str(args.sample_id),
         "side": args.side,
+        "projection_scope": args.projection_scope,
+        "contact_mode": args.contact_mode,
         "torch_version": torch.__version__,
         "runtime_fingerprint": runtime_fingerprint(),
     }
@@ -360,17 +394,20 @@ def main(
     *,
     default_protocol: str = PROTOCOL_NAME,
     default_output: Path = DEFAULT_OUTPUT,
+    default_protocol_root: Path = DEFAULT_PROTOCOL_ROOT,
 ) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--metric", choices=(EUCLIDEAN_METRIC, KINEMATIC_TEMPORAL_METRIC), required=True)
     parser.add_argument(
         "--protocol",
-        choices=(PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL, CURRENT_ENV_PAIRED_PROTOCOL),
+        choices=(PROTOCOL_NAME, TEMPORAL_CONTACT_PROTOCOL, CURRENT_ENV_PAIRED_PROTOCOL, DOSE_FIRST_CONTACT_ABLATION_PROTOCOL),
         default=default_protocol,
     )
-    parser.add_argument("--side", choices=("left", "right"), required=True)
+    parser.add_argument("--side", choices=("left", "right", "both"), required=False, default=None)
+    parser.add_argument("--sample-id", default="34122")
+    parser.add_argument("--projection-scope", choices=("stable_window", "full_sequence"), default=None)
     parser.add_argument("--target-delta-deg", type=float, choices=(2.0, 5.0, 10.0), required=True)
-    parser.add_argument("--protocol-root", type=Path, default=DEFAULT_PROTOCOL_ROOT)
+    parser.add_argument("--protocol-root", type=Path, default=default_protocol_root)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE_CACHE)
     parser.add_argument("--output-root", type=Path, default=default_output)
     parser.add_argument("--model-path", type=Path, default=None)
@@ -379,6 +416,7 @@ def main(
     parser.add_argument("--lambda-vel", type=float, default=1.0)
     parser.add_argument("--lambda-acc", type=float, default=5.0)
     parser.add_argument("--contact-weight", type=float, default=1.0e6)
+    parser.add_argument("--contact-position-weight", type=float, default=None)
     parser.add_argument("--contact-velocity-weight", type=float, default=None)
     parser.add_argument(
         "--contact-velocity-tolerance-m-per-frame",
@@ -392,19 +430,36 @@ def main(
     parser.add_argument("--manifest", type=Path, default=None)
     parser.add_argument("--test-local-batch", type=int, default=1)
     parser.add_argument("--audit-label", default="default")
+    parser.add_argument("--contact-mode", choices=tuple(DOSE_FIRST_CONTACT_MODES), default=None)
     args = parser.parse_args()
-    if args.protocol == CURRENT_ENV_PAIRED_PROTOCOL and args.allow_m0_mismatch:
-        raise ValueError("v0.3 forbids --allow-m0-mismatch")
+    if args.protocol in {CURRENT_ENV_PAIRED_PROTOCOL, DOSE_FIRST_CONTACT_ABLATION_PROTOCOL} and args.allow_m0_mismatch:
+        raise ValueError("current-environment paired protocols forbid --allow-m0-mismatch")
     if args.m0_only and args.protocol not in {PROTOCOL_NAME, CURRENT_ENV_PAIRED_PROTOCOL}:
-        raise ValueError("--m0-only is supported only for v0.1 or v0.3 baseline generation")
-    manifest = args.manifest if args.manifest is not None else ensure_manifest(args.output_root)
+        if args.protocol != DOSE_FIRST_CONTACT_ABLATION_PROTOCOL:
+            raise ValueError("--m0-only is supported only for baseline generation protocols")
+    if args.protocol == DOSE_FIRST_CONTACT_ABLATION_PROTOCOL:
+        if str(args.sample_id) != "94":
+            raise ValueError("v0.4 is frozen to sample94")
+        if args.contact_mode is None and not args.m0_only:
+            raise ValueError("v0.4 candidate runs require --contact-mode")
+        if args.contact_mode is None:
+            args.contact_mode = "temporal_strong"
+        if args.side not in {None, "both"}:
+            raise ValueError("v0.4 full_sequence runs do not take a side")
+        args.side = None
+        args.projection_scope = args.projection_scope or "full_sequence"
+        if args.projection_scope != "full_sequence":
+            raise ValueError("v0.4 requires full_sequence projection_scope")
+    else:
+        args.projection_scope = args.projection_scope or "stable_window"
+    manifest = args.manifest if args.manifest is not None else ensure_manifest(args.output_root, str(args.sample_id))
     if not manifest.is_file():
         raise FileNotFoundError(f"manifest does not exist: {manifest}")
     parent = (
         args.output_root
-        / ("m0_audit" if args.m0_only else "pilot_sample34122")
+        / ("m0_audit" if args.m0_only else ("pilot_sample94" if str(args.sample_id) == "94" else "pilot_sample34122"))
         / args.audit_label
-        / args.side
+        / (args.side or "full_sequence")
         / args.metric
         / f"dose_{args.target_delta_deg:+g}deg"
     )
@@ -418,21 +473,23 @@ def main(
         "m0_reference_protocol": args.protocol,
         "baseline_origin": (
             "current_environment_refreeze"
-            if args.protocol == CURRENT_ENV_PAIRED_PROTOCOL
+            if args.protocol in {CURRENT_ENV_PAIRED_PROTOCOL, DOSE_FIRST_CONTACT_ABLATION_PROTOCOL}
             else "legacy_v3_reference"
         ),
-        "legacy_v3_relation": "reference_only" if args.protocol == CURRENT_ENV_PAIRED_PROTOCOL else None,
+        "legacy_v3_relation": "reference_only" if args.protocol in {CURRENT_ENV_PAIRED_PROTOCOL, DOSE_FIRST_CONTACT_ABLATION_PROTOCOL} else None,
         "status": "RUNNING",
         "run_root": str(run_root),
         "input_snapshot": str(run_root / "input_snapshot.json"),
         "input_snapshot_sha256": sha256_path(run_root / "input_snapshot.json"),
         "source_revision": snapshot["source_revision"],
-        "sample_id": "34122",
+        "sample_id": str(args.sample_id),
         "seed": 0,
         "side": args.side,
         "metric": args.metric,
         "target_delta_deg": float(args.target_delta_deg),
         "allow_m0_mismatch": bool(args.allow_m0_mismatch),
+        "projection_scope": args.projection_scope,
+        "contact_mode": args.contact_mode,
     }
     write_strict_json(run_root / "run_record.json", record)
     started = time.perf_counter()

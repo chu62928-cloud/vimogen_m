@@ -72,6 +72,8 @@ from sampling.relative_root_forward_guidance_v1_3 import (
 )
 from sampling.pelvis_contact_flow_projection_v0_1 import (
     CURRENT_ENV_PAIRED_PROTOCOL,
+    DOSE_FIRST_CONTACT_ABLATION_PROTOCOL,
+    DOSE_FIRST_CONTACT_MODES,
     PROTOCOL_NAME as PELVIS_CONTACT_PROJECTION_PROTOCOL,
     PelvisContactFlowProjector,
     ProjectorConfig,
@@ -607,30 +609,41 @@ def main(args):
     )
     projection_protocol_root = projection_cfg.get('protocol_root', None)
     projection_sample_id = str(projection_cfg.get('sample_id', '34122'))
-    projection_side = str(projection_cfg.get('side', 'left'))
+    projection_side_value = projection_cfg.get('side', None)
+    projection_side = None if projection_side_value in {None, '', 'both'} else str(projection_side_value)
     projection_target_delta_deg = float(
         projection_cfg.get('target_delta_deg', 2.0)
     )
     projection_model_path = projection_cfg.get('model_path', None)
     if (
-        projection_protocol_requested == CURRENT_ENV_PAIRED_PROTOCOL
+        projection_protocol_requested in {
+            CURRENT_ENV_PAIRED_PROTOCOL,
+            DOSE_FIRST_CONTACT_ABLATION_PROTOCOL,
+        }
         and bool(projection_cfg.get('allow_m0_mismatch', False))
     ):
-        raise ValueError('v0.3 current-environment paired protocol forbids allow_m0_mismatch')
+        raise ValueError('current-environment paired protocols forbid allow_m0_mismatch')
     if projection_enabled and projection_protocol_requested not in {
         PELVIS_CONTACT_PROJECTION_PROTOCOL,
         PELVIS_CONTACT_PROJECTION_V0_2_PROTOCOL,
         CURRENT_ENV_PAIRED_PROTOCOL,
+        DOSE_FIRST_CONTACT_ABLATION_PROTOCOL,
     }:
         raise ValueError(
-            'pelvis_contact_projection.protocol must be v0.1, v0.2, or v0.3 current-environment paired'
+            'pelvis_contact_projection.protocol must be v0.1, v0.2, v0.3, or v0.4'
         )
     if projection_enabled and projection_artifact_dir is None:
         raise ValueError('pelvis_contact_projection.enabled requires artifact_dir')
     if projection_enabled and projection_protocol_root is None:
         raise ValueError('pelvis_contact_projection.enabled requires protocol_root')
-    if projection_enabled and projection_side not in {'left', 'right'}:
+    projection_scope = str(projection_cfg.get('projection_scope', projection_config.projection_scope))
+    if projection_enabled and projection_protocol_requested != DOSE_FIRST_CONTACT_ABLATION_PROTOCOL and projection_side not in {'left', 'right'}:
         raise ValueError('pelvis_contact_projection.side must be left or right')
+    if projection_enabled and projection_protocol_requested == DOSE_FIRST_CONTACT_ABLATION_PROTOCOL:
+        if projection_scope != 'full_sequence':
+            raise ValueError('v0.4 requires full_sequence projection_scope')
+        if projection_config.contact_mode not in DOSE_FIRST_CONTACT_MODES:
+            raise ValueError('v0.4 contact_mode is not in the frozen ablation matrix')
     if projection_enabled and projection_target_delta_deg not in {2.0, 5.0, 10.0}:
         raise ValueError('pelvis_contact_projection target must be +2, +5, or +10')
     if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled)) > 1:

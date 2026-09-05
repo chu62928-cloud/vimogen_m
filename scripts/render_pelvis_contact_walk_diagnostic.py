@@ -182,8 +182,8 @@ def main() -> None:
     renderer = pyrender.OffscreenRenderer(PANEL_WIDTH, PANEL_HEIGHT)
     panels_spec = (
         ("M0", "M0 baseline", [0.55, 0.58, 0.62, 1.0]),
-        ("root-only", "root-only +10 deg", [0.95, 0.55, 0.12, 1.0]),
-        ("compensated", "diagnostic compensation", [0.10, 0.55, 0.92, 1.0]),
+        ("root-only", f"root-only {float(args.target_delta_deg):+.1f} deg", [0.95, 0.55, 0.12, 1.0]),
+        ("compensated", "v0.4 candidate", [0.10, 0.55, 0.92, 1.0]),
     )
     try:
         for frame in range(m0.shape[0]):
