@@ -1,5 +1,15 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-05：v0.2 第三次冻结核心入口重放仍失败，阶段 A 判定环境阻塞
+
+- RUN：通过 `connect.westc.seetacloud.com:20602` 连接服务器；现有连接脚本原为旧的 `westd:10090`，已改为读取环境变量/SSH 密钥，不再保存明文密码。服务器工作区仍使用 `/root/autodl-tmp/vimogen_clean`，未切换分支；冻结重放结果为 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/frozen_46a1b04_dual_batch2/attempt_01/`。
+- RUN_CONFIG：原始双样本清单（sample94、sample34122）、batch size 2、`batch_invariant=true`、seed0、50 步、BF16、CFG5、`sample_v1` 噪声；第三次采用冻结提交 `46a1b04` 导出的 `flow_sampler.py` 与 `train_eval_vimogen.py`，其余服务器兼容依赖保持不变。
+- ENVIRONMENT：GPU RTX 4080 SUPER，驱动 `580.142`，PyTorch `2.7.0+cu128`，CUDA `12.8`，cuDNN `90701`，运行时开关和 Git 状态记录在 `runtime_environment.json`。
+- RESULT：第三次冻结核心入口的 sample34122 `raw` 与当前 dual 重放逐位一致；`official_pre_cast → authority_project` 直接姿态最大差为 `0.01888418197631836`，冻结门为 `0.002`。三次无投影重放均为 `FAIL`。
+- DIAGNOSIS：初始噪声、有效帧掩码、均值、标准差、调度、批大小和权威化边界均已排除；差异在模型 50 步采样内部产生。历史 8 月归档与冻结 M0 一致，而当前 9 月环境形成稳定新输出簇，最高概率为 GPU/驱动/算子环境变化；旧归档没有完整运行时指纹，故不宣称原因已百分之百证实。
+- STOP：阶段 A 判定 `ENVIRONMENT_OR_OPERATOR_REPRODUCTION_BLOCKED`；不运行冻结端点、左/右 +2°、Euclidean 消融或更高剂量，不使用 `allow_m0_mismatch` 形成正式结论。原审计保留为 `m0_replay_audit_before_third.json`，三次结果审计为 `m0_replay_audit.json`。
+- NEXT：只有恢复旧 GPU/驱动/镜像并重新通过 `M0_PAIRING_PASS` 后，才继续阶段 B→C→D；无法恢复时另建“重新冻结 M0”协议，不覆盖 v0.2。三次重放后不再增加同环境无投影重放。
+
 ## 2026-09-04：骨盆—接触时间一致性投影 v0.2 实现与 M0 阶段 A 停止
 
 - BRANCH：独立分支 `codex/pelvis-contact-flow-projection-v0-2-temporal-contact`；协议 `vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact`；结果根目录 `results/phase8/pelvis_contact_flow_projection_v0_2/`。v0.1 及更早结果未覆盖。

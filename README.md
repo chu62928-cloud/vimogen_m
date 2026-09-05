@@ -34,20 +34,38 @@ python scripts/evaluate_pelvis_contact_flow_projection_v0_1.py --run-root <run> 
 
 ### M0 复现结果与停止状态
 
-当前服务器已完成两次无投影重放：
+当前服务器已完成三次无投影重放。前两次使用当前代码，第三次使用从冻结提交
+`46a1b04` 导出的 M0 核心入口（`sampling/flow_sampler.py` 和
+`train_eval_vimogen.py`），并保留服务器原有兼容依赖：
 
 - 双样本批大小 2：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/dual_batch2/left/kinematic_temporal/dose_+2deg/attempt_01/`；
 - 单样本批大小 1：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/singleton_batch1/left/kinematic_temporal/dose_+2deg/attempt_01/`。
+- 冻结提交核心入口、双样本批大小 2：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/frozen_46a1b04_dual_batch2/attempt_01/`。
 
-两次重放的 `official_pre_cast → authority_project` 直接姿态最大差均为约 `1.8884e-2`，超过冻结门 `2e-3`；当前代码和批大小不是主要差异来源。审计文件为 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，总体状态为 `FAIL`。服务器连接随后不可用，冻结提交 `46a1b04` 的第三次受控重放尚未执行，因此阶段 A 尚未完成，阶段 B 端点投影和阶段 C–E 正式采样均按停止门未执行。
+三次重放的 sample34122 `raw` 与 `official_pre_cast` 均形成同一当前环境输出簇：
+`official_pre_cast → authority_project` 直接姿态最大差均为约 `1.8884e-2`，超过冻结门
+`2e-3`；冻结提交核心入口的输出与当前 dual 重放逐位一致。当前 GPU 为 RTX 4080 SUPER，
+PyTorch 为 `2.7.0+cu128`，CUDA 为 `12.8`，驱动为 `580.142`，运行环境指纹保存在冻结重放目录的
+`runtime_environment.json`。三次结果的严格审计位于
+`results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，总体状态为 `FAIL`。
+因此阶段 A 判定为 `ENVIRONMENT_OR_OPERATOR_REPRODUCTION_BLOCKED`；阶段 B 端点投影和阶段 C–E
+正式采样均未执行。
 
 ### 结果说明、不能说明什么
 
-已验证的是：v0.2 的时间接触残差和严格评价边界已实现，当前双样本/单样本重放均能稳定产生可审计的 M0 差异。该差异说明当前环境或算子路径尚未达到冻结 M0 的逐样本复现要求；它不能说明时间投影几何不可行，也不能支持任何 +2°/+5°/+10° 正式效果结论。没有通过 `M0_PAIRING_PASS` 时，任何允许漂移的候选都只能作为诊断，不能算正式结果。
+已验证的是：v0.2 的时间接触残差和严格评价边界已实现；双样本、单样本和冻结提交核心入口
+在当前环境中均稳定复现同一个偏离冻结 M0 的输出。历史冻结 M0、样本噪声、有效帧掩码、均值/标准差、
+采样调度和权威化边界均已核对，故最高概率原因是 GPU/驱动/算子环境变化；旧归档未保存完整运行时指纹，
+不能把该原因写成完全证实。该差异不能说明时间投影几何不可行，也不能支持任何
+`+2°/+5°/+10°` 正式效果结论。没有 `M0_PAIRING_PASS` 时，任何允许漂移的候选都只能作为诊断，
+不能算正式结果。
 
 ### 停止原因与下一步分流
 
-先恢复服务器连接并使用冻结提交 `46a1b04`、原始双样本配置完成第三次重放；保存逐阶段、逐通道和逐帧差异以及样本级噪声哈希、有效帧掩码、检查点/均值/标准差/采样调度哈希。若第三次仍失败，停止正式采样并将问题归类为环境/算子复现阻塞；若通过，才按冻结端点可行性 → 左侧 +2° → 右侧和消融/高剂量的顺序继续。任何 v0.2.1 躯干安全包络或支撑关系约束都必须另建协议，不能覆盖本轮结果。
+第三次重放已完成并仍失败，故本轮停止正式采样。后续只有在云平台恢复旧 GPU、驱动和镜像，
+或能够重新构建等价算子环境并通过 `M0_PAIRING_PASS` 后，才按冻结端点可行性 → 左侧 +2° →
+右侧和消融/高剂量顺序继续。若旧环境无法恢复，本轮保持 `INELIGIBLE_M0_MISMATCH`；如需接受当前环境，
+必须另建“重新冻结 M0”的新协议。任何 v0.2.1 躯干安全包络或支撑关系约束都必须另建协议，不能覆盖本轮结果。
 
 主要提交顺序：`a052bd0` 归档保护 → `11e8fe0` 表示/评价基线 → `a2cb7e5` 脚本/测试 → `9bf94af` 解剖几何 → `55bc0d0` v4 引导/评价/标定 → `592cd30` 局部主导安全项 → `7544acc` 占比统计修正 → `65ee191` 视频标记 → `00d5e66` 训练入口 → `5dcd795` 配置边界修正。
 
