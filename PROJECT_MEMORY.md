@@ -31,6 +31,9 @@
 - ARTIFACTS：右时间运动学 +5°失败目录保留逐步诊断 `diagnostics_v0_3/`（CSV、严格 JSON、
   六面板 PNG）；左右 +2°通过案例的视频位于服务器 `.../videos/formal_left_2deg/rendered/`
   和 `.../videos/formal_right_2deg/rendered/`，均为可视化产物。
+- WALK：为本轮已执行的 8 个案例（左右、两种 metric、+2°/+5°）补生成完整 100 帧 walk 全
+  序列视频，每个案例含全身、慢放和足部局部版本，位于结果根目录 `videos/walk_cases_v0_3/`；
+  +10°未执行。
 - SUMMARY：所有已执行案例和停止原因汇总在服务器
   `results/phase8/pelvis_contact_flow_projection_v0_3/v0_3_gate_summary.json`。
 

@@ -72,6 +72,10 @@ python scripts/diagnose_pelvis_contact_flow_projection_v0_3.py --run-root <faile
 左、右 +2° 时间运动学案例都通过后，已在服务器保存全身三栏、慢放和足部局部视频，
 位于 `results/phase8/pelvis_contact_flow_projection_v0_3/videos/formal_left_2deg/rendered/`
 和 `.../formal_right_2deg/rendered/`。视频来自同一批配对 M0，仅作可视化，不改变评价门。
+随后又对本轮已经执行的 8 个案例（左右两侧、时间运动学/Euclidean、+2°/+5°）全部生成
+完整 100 帧 walk 全序列版本，统一位于服务器和本地结果目录的
+`videos/walk_cases_v0_3/<case>/`；每个案例包含全身三栏、慢放和足部局部视频。+10°未执行，
+因此没有对应 walk 视频。
 
 ### 结果解读与停止原因
 
