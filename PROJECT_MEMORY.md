@@ -1,5 +1,29 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-05：v0.4 sample94 全序列骨盆优先与接触强度消融
+
+### 已验证事实
+
+- BRANCH/PROTOCOL：当前分支为 `codex/pelvis-guided-walk-v0-4-dose-first-contact-ablation`；协议为 `vimogen_pelvis_guided_walk_v0_4_dose_first_contact_ablation`；结果根目录为 `results/phase8/pelvis_guided_walk_v0_4/`。v0.3 及更早协议和结果保持冻结。
+- BASELINE：sample94（提示词 `a person walks forward in a straight line`）全序列 100 个有效帧；当前环境 RTX 4080 SUPER 32 GB、PyTorch 2.7.0+cu128、CUDA 12.8、驱动 580.142。v2 协议从当前 M0 的 `official_pre_cast → GPU authority_project` 重新冻结，旧 CPU 权威化协议目录保留为历史诊断。
+- M0：双样本重复两次和 sample94 单样本重放的 sample94 噪声行哈希一致；相对 `protocol_current_env_sample94_v2` 的直接姿态最大差 `1.1920929e-7`，状态 `M0_PAIRING_PASS`。审计为服务器 `results/phase8/pelvis_guided_walk_v0_4/m0_replay_audit_v2.json`。
+- IMPLEMENTED：新增 `sample_id`、`projection_scope=full_sequence`、`contact_position_weight`、`contact_velocity_weight`、五种消融模式和 `dose_first` 接受逻辑；骨盆目标为一级硬等式，严重穿地为安全门，足部位置/速度为软目标。终端投影、回弹记录、严格 JSON、M0/候选配对日志和全序列低内存路径已接入。
+- TEST：服务器专项测试 `25 passed`；完整回归 `285 passed`；静态编译和 `git diff --check` 通过。
+- RUN：+2°、+5°、+10° 各完成五种模式，共 15 个候选；全部 `M0_PAIRING_PASS`、骨盆剂量 MAE/P95=`0°/0°`，没有单步信赖域越界。结果汇总为服务器 `results/phase8/pelvis_guided_walk_v0_4/v0_4_ablation_summary.json`。
+
+### 失败结果与解释
+
+- 所有 15 个候选的正式状态均为 `DIAGNOSTIC_CONTACT_FAIL`。sample94 左脚可评价，但右脚平足位置证据只有 1 帧，按协议为 `NOT_EVALUABLE`；不能据此宣称双脚接触通过。
+- 左足滑 P95（mm）在 +2° 的 `dose_only/position_only_medium/temporal_weak/temporal_medium/temporal_strong` 分别为 `36.93/30.51/29.25/36.25/49.93`；+5° 为 `42.03/30.59/29.33/42.85/53.87`；+10° 为 `39.23/30.69/30.55/54.24/59.88`。对应左穿地 P95 在三档剂量分别约 `30.85–27.71`、`40.05–35.53`、`50.46–46.14 mm`，均未过门。
+- 中等位置权重和弱时间权重偶尔降低左足滑，但抬脚/穿地、终端回弹或全身自然度仍失败；提高到强时间权重没有单调收益。当前 sample94 不支持“强接触优于 dose_only”，也没有找到同时满足剂量、接触、安全和自然度的配置。
+- 早期 v0.4 旧协议的两个稠密全序列 OOM attempt 保留；后续低内存运行成功，未覆盖失败证据。+10°按有限值且无信赖域违规完成趋势诊断后停止，没有进入多样本统计。
+
+### 待执行事项
+
+- 为 15 个候选保留或补齐 `videos/` 下的全身、慢放和足部局部 walk 视频；大型视频只留服务器结果目录，不进 Git。
+- 优先检查全序列活动穿地等式、足部位移/速度雅可比和终端投影；当前低内存路径用于诊断和权重消融，接触门失败前不进入多样本统计。
+- 在同一当前环境用 sample34122 双脚冻结证据复核；只有出现接触相对 `dose_only` 改善且骨盆、躯干、轨迹、时间平滑不越门，才建立多样本协议。再次更换 GPU/驱动/镜像时必须重新冻结 M0 或整批重跑。
+
 ## 2026-09-05：v0.3 当前服务器配对基线冻结，+5° 时间接触门停止
 
 ### 已验证事实

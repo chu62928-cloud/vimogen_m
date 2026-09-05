@@ -4,6 +4,64 @@
 
 当前主线新增独立协议 `vimogen_absolute_mean_pelvis_v4_anatomical_local`：它在 v3 完整前向运动学和末端安全融合基础上，使用冻结的项目专用 LASI/RASI/LPSI/RPSI 标志，并提供局部骨盆主导与防作弊审计。v3 仍是只读历史基线。
 
+## ViMoGen v0.4：sample94 全序列骨盆优先与接触强度消融（2026-09-05）
+
+### 目的与固定条件
+
+本轮针对简单直线行走提示词 `a person walks forward in a straight line`，检验“先满足骨盆剂量，再逐步增加足部接触约束”是否改善动作。sample94 的 100 个有效帧全部施加相对同帧 M0 的恒定 `+2°/+5°/+10°` 目标；固定当前 RTX 4080 SUPER 32 GB 环境、seed0、50 步、BF16、CFG5、原始样本级噪声、`kinematic_temporal` 度量和同一当前环境 M0。v0.3 协议、代码和结果未覆盖。
+
+约束优先级已按本轮设计修正：骨盆角是任务目标，进入一级硬等式；严重穿地是安全硬约束；足跟/脚尖位置和速度是二级软目标，不得为了接触门而阻止骨盆剂量达标。这样可以直接观察接触约束的收益与副作用，而不是把两个目标混成一个“全都必须通过”的黑箱门。
+
+### 实现
+
+- 新分支：`codex/pelvis-guided-walk-v0-4-dose-first-contact-ablation`；协议：`vimogen_pelvis_guided_walk_v0_4_dose_first_contact_ablation`。
+- 新结果根目录：`results/phase8/pelvis_guided_walk_v0_4/`。只读协议为服务器 `protocol_current_env_sample94_v2/`，从当前 M0 的 `official_pre_cast → GPU authority_project` 重新冻结，并重新计算 sample94 接触证据。
+- 新增 `sample_id`、`projection_scope=full_sequence`、`contact_position_weight`、`contact_velocity_weight` 和五种接触模式；保留旧 v0.1–v0.3 的 `contact_weight` 兼容行为。全序列采用低内存等价投影，避免 100 帧稠密 KKT 的显存爆炸；终端再次投影并保存回弹差异。
+- 每个剂量运行 `dose_only`、`position_only_medium`、`temporal_weak`、`temporal_medium`、`temporal_strong` 五种配对模式，均保存 M0、候选、投影日志、严格评价和三种 walk 视频（全身、慢放、足部局部）。
+
+运行与评价命令示例：
+
+```bash
+python scripts/freeze_pelvis_guided_walk_v0_4_protocol.py --source-protocol-root <v0.3协议> --m0-run-root <当前M0重放> --output-root <v0.4协议>
+python scripts/run_pelvis_guided_walk_v0_4.py --sample-id 94 --metric kinematic_temporal --target-delta-deg 2 --contact-mode temporal_weak --protocol-root <v0.4协议>
+python scripts/evaluate_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol-root <v0.4协议>
+python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol-root <v0.4协议>
+```
+
+### M0 与测试结果
+
+当前环境 M0 双样本重复两次、sample94 单样本重放一次的噪声行哈希完全一致；相对 v2 冻结 M0 的直接姿态最大差为 `1.1921e-7`，状态为 `M0_PAIRING_PASS`。旧 v3 M0 仅作历史参考。服务器专项测试为 `25 passed`，完整回归为 `285 passed`，静态编译和 `git diff --check` 通过。
+
+### 配对消融结果
+
+下表是左脚可评价指标（单位 mm；右脚平足位置证据不足，按协议为 `NOT_EVALUABLE`）。所有 15 个候选的骨盆剂量均精确达到目标（MAE/P95 均为 `0°`），且没有单步信赖域越界；正式状态均为 `DIAGNOSTIC_CONTACT_FAIL`，原因是接触或穿地门失败。
+
+| 剂量 | 模式 | 左足滑 P95 | 左抬脚 P95 | 左穿地 P95 | 状态 |
+|---:|---|---:|---:|---:|---|
+| +2° | dose_only | 36.93 | 0.48 | 30.85 | FAIL |
+| +2° | position_only_medium | 30.51 | 14.36 | 26.43 | FAIL |
+| +2° | temporal_weak | 29.25 | 8.47 | 28.76 | FAIL |
+| +2° | temporal_medium | 36.25 | 11.75 | 27.99 | FAIL |
+| +2° | temporal_strong | 49.93 | 12.72 | 27.71 | FAIL |
+| +5° | dose_only | 42.03 | 17.47 | 40.05 | FAIL |
+| +5° | position_only_medium | 30.59 | 19.08 | 35.53 | FAIL |
+| +5° | temporal_weak | 29.33 | 19.37 | 36.81 | FAIL |
+| +5° | temporal_medium | 42.85 | 18.73 | 37.26 | FAIL |
+| +5° | temporal_strong | 53.87 | 19.33 | 37.52 | FAIL |
+| +10° | dose_only | 39.23 | 54.21 | 50.46 | FAIL |
+| +10° | position_only_medium | 30.69 | 56.15 | 46.14 | FAIL |
+| +10° | temporal_weak | 30.55 | 56.13 | 47.88 | FAIL |
+| +10° | temporal_medium | 54.24 | 56.65 | 50.42 | FAIL |
+| +10° | temporal_strong | 59.88 | 55.32 | 50.59 | FAIL |
+
+`position_only_medium` 和 `temporal_weak` 在部分剂量上比 `dose_only` 降低左足滑，但同时抬脚和穿地仍严重超门；加大时间接触权重没有带来单调改善，反而常使滑动、终端回弹或全身变化增大。因此本 sample94 单例没有证明“强接触约束优于不约束”，也没有找到满足骨盆剂量、足部接触、穿地和自然度的成功模式。右脚证据不足不能支持严格双脚通过结论，应由 sample34122 承担正式双脚检验。
+
+### 视频与停止原因
+
+每个有效 attempt 的 `videos/` 下均保存 `sample94_<mode>_dose_<dose>deg_*.mp4`、慢放版和 `sample94_walk_foot_local.mp4`；服务器路径为 `results/phase8/pelvis_guided_walk_v0_4/pilot_sample94/`。两次早期稠密全序列 OOM attempt 保留在原目录，未覆盖成功的低内存运行。汇总文件为 `v0_4_ablation_summary.json`，M0 审计为 `m0_replay_audit_v2.json`。
+
+本轮完成到 +10°趋势诊断即停止，不进入多样本统计，也不渲染跨样本视频。结果只能说明在当前服务器、sample94、seed0 和当前低内存投影实现下，骨盆目标可精确达到，但接触约束的净收益尚未成立；不能说明接触约束在其他动作、其他硬件或更大样本上必然无效。后续应先修正全序列足部/穿地求解（优先检查活动穿地等式、足部雅可比和终端投影），再以 sample34122 双脚证据验证；只有出现“接触指标相对 dose_only 改善且剂量、躯干、轨迹和时间平滑不越门”时，才值得进入多样本实验。
+
 ## ViMoGen 骨盆—接触时间一致性投影 v0.3（当前服务器配对基线，2026-09-05）
 
 ### 本次运行目的
