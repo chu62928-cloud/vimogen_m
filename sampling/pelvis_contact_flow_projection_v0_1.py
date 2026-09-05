@@ -626,7 +626,7 @@ class PelvisContactFlowProjector:
         model_path: Path | None = None,
         allow_m0_mismatch: bool = False,
     ) -> "PelvisContactFlowProjector":
-        """Bind frozen v3.0.1 evidence to one sampling-projection run."""
+        """Bind one immutable protocol's M0/contact evidence to a run."""
 
         if config.protocol in {CURRENT_ENV_PAIRED_PROTOCOL, DOSE_FIRST_CONTACT_ABLATION_PROTOCOL} and allow_m0_mismatch:
             raise ValueError(
@@ -671,7 +671,7 @@ class PelvisContactFlowProjector:
         if valid_mask.shape != expected_valid.shape or not torch.equal(
             valid_mask.bool().to(device), expected_valid
         ):
-            raise ValueError("current valid mask differs from frozen v3.0.1 mask")
+            raise ValueError("current valid mask differs from the frozen protocol mask")
         if window is None:
             window = {
                 "status": "PASS",
@@ -700,8 +700,16 @@ class PelvisContactFlowProjector:
             for span in direct_spans
         )
         if direct_max > 2.0e-3 and not allow_m0_mismatch:
+            label = (
+                "current paired M0 differs from frozen current-environment M0"
+                if config.protocol in {
+                    CURRENT_ENV_PAIRED_PROTOCOL,
+                    DOSE_FIRST_CONTACT_ABLATION_PROTOCOL,
+                }
+                else "current paired M0 differs from frozen v3.0.1 direct pose"
+            )
             raise ValueError(
-                "current paired M0 differs from frozen v3.0.1 direct pose: "
+                f"{label}: "
                 f"max={direct_max:.6g}"
             )
         # When the explicit exploratory override is enabled, use the current
