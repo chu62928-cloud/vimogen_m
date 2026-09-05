@@ -8,6 +8,7 @@
 - RESULT：第三次冻结核心入口的 sample34122 `raw` 与当前 dual 重放逐位一致；`official_pre_cast → authority_project` 直接姿态最大差为 `0.01888418197631836`，冻结门为 `0.002`。三次无投影重放均为 `FAIL`。
 - AUDIT：修正审计器只用检查点、均值、标准差、SMPL-X、冻结协议、采样调度和引导掩码判定不可变输入一致性；singleton 的单样本清单差异单独记录为 `manifest_equal=false`。最终 `checkpoint_mean_std_schedule_equal=true`、噪声行哈希和有效帧掩码均为 `true`，但三次 `official_pre_cast` 权威化差异仍为 `0.01888418197631836`，总体 `M0_PAIRING_FAIL`。诊断摘要为服务器 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_diagnosis.json`。
 - TEST：服务器专项（`test_flow_sampler.py`、v0.1、v0.2）为 `22 passed`；移出临时源码备份目录后完整兼容回归为 `279 passed in 38.41 s`；目标文件静态编译通过。备份现位于项目目录外 `/root/autodl-tmp/vimogen_source_backups/frozen_46a1b04_dual_batch2/`，避免污染测试收集。
+- COMMITTED：审计清单修正、v0.2 接口导出、README 和项目记忆已提交为 `c9b721d`，并推送到 `codex/pelvis-contact-flow-projection-v0-2-temporal-contact`。
 - DIAGNOSIS：初始噪声、有效帧掩码、均值、标准差、调度、批大小和权威化边界均已排除；差异在模型 50 步采样内部产生。历史 8 月归档与冻结 M0 一致，而当前 9 月环境形成稳定新输出簇，最高概率为 GPU/驱动/算子环境变化；旧归档没有完整运行时指纹，故不宣称原因已百分之百证实。
 - STOP：阶段 A 判定 `ENVIRONMENT_OR_OPERATOR_REPRODUCTION_BLOCKED`；不运行冻结端点、左/右 +2°、Euclidean 消融或更高剂量，不使用 `allow_m0_mismatch` 形成正式结论。原审计保留为 `m0_replay_audit_before_third.json`，三次结果审计为 `m0_replay_audit.json`。
 - NEXT：只有恢复旧 GPU/驱动/镜像并重新通过 `M0_PAIRING_PASS` 后，才继续阶段 B→C→D；无法恢复时另建“重新冻结 M0”协议，不覆盖 v0.2。三次重放后不再增加同环境无投影重放。
