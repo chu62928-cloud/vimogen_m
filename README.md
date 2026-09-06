@@ -62,6 +62,57 @@ python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol
 
 本轮完成到 +10°趋势诊断即停止，不进入多样本统计，也不渲染跨样本视频。结果只能说明在当前服务器、sample94、seed0 和当前低内存投影实现下，骨盆目标可精确达到，但接触约束的净收益尚未成立；不能说明接触约束在其他动作、其他硬件或更大样本上必然无效。后续应先修正全序列足部/穿地求解（优先检查活动穿地等式、足部雅可比和终端投影），再以 sample34122 双脚证据验证；只有出现“接触指标相对 dose_only 改善且剂量、躯干、轨迹和时间平滑不越门”时，才值得进入多样本实验。
 
+## ViMoGen v0.4：Terminal Projection 离线消融（2026-09-06）
+
+### 目的与输入
+
+本轮不重新生成动作，专门回答“终端投影把最后约 `0.2–0.4°` 骨盆误差压到 `0°` 时，是否牺牲了脚部和全身自然性”。分析协议为
+`vimogen_pelvis_guided_walk_v0_4_terminal_ablation_v1`，分支为
+`codex/pelvis-guided-walk-v0-4-terminal-ablation`。输入是 v0.4 已完成的
+`3剂量×5模式=15` 个 sample94/seed0 案例；主比较端点为
+`official_pre_cast_norm`（`pre_cast`）与 `terminal_projection_norm`（`terminal`），
+`last_sampling_projection_norm` 只作最后一次采样投影的回弹审计。
+
+两个端点均使用同一当前环境 M0、均值/标准差、有效帧掩码、地面高度、接触帧对和足部贴片，
+经 `authority_project` 重建后再计算指标。原有 attempt 和 `evaluation.json` 未覆盖；首轮逐帧输出失败保留为
+`terminal_ablation_v1/attempt_01/`，修复对齐后的正式离线结果为服务器
+`results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_03/`。
+
+### 实现与评价
+
+新增 `scripts/evaluate_pelvis_guided_walk_terminal_ablation.py`，只读取端点文件和冻结协议，不调用采样器或生成入口。
+它分别计算骨盆剂量、脚跟/脚尖水平滑动、抬脚、穿地、终端根平移/旋转修正、根和关节速度/加速度/急动度、
+22关节 MPJPE、SMPL-X 网格偏离，以及躯干、颈部、头部和朝向指标。所有 `Δ` 定义为
+`terminal - pre_cast`；另外报告每降低 `1°` 骨盆 MAE 的各指标代价，不构造跨单位总分。
+
+原 v0.4 低内存路径中的 `terminal.pre_residuals.pelvis_geodesic_rms_deg` 被发现是错误零值：
+它来自已经替换为目标根旋转的中间量。新评价直接从保存的 `official_pre_cast_norm` 根旋转重算，因而不使用该字段。
+
+### 结果
+
+| 目标剂量 | pre_cast 骨盆 MAE | terminal 骨盆 MAE | terminal 根平移 P95 | 结论 |
+|---:|---:|---:|---:|---|
+| +2° | `0.159–0.184°` | `0°` | `0–79.3 mm` | 5个案例均有接触/自然性代价 |
+| +5° | `0.237–0.248°` | `0°` | `0–97.7 mm` | 5个案例均有接触/自然性代价 |
+| +10° | `0.400–0.437°` | `0°` | `0–127.7 mm` | 5个案例均有接触/自然性代价 |
+
+15个案例均能把终端骨盆误差变成 `0°`，但分类为 `11` 个 `TERMINAL_HARMFUL` 和 `4` 个
+`TERMINAL_TRADEOFF`，没有 `TERMINAL_SAFE`。接触模式下终端根平移 P95 达到约
+`59–128 mm`，平均关节加速度也可增加约 `59–161 mm/帧²`；部分案例脚跟/脚尖滑动下降，
+但穿地、抬脚或全身偏离同时增加。`dose_only` 的根平移修正为零，但穿地和脚滑仍可能小幅恶化。
+
+因此，本轮不能支持“精确终端投影可以无代价保留”。它说明当前终端投影主要依靠根和接触补偿，
+对骨盆角度有效，却可能引入显著全身变化。结论仅适用于当前 RTX 4080 SUPER、sample94、seed0 和现有低内存实现，
+不能推广为所有动作或所有求解器的结论。完整产物包括 `terminal_ablation.json`、`terminal_ablation.csv`、
+15个逐帧 CSV 和四张诊断图，均位于上述服务器结果目录。
+
+### 测试与后续分流
+
+新增端点评价专项测试 `8 passed`，完整回归 `288 passed`；严格 JSON 无 NaN/Infinity，15个案例各有100帧逐帧文件。
+下一版不直接提高接触权重：若保留终端校正，先改为 `0.25°` 死区；若仍导致根位移、穿地或时间平滑恶化，
+再建立独立的下肢零空间补偿版本，使髋、膝、踝和根平移共同吸收终端修正。进入多样本实验前，必须先在
+sample34122 上完成双脚证据验证。
+
 ## ViMoGen 骨盆—接触时间一致性投影 v0.3（当前服务器配对基线，2026-09-05）
 
 ### 本次运行目的

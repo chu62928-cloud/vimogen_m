@@ -1,5 +1,49 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-06：v0.4 Terminal Projection 离线消融完成
+
+### 已验证事实
+
+- BRANCH/PROTOCOL：分支为 `codex/pelvis-guided-walk-v0-4-terminal-ablation`；分析协议为
+  `vimogen_pelvis_guided_walk_v0_4_terminal_ablation_v1`。本轮不重新生成动作，只读取 v0.4 已有的
+  `3剂量×5模式=15` 个 sample94/seed0 案例。
+- IMPLEMENTED：新增 `scripts/evaluate_pelvis_guided_walk_terminal_ablation.py` 和对应专项测试。
+  主比较端点为每个 attempt 的 `official_pre_cast_norm` 与 `terminal_projection_norm`；
+  `last_sampling_projection_norm` 仅作采样回弹审计。两个端点使用同一当前环境 M0、均值/标准差、
+  有效帧掩码、冻结地面高度、接触帧对和足部贴片，经 `authority_project` 后计算。
+- METRICS：新增脚跟/脚尖独立水平滑动 P95、抬脚、穿地、终端根平移/旋转修正、根/关节速度/加速度/急动度、
+  22关节 MPJPE、SMPL-X 网格偏离，以及每个指标的 `terminal-pre_cast` 和每降低1°骨盆误差的代价。
+  逐帧 CSV 对齐到100帧；源协议、M0、清单、端点和运行记录哈希全部归档。
+- TEST：服务器端点评价专项 `8 passed`，完整回归 `288 passed`；正式离线结果 attempt_03 的严格 JSON
+  无 NaN/Infinity，15个案例各有100行逐帧 CSV和4张诊断图。attempt_01 的逐帧对齐失败和 attempt_02 的
+  首次完整评价均保留，未覆盖。
+- ARTIFACTS：最终结果位于服务器
+  `/root/autodl-tmp/vimogen_clean/results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_03/`，
+  包含 `terminal_ablation.json`、`terminal_ablation.csv`、`terminal_ablation_summary.md`、
+  `per_case/` 和 `figures/`。
+
+### 失败结果与解释
+
+- RESULT：15个案例终端前骨盆 MAE 为 +2° 时 `0.159–0.184°`、+5° 时 `0.237–0.248°`、+10° 时
+  `0.400–0.437°`；终端后 MAE/P95均为 `0°/0°`。这说明终端投影前采样过程已有部分剂量响应，但仍有回弹，
+  终端0°不能单独证明生成过程已经自然接受引导。
+- RESULT：分类为 `TERMINAL_HARMFUL=11`、`TERMINAL_TRADEOFF=4`、`TERMINAL_SAFE=0`。
+  接触模式下终端根平移 P95 约 `59–128 mm`，平均关节加速度增加约 `59–161 mm/帧²`；部分脚滑下降，
+  但穿地、抬脚或全身偏离同步增加。`dose_only` 根平移修正为0，但穿地/脚滑仍可能小幅恶化。
+- DIAGNOSIS：现有低内存终端路径为达到接触目标会在根平移子空间进行补偿；终端硬投影因此可能把较小的
+  `0.2–0.4°` 骨盆回弹换成较大的根和全身变化。该结论仅适用于当前 RTX 4080 SUPER、sample94、seed0
+  和现有实现，不能推广至其他动作、硬件或求解器。
+- LOGGING_CAVEAT：原 v0.4 `terminal.pre_residuals.pelvis_geodesic_rms_deg` 是错误零值，来自已替换成
+  目标根旋转的中间量；本轮直接从保存的 `official_pre_cast_norm` 重算，未使用该字段。
+
+### 待执行事项
+
+- 不保留“精确终端投影默认安全”的结论，也不继续提高接触权重。下一版先在独立协议中试验 `0.25°` 死区；
+  若根位移、穿地或时间平滑仍恶化，再实现髋/膝/踝参与的下肢零空间补偿。
+- 在进入多样本统计前，用同一当前环境和冻结证据在 sample34122 完成双脚端点评价；sample94 右脚平足证据不足，
+  继续标记为 `NOT_EVALUABLE`。
+- v0.1–v0.4 原有生成结果和评价文件保持只读；terminal ablation 只作为离线分析结果，不覆盖原协议。
+
 ## 2026-09-05：v0.4 sample94 全序列骨盆优先与接触强度消融
 
 ### 已验证事实
