@@ -57,6 +57,9 @@ def test_position_rows_follow_frozen_per_side_flat_contact() -> None:
     assert _position_marker_indices(evidence, 0, 3, torch.device("cpu")) == [2, 3]
     assert _position_marker_indices(evidence, 1, 3, torch.device("cpu")) == [0, 1]
     assert _position_marker_indices(evidence, 2, 3, torch.device("cpu")) == []
+    assert _position_marker_indices(
+        evidence, 1, 3, torch.device("cpu"), {"left": ("heel",), "right": ()}
+    ) == [0]
 
 
 def test_marker_residual_stats_are_per_marker_and_use_max_marker_for_gate() -> None:
@@ -69,6 +72,11 @@ def test_marker_residual_stats_are_per_marker_and_use_max_marker_for_gate() -> N
     assert largest == pytest.approx(1.0, abs=1.0e-5)
     assert per_marker["left_heel"] == pytest.approx(1.0, abs=1.0e-5)
     assert per_marker["left_toe"] == pytest.approx(0.4, abs=1.0e-5)
+
+
+def test_solver_config_rejects_nonpositive_root_step() -> None:
+    with pytest.raises(ValueError):
+        LowerBodySolverConfig(max_root_increment_mm=0.0).validate()
 
 
 def test_finite_difference_jacobian_matches_linear_fixture() -> None:

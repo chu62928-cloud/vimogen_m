@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import math
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import torch
 
@@ -94,6 +94,7 @@ class LowerBodySolverConfig:
     penetration_epsilon_m: float = 5.0e-4
     smoothness_weight: float = 0.0
     position_tolerance_m: float = 1.0e-3
+    max_root_increment_mm: float = 10.0
 
     def validate(self) -> None:
         if self.max_iterations < 1 or self.damping <= 0.0 or self.finite_difference_step <= 0.0:
@@ -102,6 +103,8 @@ class LowerBodySolverConfig:
             raise ValueError("invalid lower-body trust/ground bounds")
         if self.position_tolerance_m <= 0.0:
             raise ValueError("position tolerance must be positive")
+        if self.max_root_increment_mm <= 0.0:
+            raise ValueError("max root increment must be positive")
         if self.smoothness_weight < 0.0:
             raise ValueError("smoothness weight cannot be negative")
 
@@ -117,6 +120,9 @@ class LowerBodySolveResult:
     evidence_source: str = "frozen_per_side_flat_contact"
     ground_axis_index: int = 2
     ground_axis_source: str = "frozen_protocol"
+    root_translation_limit_m: float | None = None
+    marker_filter: dict[str, list[str]] | None = None
+    solved_frame_indices: list[int] | None = None
 
     def diagnostics(self) -> dict[str, Any]:
         return {
@@ -126,7 +132,11 @@ class LowerBodySolveResult:
             "evidence_source": self.evidence_source,
             "ground_axis_index": self.ground_axis_index,
             "ground_axis_source": self.ground_axis_source,
+            "root_translation_limit_m": self.root_translation_limit_m,
+            "marker_filter": self.marker_filter,
             "pelvis_active_frame_count": int(self.pelvis_active.sum().item()),
+            "solved_frame_count": len(self.solved_frame_indices or []),
+            "solved_frame_indices": self.solved_frame_indices or [],
             "records": self.records,
         }
 
@@ -195,11 +205,16 @@ def _position_marker_indices(
     frame: int,
     frame_count: int,
     device: torch.device,
+    marker_filter: Mapping[str, Sequence[str]] | None = None,
 ) -> list[int]:
     """Select heel/toe markers backed by frozen per-side flat contact."""
 
     selected: list[int] = []
     for marker_index, side in enumerate(MARKER_SIDES):
+        marker_kind = "heel" if marker_index % 2 == 0 else "toe"
+        allowed = ("heel", "toe") if marker_filter is None else tuple(marker_filter.get(side, ()))
+        if marker_kind not in allowed:
+            continue
         mask = _flat_contact_mask(contact_evidence, side, frame_count, device)
         if bool(mask[frame]):
             selected.append(marker_index)
@@ -242,6 +257,9 @@ def solve_lower_body_position(
     contact_evidence: Mapping[str, Mapping[str, Any]] | None = None,
     ground_axis_index: int = 2,
     ground_axis_source: str = "frozen_protocol",
+    marker_filter: Mapping[str, Sequence[str]] | None = None,
+    root_translation_limit_m: float | None = None,
+    frame_indices: Sequence[int] | None = None,
 ) -> LowerBodySolveResult:
     """Solve lower-body foot preservation with the root translation locked."""
 
@@ -258,10 +276,13 @@ def solve_lower_body_position(
         raise ValueError("lower-body prototype requires a contiguous fully-valid sequence")
     if ground_axis_index not in (0, 1, 2):
         raise ValueError("ground_axis_index must be 0, 1 or 2")
+    if root_translation_limit_m is not None and root_translation_limit_m <= 0.0:
+        raise ValueError("root translation limit must be positive")
     body = decode_rot6d_safe(pre[:, MOTION_LAYOUT.body_pose].reshape(pre.shape[0], 21, 6)).float()
     source_root = decode_rot6d_safe(pre[:, MOTION_LAYOUT.root_rotation]).float()
     m0_root = decode_rot6d_safe(m0[:, MOTION_LAYOUT.root_rotation]).float()
     translation = pre[:, MOTION_LAYOUT.root_translation].clone()
+    solved_translation = translation.clone()
     target_root, signed_error, pelvis_active = build_terminal_root_target(
         m0_root, source_root, target_dose_deg, valid_mask=valid,
         policy=TerminalProjectionPolicy(dead_zone_deg=dead_zone_deg),
@@ -277,19 +298,30 @@ def solve_lower_body_position(
         else "legacy_all_markers_diagnostic"
     )
     max_increment = math.radians(config.max_joint_increment_deg)
-    for frame in torch.nonzero(pelvis_active, as_tuple=False).flatten().tolist():
+    active_frames = torch.nonzero(pelvis_active, as_tuple=False).flatten().tolist()
+    if frame_indices is not None:
+        requested = {int(item) for item in frame_indices}
+        active_frames = [frame for frame in active_frames if frame in requested]
+    body_dof_count = len(dof_map.dofs)
+    root_dof_count = 3 if root_translation_limit_m is not None else 0
+    variable_count = body_dof_count + root_dof_count
+    max_root_increment_m = config.max_root_increment_mm / MM
+    for frame in active_frames:
         base_body = solved_body[frame].clone()
         base_root = target_root[frame]
         base_translation = translation[frame]
         marker_indices = _position_marker_indices(
-            contact_evidence, frame, pre.shape[0], pre.device
+            contact_evidence, frame, pre.shape[0], pre.device, marker_filter
         )
         target_markers = targets[frame].detach()
-        zero = torch.zeros(len(dof_map.dofs), device=pre.device, dtype=torch.float32)
+        zero = torch.zeros(variable_count, device=pre.device, dtype=torch.float32)
 
         def markers(delta: torch.Tensor) -> torch.Tensor:
-            current_body = _apply_dof_delta(base_body, dof_map, delta)
-            value, _ = _model_markers(model, current_body.unsqueeze(0), base_root.unsqueeze(0), base_translation.unsqueeze(0), patches)
+            current_body = _apply_dof_delta(base_body, dof_map, delta[:body_dof_count])
+            current_translation = base_translation
+            if root_dof_count:
+                current_translation = base_translation + delta[body_dof_count:]
+            value, _ = _model_markers(model, current_body.unsqueeze(0), base_root.unsqueeze(0), current_translation.unsqueeze(0), patches)
             return value[0]
 
         initial = markers(zero)
@@ -317,13 +349,17 @@ def solve_lower_body_position(
             except RuntimeError:
                 rejected += 1
                 break
-            step = step.clamp(-max_increment, max_increment)
+            step[:body_dof_count] = step[:body_dof_count].clamp(-max_increment, max_increment)
+            if root_dof_count:
+                step[body_dof_count:] = step[body_dof_count:].clamp(-max_root_increment_m, max_root_increment_m)
             before_norm = float(torch.linalg.vector_norm(residual))
             accepted = False
             chosen = current
             after_norm = before_norm
             for alpha in (1.0, 0.5, 0.25, 0.125, 0.0625):
                 candidate = current + alpha * step
+                if root_dof_count and float(torch.linalg.vector_norm(candidate[body_dof_count:]).item()) > root_translation_limit_m + 1.0e-9:
+                    continue
                 candidate_markers = markers(candidate)
                 candidate_residual = candidate_markers - target_markers
                 if floor_heights:
@@ -354,8 +390,10 @@ def solve_lower_body_position(
                 _, max_marker_mm, _ = _marker_residual_stats(candidate_error, marker_indices)
                 if max_marker_mm <= config.position_tolerance_m * MM + 1.0e-6:
                     break
-        solved_body[frame] = _apply_dof_delta(base_body, dof_map, current)
-        final_markers, _ = _model_markers(model, solved_body[frame].unsqueeze(0), base_root.unsqueeze(0), base_translation.unsqueeze(0), patches)
+        solved_body[frame] = _apply_dof_delta(base_body, dof_map, current[:body_dof_count])
+        root_delta = current[body_dof_count:] if root_dof_count else torch.zeros(3, device=pre.device)
+        solved_translation[frame] = base_translation + root_delta
+        final_markers, _ = _model_markers(model, solved_body[frame].unsqueeze(0), base_root.unsqueeze(0), solved_translation[frame].unsqueeze(0), patches)
         final_error = final_markers[0] - target_markers
         initial_total_mm, initial_max_marker_mm, initial_per_marker = _marker_residual_stats(
             initial_error, marker_indices
@@ -374,17 +412,18 @@ def solve_lower_body_position(
             "final_foot_residual_mm": final_total_mm,
             "final_max_marker_residual_mm": final_max_marker_mm,
             "final_per_marker_residual_mm": final_per_marker,
-            "max_dof_increment_deg": float(current.abs().max().item() * 180.0 / math.pi),
+            "max_dof_increment_deg": float(current[:body_dof_count].abs().max().item() * 180.0 / math.pi) if body_dof_count else 0.0,
             "jacobian_rank": rank,
             "jacobian_singular_values": singular_values,
             "rejected_steps": rejected,
-            "root_translation_increment_mm": 0.0,
-            "root_translation_locked": True,
+            "root_translation_increment_mm": float(torch.linalg.vector_norm(root_delta).item() * MM),
+            "root_translation_increment_xyz_mm": (root_delta * MM).detach().cpu().tolist(),
+            "root_translation_locked": not bool(root_dof_count),
         })
     rebuilt = pre.clone()
     rebuilt[:, MOTION_LAYOUT.body_pose] = encode_rot6d(solved_body).reshape(pre.shape[0], 126)
     rebuilt[:, MOTION_LAYOUT.root_rotation] = encode_rot6d(target_root)
-    rebuilt[:, MOTION_LAYOUT.root_translation] = translation
+    rebuilt[:, MOTION_LAYOUT.root_translation] = solved_translation
     rebuilt = authority_project(rebuilt.unsqueeze(0), valid_mask=valid.unsqueeze(0), output_dtype=torch.float32).physical_motion[0]
     _finite = bool(torch.isfinite(rebuilt).all())
     root_locked = bool(torch.equal(rebuilt[:, MOTION_LAYOUT.root_translation], pre[:, MOTION_LAYOUT.root_translation]))
@@ -398,6 +437,13 @@ def solve_lower_body_position(
         evidence_source=evidence_source,
         ground_axis_index=ground_axis_index,
         ground_axis_source=ground_axis_source,
+        root_translation_limit_m=root_translation_limit_m,
+        marker_filter=(
+            {str(side): [str(kind) for kind in kinds] for side, kinds in marker_filter.items()}
+            if marker_filter is not None
+            else None
+        ),
+        solved_frame_indices=[int(frame) for frame in active_frames],
     )
 
 
