@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import torch
+import pytest
 
 from scripts.evaluate_pelvis_guided_walk_terminal_ablation import (
     _endpoint_contact_metrics,
@@ -34,8 +35,8 @@ def test_heel_and_toe_slip_are_reported_separately() -> None:
         _evidence(),
         torch.ones(6, dtype=torch.bool),
     )
-    assert result["heel_slip_m_per_frame"]["p95"] == 1.0
-    assert result["toe_slip_m_per_frame"]["p95"] == 3.0
+    assert result["heel_slip_m_per_frame"]["p95"] == pytest.approx(1.0)
+    assert result["toe_slip_m_per_frame"]["p95"] == pytest.approx(3.0)
 
 
 def test_stats_delta_is_terminal_minus_pre_cast() -> None:
