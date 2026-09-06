@@ -93,12 +93,15 @@ class LowerBodySolverConfig:
     max_joint_increment_deg: float = 5.0
     penetration_epsilon_m: float = 5.0e-4
     smoothness_weight: float = 0.0
+    position_tolerance_m: float = 1.0e-3
 
     def validate(self) -> None:
         if self.max_iterations < 1 or self.damping <= 0.0 or self.finite_difference_step <= 0.0:
             raise ValueError("invalid lower-body solver bounds")
         if self.max_joint_increment_deg <= 0.0 or self.penetration_epsilon_m < 0.0:
             raise ValueError("invalid lower-body trust/ground bounds")
+        if self.position_tolerance_m <= 0.0:
+            raise ValueError("position tolerance must be positive")
         if self.smoothness_weight < 0.0:
             raise ValueError("smoothness weight cannot be negative")
 
@@ -111,12 +114,16 @@ class LowerBodySolveResult:
     records: list[dict[str, Any]]
     finite: bool
     root_translation_locked: bool
+    evidence_source: str = "frozen_per_side_flat_contact"
+    ground_axis_index: int = 2
 
     def diagnostics(self) -> dict[str, Any]:
         return {
             "protocol": LOWER_BODY_DOF_PROTOCOL,
             "finite": self.finite,
             "root_translation_locked": self.root_translation_locked,
+            "evidence_source": self.evidence_source,
+            "ground_axis_index": self.ground_axis_index,
             "pelvis_active_frame_count": int(self.pelvis_active.sum().item()),
             "records": self.records,
         }
@@ -147,6 +154,77 @@ def _finite_difference_jacobian(function: Any, point: torch.Tensor, step: float)
     return torch.stack(columns, dim=-1)
 
 
+MARKER_NAMES = ("left_heel", "left_toe", "right_heel", "right_toe")
+MARKER_SIDES = ("left", "left", "right", "right")
+
+
+def _flat_contact_mask(
+    contact_evidence: Mapping[str, Mapping[str, Any]] | None,
+    side: str,
+    frame_count: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Read one side's frozen flat-contact mask.
+
+    The formal runner always supplies frozen evidence.  The all-true fallback
+    is retained only for low-level legacy diagnostics that intentionally omit
+    evidence; the result is labelled as such in solver diagnostics.
+    """
+
+    if contact_evidence is None:
+        return torch.ones(frame_count, dtype=torch.bool, device=device)
+    if side not in contact_evidence:
+        raise ValueError(f"contact evidence is missing side {side!r}")
+    evidence = contact_evidence[side]
+    if "valid_masks" not in evidence or "flat_contact" not in evidence["valid_masks"]:
+        raise ValueError(f"contact evidence for {side!r} has no frozen flat_contact mask")
+    mask = torch.as_tensor(
+        evidence["valid_masks"]["flat_contact"], dtype=torch.bool, device=device
+    ).reshape(-1)
+    if mask.shape[0] != frame_count:
+        raise ValueError(
+            f"flat_contact mask for {side!r} has {mask.shape[0]} frames, expected {frame_count}"
+        )
+    return mask
+
+
+def _position_marker_indices(
+    contact_evidence: Mapping[str, Mapping[str, Any]] | None,
+    frame: int,
+    frame_count: int,
+    device: torch.device,
+) -> list[int]:
+    """Select heel/toe markers backed by frozen per-side flat contact."""
+
+    selected: list[int] = []
+    for marker_index, side in enumerate(MARKER_SIDES):
+        mask = _flat_contact_mask(contact_evidence, side, frame_count, device)
+        if bool(mask[frame]):
+            selected.append(marker_index)
+    return selected
+
+
+def _marker_residual_stats(
+    marker_error: torch.Tensor,
+    marker_indices: list[int],
+    scale: float = MM,
+) -> tuple[float, float, dict[str, float]]:
+    """Return total L2, largest marker L2 and per-marker residuals."""
+
+    if not marker_indices:
+        return 0.0, 0.0, {}
+    norms = torch.linalg.vector_norm(marker_error[marker_indices], dim=-1)
+    per_marker = {
+        MARKER_NAMES[index]: float(norms[offset].item() * scale)
+        for offset, index in enumerate(marker_indices)
+    }
+    return (
+        float(torch.linalg.vector_norm(marker_error[marker_indices].reshape(-1)).item() * scale),
+        float(norms.max().item() * scale),
+        per_marker,
+    )
+
+
 def solve_lower_body_position(
     pre_cast_physical: torch.Tensor,
     m0_physical: torch.Tensor,
@@ -159,6 +237,8 @@ def solve_lower_body_position(
     dof_map: LowerBodyDofMap | None = None,
     config: LowerBodySolverConfig | None = None,
     floor_heights: Mapping[str, float] | None = None,
+    contact_evidence: Mapping[str, Mapping[str, Any]] | None = None,
+    ground_axis_index: int = 2,
 ) -> LowerBodySolveResult:
     """Solve lower-body foot preservation with the root translation locked."""
 
@@ -173,6 +253,8 @@ def solve_lower_body_position(
     valid = torch.as_tensor(valid_mask, dtype=torch.bool, device=pre.device).reshape(-1)
     if valid.shape[0] != pre.shape[0] or not bool(valid.all()):
         raise ValueError("lower-body prototype requires a contiguous fully-valid sequence")
+    if ground_axis_index not in (0, 1, 2):
+        raise ValueError("ground_axis_index must be 0, 1 or 2")
     body = decode_rot6d_safe(pre[:, MOTION_LAYOUT.body_pose].reshape(pre.shape[0], 21, 6)).float()
     source_root = decode_rot6d_safe(pre[:, MOTION_LAYOUT.root_rotation]).float()
     m0_root = decode_rot6d_safe(m0[:, MOTION_LAYOUT.root_rotation]).float()
@@ -186,11 +268,19 @@ def solve_lower_body_position(
     solved_body = body.clone()
     records: list[dict[str, Any]] = []
     floor_heights = dict(floor_heights or {})
+    evidence_source = (
+        "frozen_per_side_flat_contact"
+        if contact_evidence is not None
+        else "legacy_all_markers_diagnostic"
+    )
     max_increment = math.radians(config.max_joint_increment_deg)
     for frame in torch.nonzero(pelvis_active, as_tuple=False).flatten().tolist():
         base_body = solved_body[frame].clone()
         base_root = target_root[frame]
         base_translation = translation[frame]
+        marker_indices = _position_marker_indices(
+            contact_evidence, frame, pre.shape[0], pre.device
+        )
         target_markers = targets[frame].detach()
         zero = torch.zeros(len(dof_map.dofs), device=pre.device, dtype=torch.float32)
 
@@ -200,14 +290,21 @@ def solve_lower_body_position(
             return value[0]
 
         initial = markers(zero)
-        initial_error = (initial - target_markers).reshape(-1)
+        initial_error = initial - target_markers
         current = zero.clone()
         rejected = 0
         rank = 0
         singular_values: list[float] = []
         for iteration in range(1, config.max_iterations + 1):
-            residual = (markers(current) - target_markers).reshape(-1)
-            jacobian = _finite_difference_jacobian(lambda point: (markers(point) - target_markers).reshape(-1), current, config.finite_difference_step)
+            current_error = markers(current) - target_markers
+            if not marker_indices:
+                break
+            residual = current_error[marker_indices].reshape(-1)
+            jacobian = _finite_difference_jacobian(
+                lambda point: (markers(point) - target_markers)[marker_indices].reshape(-1),
+                current,
+                config.finite_difference_step,
+            )
             try:
                 singular = torch.linalg.svdvals(jacobian)
                 singular_values = [float(item) for item in singular.detach().cpu()]
@@ -228,16 +325,20 @@ def solve_lower_body_position(
                 candidate_residual = candidate_markers - target_markers
                 if floor_heights:
                     unsafe = False
-                    for side, marker_indices in (("left", (0, 1)), ("right", (2, 3))):
+                    for side, side_marker_indices in (("left", (0, 1)), ("right", (2, 3))):
                         if side not in floor_heights:
                             continue
-                        candidate_min = candidate_markers[list(marker_indices), 2].min()
-                        base_min = initial[list(marker_indices), 2].min()
+                        candidate_min = candidate_markers[list(side_marker_indices), ground_axis_index].min()
+                        base_min = initial[list(side_marker_indices), ground_axis_index].min()
                         if candidate_min < base_min - config.penetration_epsilon_m:
                             unsafe = True
                     if unsafe:
                         continue
-                norm = float(torch.linalg.vector_norm(candidate_residual))
+                norm = (
+                    float(torch.linalg.vector_norm(candidate_residual[marker_indices].reshape(-1)))
+                    if marker_indices
+                    else 0.0
+                )
                 if math.isfinite(norm) and norm < before_norm - 1.0e-9:
                     chosen, after_norm, accepted = candidate, norm, True
                     break
@@ -245,16 +346,31 @@ def solve_lower_body_position(
                 rejected += 1
                 break
             current = chosen
-            if after_norm <= 0.001 * math.sqrt(12.0):
-                break
+            if marker_indices:
+                candidate_error = markers(current) - target_markers
+                _, max_marker_mm, _ = _marker_residual_stats(candidate_error, marker_indices)
+                if max_marker_mm <= config.position_tolerance_m * MM + 1.0e-6:
+                    break
         solved_body[frame] = _apply_dof_delta(base_body, dof_map, current)
         final_markers, _ = _model_markers(model, solved_body[frame].unsqueeze(0), base_root.unsqueeze(0), base_translation.unsqueeze(0), patches)
-        final_error = (final_markers[0] - target_markers).reshape(-1)
+        final_error = final_markers[0] - target_markers
+        initial_total_mm, initial_max_marker_mm, initial_per_marker = _marker_residual_stats(
+            initial_error, marker_indices
+        )
+        final_total_mm, final_max_marker_mm, final_per_marker = _marker_residual_stats(
+            final_error, marker_indices
+        )
         records.append({
             "frame": int(frame),
             "pelvis_error_deg": float(signed_error[frame]),
-            "initial_foot_residual_mm": float(torch.linalg.vector_norm(initial_error).item() * MM),
-            "final_foot_residual_mm": float(torch.linalg.vector_norm(final_error).item() * MM),
+            "position_marker_indices": [MARKER_NAMES[index] for index in marker_indices],
+            "position_marker_count": len(marker_indices),
+            "initial_foot_residual_mm": initial_total_mm,
+            "initial_max_marker_residual_mm": initial_max_marker_mm,
+            "initial_per_marker_residual_mm": initial_per_marker,
+            "final_foot_residual_mm": final_total_mm,
+            "final_max_marker_residual_mm": final_max_marker_mm,
+            "final_per_marker_residual_mm": final_per_marker,
             "max_dof_increment_deg": float(current.abs().max().item() * 180.0 / math.pi),
             "jacobian_rank": rank,
             "jacobian_singular_values": singular_values,
@@ -269,7 +385,16 @@ def solve_lower_body_position(
     rebuilt = authority_project(rebuilt.unsqueeze(0), valid_mask=valid.unsqueeze(0), output_dtype=torch.float32).physical_motion[0]
     _finite = bool(torch.isfinite(rebuilt).all())
     root_locked = bool(torch.equal(rebuilt[:, MOTION_LAYOUT.root_translation], pre[:, MOTION_LAYOUT.root_translation]))
-    return LowerBodySolveResult(rebuilt, target_root, pelvis_active, records, _finite, root_locked)
+    return LowerBodySolveResult(
+        rebuilt,
+        target_root,
+        pelvis_active,
+        records,
+        _finite,
+        root_locked,
+        evidence_source=evidence_source,
+        ground_axis_index=ground_axis_index,
+    )
 
 
 __all__ = [
