@@ -460,7 +460,7 @@ v2 的 M0 与当前/v1.3 M0 不是逐值相同，权威化后最大通道差约 
 
 ### A1/A2 结果
 
-结果目录为服务器 `results/phase8/pelvis_guided_walk_v0_4_1/terminal_dead_zone_v1/attempt_04/`，协议为 `vimogen_pelvis_guided_walk_v0_4_1_terminal_dead_zone_v1`。12 个端点均为离线计算，严格 JSON 和源端点哈希检查通过。
+结果目录为服务器 `results/phase8/pelvis_guided_walk_v0_4_1/terminal_dead_zone_v1/attempt_05/`，协议为 `vimogen_pelvis_guided_walk_v0_4_1_terminal_dead_zone_v1`。12 个端点均为离线计算，严格 JSON 和源端点哈希检查通过；attempt_04 因单位字段修正保留为历史结果。
 
 | 模式 | 死区 | 骨盆活动帧 | 终端根平移 P95 | 状态 |
 |---|---:|---:|---:|---|
