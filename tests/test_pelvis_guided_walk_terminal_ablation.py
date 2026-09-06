@@ -9,6 +9,7 @@ from scripts.evaluate_pelvis_guided_walk_terminal_ablation import (
     _endpoint_contact_metrics,
     _stats,
     _stats_delta,
+    _terminal_delta,
 )
 from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
 from evaluation.pelvis_contact_compensation_v3 import target_root_rotation
@@ -57,6 +58,14 @@ def test_zero_endpoint_difference_produces_zero_delta() -> None:
     assert delta["mean"] == 0.0
     assert delta["p95"] == 0.0
     assert delta["max"] == 0.0
+
+
+def test_terminal_delta_distinguishes_pelvis_mae_from_p95() -> None:
+    pre = {"pelvis": {"error_deg": {"mean": 0.2, "p95": 0.5}}}
+    terminal = {"pelvis": {"error_deg": {"mean": 0.0, "p95": 0.0}}}
+    delta = _terminal_delta(pre, terminal)
+    assert delta["pelvis_mae_deg"] == pytest.approx(-0.2)
+    assert delta["pelvis_p95_deg"] == pytest.approx(-0.5)
 
 
 def test_pelvis_target_error_summary_uses_real_endpoint_root() -> None:
