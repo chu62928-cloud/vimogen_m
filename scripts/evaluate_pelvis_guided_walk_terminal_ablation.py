@@ -743,8 +743,9 @@ def evaluate_all(
             for key in ("heel", "toe"):
                 pre_values = pre_record["feet"][side]["per_frame"][key]
                 terminal_values = terminal_record["feet"][side]["per_frame"][key]
-                per_frame[f"{side}_{key}_pre_z_m"] = [float(value[2]) for value in pre_values]
-                per_frame[f"{side}_{key}_terminal_z_m"] = [float(value[2]) for value in terminal_values]
+                for axis_index, axis_name in enumerate(("x", "y", "z")):
+                    per_frame[f"{side}_{key}_pre_{axis_name}_m"] = [float(value[axis_index]) for value in pre_values]
+                    per_frame[f"{side}_{key}_terminal_{axis_name}_m"] = [float(value[axis_index]) for value in terminal_values]
                 pre_speed = [float("nan")] + [float(torch.linalg.vector_norm(torch.as_tensor(pre_values[i][:2]) - torch.as_tensor(pre_values[i - 1][:2])).item()) * MM for i in range(1, 100)]
                 terminal_speed = [float("nan")] + [float(torch.linalg.vector_norm(torch.as_tensor(terminal_values[i][:2]) - torch.as_tensor(terminal_values[i - 1][:2])).item()) * MM for i in range(1, 100)]
                 per_frame[f"{side}_{key}_slip_pre_mm_per_frame"] = pre_speed
