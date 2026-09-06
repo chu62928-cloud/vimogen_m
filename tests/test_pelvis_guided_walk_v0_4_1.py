@@ -10,7 +10,12 @@ from sampling.terminal_projection_policy import TerminalProjectionPolicy, build_
 
 
 def _roots(frames: int = 4) -> tuple[torch.Tensor, torch.Tensor]:
-    m0 = torch.eye(3).repeat(frames, 1, 1)
+    # The frozen convention uses local/world z as both forward and up; this
+    # horizontal frame maps local forward to world -y.
+    horizontal = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+    )
+    m0 = horizontal.repeat(frames, 1, 1)
     source = target_root_rotation(m0, torch.full((frames,), 1.0))
     return m0, source
 
@@ -60,4 +65,3 @@ def test_disabled_pelvis_keeps_source_even_with_zero_dead_zone() -> None:
 def test_dead_zone_range_is_validated(value: float) -> None:
     with pytest.raises(ValueError):
         TerminalProjectionPolicy(dead_zone_deg=value).validate()
-
