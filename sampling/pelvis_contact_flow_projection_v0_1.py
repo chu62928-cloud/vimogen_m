@@ -23,6 +23,7 @@ from evaluation.pelvis_contact_compensation_v3 import (
     patch_centres,
     target_root_rotation,
 )
+from sampling.terminal_projection_policy import TerminalProjectionPolicy, build_terminal_root_target
 from motion_rep.phase1 import (
     MOTION_LAYOUT,
     SMPLX_22_JOINT_INDEX,
@@ -1256,8 +1257,18 @@ class PelvisContactFlowProjector:
         m0_body = decode_rot6d_safe(baseline[:, MOTION_LAYOUT.body_pose].reshape(frames, 21, 6))
         m0_root = decode_rot6d_safe(baseline[:, MOTION_LAYOUT.root_rotation])
         m0_translation = baseline[:, MOTION_LAYOUT.root_translation]
-        target_root = m0_root.clone()
-        target_root[valid] = target_root_rotation(m0_root[valid], float(target_dose))
+        terminal_policy = TerminalProjectionPolicy(
+            dead_zone_deg=float(sampling_state.get("terminal_dead_zone_deg", 0.0)),
+            pelvis_enabled=bool(sampling_state.get("terminal_pelvis_enabled", True)),
+            contact_enabled=bool(sampling_state.get("terminal_contact_enabled", True)),
+        )
+        target_root, signed_pelvis_error, pelvis_active = build_terminal_root_target(
+            m0_root,
+            root,
+            float(target_dose),
+            valid_mask=valid,
+            policy=terminal_policy,
+        )
         model = contact_data["model"]
         patches = contact_data["patches"]
 
@@ -1278,6 +1289,9 @@ class PelvisContactFlowProjector:
 
         position_weight = float(self.config.contact_position_weight or 0.0)
         velocity_weight = float(self.config.contact_velocity_weight)
+        if not terminal_policy.contact_enabled:
+            position_weight = 0.0
+            velocity_weight = 0.0
         # These denominators only convert the protocol weights to a stable
         # [0,1] soft-objective gain; changing either protocol weight changes
         # the resulting root-translation normal equation.
@@ -1418,6 +1432,12 @@ class PelvisContactFlowProjector:
                 "normalized_violation_after": normalized_after,
                 "active_penetration_count": active_penetration,
                 "penetration_safety_feasible": can_lift,
+                "terminal_dead_zone_deg": terminal_policy.dead_zone_deg,
+                "terminal_pelvis_enabled": terminal_policy.pelvis_enabled,
+                "terminal_contact_enabled": terminal_policy.contact_enabled,
+                "pelvis_active_frame_count": int(pelvis_active.sum().item()),
+                "pelvis_active_frame_indices": torch.nonzero(pelvis_active, as_tuple=False).flatten().cpu().tolist(),
+                "pre_cast_pelvis_error_deg": signed_pelvis_error.detach().cpu().tolist(),
             }],
         )
         self.last_result = result
