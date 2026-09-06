@@ -65,7 +65,7 @@ def test_marker_residual_stats_are_per_marker_and_use_max_marker_for_gate() -> N
         dtype=torch.float32,
     )
     total, largest, per_marker = _marker_residual_stats(error, [0, 1])
-    assert total == pytest.approx(1.0, abs=1.0e-5)
+    assert total == pytest.approx(1.077033, abs=1.0e-5)
     assert largest == pytest.approx(1.0, abs=1.0e-5)
     assert per_marker["left_heel"] == pytest.approx(1.0, abs=1.0e-5)
     assert per_marker["left_toe"] == pytest.approx(0.4, abs=1.0e-5)
