@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
 from sampling.lower_body_terminal_compensation import LowerBodyDofMap, LowerBodySolverConfig
+from sampling.lower_body_terminal_compensation import _finite_difference_jacobian
 
 
 def test_default_lower_body_map_uses_anatomical_subspace() -> None:
@@ -36,3 +38,10 @@ def mapping_dof(joint: str):
 def test_solver_config_rejects_zero_damping() -> None:
     with pytest.raises(ValueError):
         LowerBodySolverConfig(damping=0.0).validate()
+
+
+def test_finite_difference_jacobian_matches_linear_fixture() -> None:
+    point = torch.tensor([0.2, -0.4], dtype=torch.float32)
+    matrix = torch.tensor([[2.0, 1.0], [-3.0, 0.5]], dtype=torch.float32)
+    result = _finite_difference_jacobian(lambda value: matrix @ value, point, 1.0e-4)
+    assert torch.allclose(result, matrix, atol=2.0e-3)
