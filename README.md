@@ -75,8 +75,9 @@ python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol
 
 两个端点均使用同一当前环境 M0、均值/标准差、有效帧掩码、地面高度、接触帧对和足部贴片，
 经 `authority_project` 重建后再计算指标。原有 attempt 和 `evaluation.json` 未覆盖；首轮逐帧输出失败保留为
-`terminal_ablation_v1/attempt_01/`，修复对齐后的正式离线结果为服务器
-`results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_03/`。
+`terminal_ablation_v1/attempt_01/`，早期完整评价和图轴语义审计分别保留为 `attempt_02/attempt_03`，
+修正图中 MAE/P95 语义并补齐图例后的正式结果为服务器
+`results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_04/`。
 
 ### 实现与评价
 
@@ -87,6 +88,8 @@ python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol
 
 原 v0.4 低内存路径中的 `terminal.pre_residuals.pelvis_geodesic_rms_deg` 被发现是错误零值：
 它来自已经替换为目标根旋转的中间量。新评价直接从保存的 `official_pre_cast_norm` 根旋转重算，因而不使用该字段。
+图片审计还发现 `attempt_03` 的散点横轴虽然标为 MAE 降低，实际引用了 P95 降低；`attempt_04` 已改为真实 MAE，
+并把第四张图扩展为“关节加速度变化 + 22关节 MPJPE 变化”双面板。该修正不改变15个案例的主指标或分类。
 
 ### 结果
 
@@ -108,7 +111,7 @@ python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol
 
 ### 测试与后续分流
 
-新增端点评价专项测试 `9 passed`，完整回归 `289 passed`；严格 JSON 无 NaN/Infinity，15个案例各有100帧逐帧文件。
+新增端点评价专项测试 `10 passed`，完整回归 `290 passed`；严格 JSON 无 NaN/Infinity，15个案例各有100帧逐帧文件。
 下一版不直接提高接触权重：若保留终端校正，先改为 `0.25°` 死区；若仍导致根位移、穿地或时间平滑恶化，
 再建立独立的下肢零空间补偿版本，使髋、膝、踝和根平移共同吸收终端修正。进入多样本实验前，必须先在
 sample34122 上完成双脚证据验证。

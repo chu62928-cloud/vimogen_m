@@ -14,13 +14,14 @@
 - METRICS：新增脚跟/脚尖独立水平滑动 P95、抬脚、穿地、终端根平移/旋转修正、根/关节速度/加速度/急动度、
   22关节 MPJPE、SMPL-X 网格偏离，以及每个指标的 `terminal-pre_cast` 和每降低1°骨盆误差的代价。
   逐帧 CSV 对齐到100帧；源协议、M0、清单、端点和运行记录哈希全部归档。
-- TEST：服务器端点评价专项 `9 passed`，完整回归 `289 passed`；正式离线结果 attempt_03 的严格 JSON
-  无 NaN/Infinity，15个案例各有100行逐帧 CSV和4张诊断图。attempt_01 的逐帧对齐失败和 attempt_02 的
-  首次完整评价均保留，未覆盖。
+- TEST：服务器端点评价专项 `10 passed`，完整回归 `290 passed`；正式离线结果 attempt_04 的严格 JSON
+  无 NaN/Infinity，15个案例各有100行逐帧 CSV和4张诊断图。attempt_01 的逐帧对齐失败、attempt_02 的
+  首次完整评价和 attempt_03 的图轴语义审计均保留，未覆盖。
 - ARTIFACTS：最终结果位于服务器
-  `/root/autodl-tmp/vimogen_clean/results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_03/`，
+  `/root/autodl-tmp/vimogen_clean/results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_04/`，
   包含 `terminal_ablation.json`、`terminal_ablation.csv`、`terminal_ablation_summary.md`、
-  `per_case/` 和 `figures/`。
+  `per_case/` 和 `figures/`；同名汇总 JSON 的 SHA256 为
+  `982374d712e74dce95c0cc805e4aa91f44b4dd768a25b2b8ef3ceefb6ee7a2d5`。
 
 ### 失败结果与解释
 
@@ -35,6 +36,9 @@
   和现有实现，不能推广至其他动作、硬件或求解器。
 - LOGGING_CAVEAT：原 v0.4 `terminal.pre_residuals.pelvis_geodesic_rms_deg` 是错误零值，来自已替换成
   目标根旋转的中间量；本轮直接从保存的 `official_pre_cast_norm` 重算，未使用该字段。
+- VISUAL_AUDIT：attempt_03 的散点横轴标为骨盆 MAE 降低但实际引用 P95 降低；attempt_04 已改为真实
+  MAE 降低、补齐颜色/剂量图例，并把第四张图改为关节加速度与22关节 MPJPE双面板。修正前后的原始端点、
+  非骨盆指标和 `11 HARMFUL / 4 TRADEOFF / 0 SAFE` 分类不变。
 
 ### 待执行事项
 
