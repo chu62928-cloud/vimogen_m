@@ -10,6 +10,9 @@ from scripts.evaluate_pelvis_guided_walk_terminal_ablation import (
     _stats,
     _stats_delta,
 )
+from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
+from evaluation.pelvis_contact_compensation_v3 import target_root_rotation
+from sampling.pelvis_contact_flow_projection_v0_1 import pelvis_target_error_summary
 
 
 def _evidence() -> dict:
@@ -54,3 +57,16 @@ def test_zero_endpoint_difference_produces_zero_delta() -> None:
     assert delta["mean"] == 0.0
     assert delta["p95"] == 0.0
     assert delta["max"] == 0.0
+
+
+def test_pelvis_target_error_summary_uses_real_endpoint_root() -> None:
+    identity = torch.eye(3, dtype=torch.float32).expand(4, -1, -1).clone()
+    m0 = torch.zeros((4, MOTION_LAYOUT.total_dim), dtype=torch.float32)
+    m0[:, MOTION_LAYOUT.root_rotation] = encode_rot6d(identity)
+    candidate = m0.clone()
+    candidate_root = target_root_rotation(identity, 2.0)
+    candidate[:, MOTION_LAYOUT.root_rotation] = encode_rot6d(candidate_root)
+    pre = pelvis_target_error_summary(m0, m0, torch.ones(4, dtype=torch.bool), 2.0)
+    post = pelvis_target_error_summary(m0, candidate, torch.ones(4, dtype=torch.bool), 2.0)
+    assert pre["mae_deg"] == pytest.approx(2.0, abs=1.0e-5)
+    assert post["mae_deg"] == pytest.approx(0.0, abs=1.0e-5)

@@ -19,6 +19,7 @@ from typing import Any, Callable, Mapping, Sequence
 import torch
 
 from evaluation.pelvis_contact_compensation_v3 import (
+    pelvis_pitch_delta_deg,
     patch_centres,
     target_root_rotation,
 )
@@ -144,6 +145,42 @@ def so3_log(rotation: torch.Tensor) -> torch.Tensor:
     if rotation.shape[-2:] != (3, 3):
         raise ValueError("SO(3) rotations must end in [3,3]")
     return mat3x3_to_axis_angle(rotation)
+
+
+def pelvis_target_error_summary(
+    m0_physical: torch.Tensor,
+    candidate_physical: torch.Tensor,
+    valid_mask: torch.Tensor,
+    target_delta_deg: float,
+) -> dict[str, Any]:
+    """Report the actual pelvis-dose error against a physical endpoint.
+
+    This is intentionally separate from the optimiser's SO(3) residual.  The
+    latter measures a rotation equality after the target root has been
+    installed, while this helper measures the frozen v3 pelvis pitch dose of
+    the endpoint that was actually produced by the sampler.
+    """
+
+    m0_physical = m0_physical.float()
+    candidate_physical = candidate_physical.float()
+    if m0_physical.ndim == 3:
+        m0_physical = m0_physical[0]
+    if candidate_physical.ndim == 3:
+        candidate_physical = candidate_physical[0]
+    valid = torch.as_tensor(valid_mask, dtype=torch.bool, device=candidate_physical.device).reshape(-1)
+    m0_root = decode_rot6d_safe(m0_physical[:, MOTION_LAYOUT.root_rotation])
+    candidate_root = decode_rot6d_safe(candidate_physical[:, MOTION_LAYOUT.root_rotation])
+    actual = pelvis_pitch_delta_deg(m0_root, candidate_root)
+    error = (((actual - float(target_delta_deg) + 180.0) % 360.0) - 180.0).abs()[valid]
+    if not error.numel():
+        return {"actual_dose_mean_deg": None, "mae_deg": None, "p95_deg": None, "max_deg": None, "valid_count": 0}
+    return {
+        "actual_dose_mean_deg": float(actual[valid].mean().detach().cpu()),
+        "mae_deg": float(error.mean().detach().cpu()),
+        "p95_deg": float(torch.quantile(error, 0.95).detach().cpu()),
+        "max_deg": float(error.max().detach().cpu()),
+        "valid_count": int(error.numel()),
+    }
 
 
 def project_increment_norms(
@@ -1959,11 +1996,40 @@ class PelvisContactFlowProjector:
             output_dtype=torch.float32,
         ).physical_motion
         g0 = self._normalised(rebuilt)
+        pelvis_angle_record: dict[str, Any] | None = None
+        if self.baseline_motion is not None:
+            baseline_physical = self.baseline_motion.to(device=physical.device).float()
+            if self.contact_data.get("m0_standardized", False):
+                baseline_physical = self._physical(baseline_physical)
+            pre_physical = physical
+            post_physical = rebuilt
+            pelvis_angle_record = {
+                "pre_cast": pelvis_target_error_summary(
+                    baseline_physical,
+                    pre_physical,
+                    valid_mask,
+                    self.target_dose,
+                ),
+                "terminal": pelvis_target_error_summary(
+                    baseline_physical,
+                    post_physical,
+                    valid_mask,
+                    self.target_dose,
+                ),
+            }
+            if last_sampling is not None:
+                pelvis_angle_record["last_sampling_projection"] = pelvis_target_error_summary(
+                    baseline_physical,
+                    self._physical(last_sampling),
+                    valid_mask,
+                    self.target_dose,
+                )
         terminal_record: dict[str, Any] = {
             "attempted": True,
             "success": terminal is not None and bool(terminal.finite) and bool(terminal.converged),
             "error": terminal_error,
             "last_sampling_projection_available": last_sampling is not None,
+            "pelvis_angle_error": pelvis_angle_record,
         }
         if terminal is not None:
             terminal_record.update(
@@ -2063,6 +2129,7 @@ __all__ = [
     "finite_difference_jacobian",
     "predict_clean_endpoint",
     "project_increment_norms",
+    "pelvis_target_error_summary",
     "recompose_velocity",
     "so3_exp",
     "so3_log",
