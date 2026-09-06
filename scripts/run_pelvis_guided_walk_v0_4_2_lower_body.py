@@ -72,13 +72,15 @@ def main() -> None:
     dof_map = LowerBodyDofMap.default() if args.dof_map == "anatomical" else LowerBodyDofMap.full_so3_diagnostic()
     floor_heights = {side: float(sides[side]["evidence"]["floor_height_m"]) for side in ("left", "right")}
     contact_evidence = {side: sides[side]["evidence"] for side in ("left", "right")}
+    ground_axis_present = protocol.get("ground_axis_index") is not None
     ground_axis_index = int(protocol.get("ground_axis_index", 2))
+    ground_axis_source = "frozen_protocol" if ground_axis_present else "frozen_v0_4_default_axis_2"
     solved = solve_lower_body_position(
         pre.to(device), m0.to(device), valid.to(device), args.dose,
         model=model, patches=patches, dead_zone_deg=args.dead_zone,
         dof_map=dof_map, config=LowerBodySolverConfig(),
         floor_heights=floor_heights, contact_evidence=contact_evidence,
-        ground_axis_index=ground_axis_index,
+        ground_axis_index=ground_axis_index, ground_axis_source=ground_axis_source,
     )
     candidate = solved.projected_physical.detach().cpu()
     m0_joints, m0_vertices = _load_vertices(model, m0, device)
@@ -87,7 +89,9 @@ def main() -> None:
     position_delta = _metric_delta(pre_record, candidate_record)
     final_residuals = [float(item["final_max_marker_residual_mm"]) for item in solved.records]
     max_final_residual = max(final_residuals, default=0.0)
-    position_pass = bool(max_final_residual <= 1.0 + 1.0e-6)
+    position_evidence_frame_count = sum(int(item["position_marker_count"] > 0) for item in solved.records)
+    position_evaluable = position_evidence_frame_count > 0
+    position_pass = bool(position_evaluable and max_final_residual <= 1.0 + 1.0e-6)
     trust_pass = bool(all(float(item["max_dof_increment_deg"]) <= 5.0 + 1.0e-6 for item in solved.records))
     no_new_penetration = True
     for side in ("left", "right"):
@@ -102,7 +106,8 @@ def main() -> None:
     torch.save(candidate, output / "position_only_lower_body_endpoint_physical.pt")
     torch.save(dose_only, output / "dose_only_locked_root_endpoint_physical.pt")
     write_strict_json(output / "lower_body_dof_map.json", dof_map.jsonable())
-    write_strict_json(output / "lower_body_position_result.json", {"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "dof_map_kind": args.dof_map, "formal_candidate": args.dof_map == "anatomical", "dose_deg": args.dose, "dead_zone_deg": args.dead_zone, "pre_cast": pre_record, "candidate": candidate_record, "delta": position_delta, "dose_only_control": dose_record, "acceptance": {"position_residual_pass": position_pass, "max_final_marker_residual_mm": max_final_residual, "max_final_foot_residual_mm": max(float(item["final_foot_residual_mm"]) for item in solved.records) if solved.records else 0.0, "trust_region_pass": trust_pass, "no_new_penetration": no_new_penetration, "root_translation_p95_mm": 0.0, "status": "B1_PASS" if position_pass and trust_pass and no_new_penetration and solved.finite and solved.root_translation_locked else "B1_FAIL"}, "solver": solved.diagnostics(), "source_endpoint": str(endpoint_path)})
+    status = "B1_PASS" if position_pass and trust_pass and no_new_penetration and solved.finite and solved.root_translation_locked else ("B1_NOT_EVALUABLE" if not position_evaluable else "B1_FAIL")
+    write_strict_json(output / "lower_body_position_result.json", {"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "dof_map_kind": args.dof_map, "formal_candidate": args.dof_map == "anatomical", "dose_deg": args.dose, "dead_zone_deg": args.dead_zone, "pre_cast": pre_record, "candidate": candidate_record, "delta": position_delta, "dose_only_control": dose_record, "acceptance": {"position_evaluable": position_evaluable, "position_evidence_frame_count": position_evidence_frame_count, "position_residual_pass": position_pass, "max_final_marker_residual_mm": max_final_residual, "max_final_foot_residual_mm": max(float(item["final_foot_residual_mm"]) for item in solved.records) if solved.records else 0.0, "trust_region_pass": trust_pass, "no_new_penetration": no_new_penetration, "root_translation_p95_mm": 0.0, "status": status}, "solver": solved.diagnostics(), "source_endpoint": str(endpoint_path)})
     print(__import__("json").dumps({"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "active_frames": int(solved.pelvis_active.sum()), "finite": solved.finite, "root_translation_locked": solved.root_translation_locked, "output": str(output)}, ensure_ascii=False, indent=2, allow_nan=False))
 
 

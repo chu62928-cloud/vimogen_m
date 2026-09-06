@@ -116,6 +116,7 @@ class LowerBodySolveResult:
     root_translation_locked: bool
     evidence_source: str = "frozen_per_side_flat_contact"
     ground_axis_index: int = 2
+    ground_axis_source: str = "frozen_protocol"
 
     def diagnostics(self) -> dict[str, Any]:
         return {
@@ -124,6 +125,7 @@ class LowerBodySolveResult:
             "root_translation_locked": self.root_translation_locked,
             "evidence_source": self.evidence_source,
             "ground_axis_index": self.ground_axis_index,
+            "ground_axis_source": self.ground_axis_source,
             "pelvis_active_frame_count": int(self.pelvis_active.sum().item()),
             "records": self.records,
         }
@@ -239,6 +241,7 @@ def solve_lower_body_position(
     floor_heights: Mapping[str, float] | None = None,
     contact_evidence: Mapping[str, Mapping[str, Any]] | None = None,
     ground_axis_index: int = 2,
+    ground_axis_source: str = "frozen_protocol",
 ) -> LowerBodySolveResult:
     """Solve lower-body foot preservation with the root translation locked."""
 
@@ -394,6 +397,7 @@ def solve_lower_body_position(
         root_locked,
         evidence_source=evidence_source,
         ground_axis_index=ground_axis_index,
+        ground_axis_source=ground_axis_source,
     )
 
 
