@@ -9,7 +9,7 @@
 - A1 只读取 v0.4 sample94/seed0/+2° 的三个投影前端点，共计算12个死区端点；服务器专项测试 v0.4.1/v0.4.2 合计 `11 passed`，远程静态编译通过。
 - `dose_only/0.5°` 骨盆活动帧为0、终端根平移P95为0；`position_only_medium/0.5°`活动帧为6、终端根平移P95约71.99 mm；`temporal_weak/0.5°`活动帧为0、终端根平移P95约61.65 mm。
 - A2 的 `temporal_weak/+2°` 中，骨盆关闭/接触开启仍约61.31 mm根平移，骨盆关闭/接触关闭几乎为零；终端重锚定是当前大幅根补偿的主要来源。
-- A1 最终归档为服务器 `results/phase8/pelvis_guided_walk_v0_4_1/terminal_dead_zone_v1/attempt_05/`，分类为 `TERMINAL_STAGE_SAFE=2`、`TERMINAL_TRADEOFF=4`、`TERMINAL_HARMFUL=6`；attempt_04 的输出仅因坐标单位字段修正而保留为历史目录。
+- A1 最终归档为服务器 `results/phase8/pelvis_guided_walk_v0_4_1/terminal_dead_zone_v1/attempt_06/`，分类为 `TERMINAL_STAGE_SAFE=2`、`TERMINAL_TRADEOFF=4`、`TERMINAL_HARMFUL=6`；attempt_04/05 的输出仅因报告字段修正而保留为历史目录。
 - B1 根锁定的14维解剖下肢映射在7个活动帧中保持根平移严格为零，雅可比秩为12；多数脚部位置残差降至0.01–0.08 mm，但最差帧约3.31 mm，正式 B1_FAIL。
 - 全SO(3)仅诊断对照把最差帧降至约2.21 mm，仍未过1 mm门，不晋升为正式配置。
 
