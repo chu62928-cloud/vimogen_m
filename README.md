@@ -108,7 +108,7 @@ python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol
 
 ### 测试与后续分流
 
-新增端点评价专项测试 `8 passed`，完整回归 `288 passed`；严格 JSON 无 NaN/Infinity，15个案例各有100帧逐帧文件。
+新增端点评价专项测试 `9 passed`，完整回归 `289 passed`；严格 JSON 无 NaN/Infinity，15个案例各有100帧逐帧文件。
 下一版不直接提高接触权重：若保留终端校正，先改为 `0.25°` 死区；若仍导致根位移、穿地或时间平滑恶化，
 再建立独立的下肢零空间补偿版本，使髋、膝、踝和根平移共同吸收终端修正。进入多样本实验前，必须先在
 sample34122 上完成双脚证据验证。

@@ -14,7 +14,7 @@
 - METRICS：新增脚跟/脚尖独立水平滑动 P95、抬脚、穿地、终端根平移/旋转修正、根/关节速度/加速度/急动度、
   22关节 MPJPE、SMPL-X 网格偏离，以及每个指标的 `terminal-pre_cast` 和每降低1°骨盆误差的代价。
   逐帧 CSV 对齐到100帧；源协议、M0、清单、端点和运行记录哈希全部归档。
-- TEST：服务器端点评价专项 `8 passed`，完整回归 `288 passed`；正式离线结果 attempt_03 的严格 JSON
+- TEST：服务器端点评价专项 `9 passed`，完整回归 `289 passed`；正式离线结果 attempt_03 的严格 JSON
   无 NaN/Infinity，15个案例各有100行逐帧 CSV和4张诊断图。attempt_01 的逐帧对齐失败和 attempt_02 的
   首次完整评价均保留，未覆盖。
 - ARTIFACTS：最终结果位于服务器
