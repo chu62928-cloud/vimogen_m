@@ -60,7 +60,11 @@ def test_zero_endpoint_difference_produces_zero_delta() -> None:
 
 
 def test_pelvis_target_error_summary_uses_real_endpoint_root() -> None:
-    identity = torch.eye(3, dtype=torch.float32).expand(4, -1, -1).clone()
+    horizontal_root = torch.tensor(
+        [[1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.0, 1.0, 0.0]],
+        dtype=torch.float32,
+    )
+    identity = horizontal_root.expand(4, -1, -1).clone()
     m0 = torch.zeros((4, MOTION_LAYOUT.total_dim), dtype=torch.float32)
     m0[:, MOTION_LAYOUT.root_rotation] = encode_rot6d(identity)
     candidate = m0.clone()
