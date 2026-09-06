@@ -84,8 +84,8 @@ def main() -> None:
     )
     candidate = solved.projected_physical.detach().cpu()
     m0_joints, m0_vertices = _load_vertices(model, m0, device)
-    pre_record = _endpoint_record(m0, pre, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, 2)
-    candidate_record = _endpoint_record(m0, candidate, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, 2)
+    pre_record = _endpoint_record(m0, pre, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, ground_axis_index)
+    candidate_record = _endpoint_record(m0, candidate, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, ground_axis_index)
     position_delta = _metric_delta(pre_record, candidate_record)
     final_residuals = [float(item["final_max_marker_residual_mm"]) for item in solved.records]
     max_final_residual = max(final_residuals, default=0.0)
@@ -100,7 +100,7 @@ def main() -> None:
         if before is not None and after is not None and after > before + 1.0e-6:
             no_new_penetration = False
     dose_only = _dose_only_endpoint(pre, m0, valid, args.dose, args.dead_zone)
-    dose_record = _endpoint_record(m0, dose_only, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, 2)
+    dose_record = _endpoint_record(m0, dose_only, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, ground_axis_index)
     output = args.output
     output.mkdir(parents=True, exist_ok=True)
     torch.save(candidate, output / "position_only_lower_body_endpoint_physical.pt")
