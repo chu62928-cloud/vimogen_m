@@ -55,6 +55,7 @@ def main() -> None:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--dead-zone", type=float, default=0.5)
     parser.add_argument("--dose", type=float, default=2.0)
+    parser.add_argument("--dof-map", choices=("anatomical", "full_so3_diagnostic"), default="anatomical")
     args = parser.parse_args()
     summary_path = args.summary or (args.v04_root / "v0_4_ablation_summary.json")
     protocol, mean, std, m0_batch, valid_batch, patches, sides = _load_frozen(args.protocol_root)
@@ -68,7 +69,7 @@ def main() -> None:
     device = torch.device(args.device)
     from smplx import SMPLX
     model = SMPLX(model_path=protocol["inputs"]["smplx_model"]["path"], gender="neutral", num_betas=10, batch_size=int(valid.sum()), use_pca=False).to(device)
-    dof_map = LowerBodyDofMap.default()
+    dof_map = LowerBodyDofMap.default() if args.dof_map == "anatomical" else LowerBodyDofMap.full_so3_diagnostic()
     floor_heights = {side: float(sides[side]["evidence"]["floor_height_m"]) for side in ("left", "right")}
     solved = solve_lower_body_position(pre.to(device), m0.to(device), valid.to(device), args.dose, model=model, patches=patches, dead_zone_deg=args.dead_zone, dof_map=dof_map, config=LowerBodySolverConfig(), floor_heights=floor_heights)
     candidate = solved.projected_physical.detach().cpu()
@@ -83,10 +84,9 @@ def main() -> None:
     torch.save(candidate, output / "position_only_lower_body_endpoint_physical.pt")
     torch.save(dose_only, output / "dose_only_locked_root_endpoint_physical.pt")
     write_strict_json(output / "lower_body_dof_map.json", dof_map.jsonable())
-    write_strict_json(output / "lower_body_position_result.json", {"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "dose_deg": args.dose, "dead_zone_deg": args.dead_zone, "pre_cast": pre_record, "candidate": candidate_record, "delta": position_delta, "dose_only_control": dose_record, "solver": solved.diagnostics(), "source_endpoint": str(endpoint_path)})
+    write_strict_json(output / "lower_body_position_result.json", {"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "dof_map_kind": args.dof_map, "dose_deg": args.dose, "dead_zone_deg": args.dead_zone, "pre_cast": pre_record, "candidate": candidate_record, "delta": position_delta, "dose_only_control": dose_record, "solver": solved.diagnostics(), "source_endpoint": str(endpoint_path)})
     print(__import__("json").dumps({"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "active_frames": int(solved.pelvis_active.sum()), "finite": solved.finite, "root_translation_locked": solved.root_translation_locked, "output": str(output)}, ensure_ascii=False, indent=2, allow_nan=False))
 
 
 if __name__ == "__main__":
     main()
-

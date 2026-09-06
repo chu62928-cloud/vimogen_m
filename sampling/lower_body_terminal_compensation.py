@@ -57,6 +57,18 @@ class LowerBodyDofMap:
             dofs.append(LowerBodyDof(f"{side}_foot", x, "foot_toe_flexion"))
         return cls(tuple(dofs))
 
+    @classmethod
+    def full_so3_diagnostic(cls) -> "LowerBodyDofMap":
+        """Return a labelled 24-coordinate diagnostic, never the formal map."""
+
+        axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+        dofs = tuple(
+            LowerBodyDof(joint, axis, "full_so3_diagnostic")
+            for joint in LOWER_BODY_JOINTS
+            for axis in axes
+        )
+        return cls(dofs, source="smplx_native_so3_diagnostic_only")
+
     def validate(self) -> None:
         if not self.dofs:
             raise ValueError("lower-body DOF map cannot be empty")
@@ -264,4 +276,3 @@ __all__ = [
     "LOWER_BODY_DOF_PROTOCOL", "LowerBodyDof", "LowerBodyDofMap",
     "LowerBodySolverConfig", "LowerBodySolveResult", "solve_lower_body_position",
 ]
-
