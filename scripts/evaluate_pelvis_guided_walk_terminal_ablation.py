@@ -383,23 +383,28 @@ def _p95_metric(endpoint: Mapping[str, Any], path: tuple[str, ...]) -> float | N
 
 def _terminal_delta(pre: Mapping[str, Any], terminal: Mapping[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
-    for name, path in {
-        "pelvis_mae_deg": ("pelvis", "error_deg"),
-        "pelvis_p95_deg": ("pelvis", "error_deg"),
-        "heel_slip_p95_mm_per_frame": ("feet", "left", "heel_slip_m_per_frame"),
-        "toe_slip_p95_mm_per_frame": ("feet", "left", "toe_slip_m_per_frame"),
-        "lift_p95_mm": ("feet", "left", "lift_m"),
-        "penetration_p95_mm": ("feet", "left", "penetration_m"),
-        "root_translation_from_m0_p95_mm": ("root", "translation_from_m0_m"),
-        "root_terminal_delta_p95_mm": ("root", "terminal_translation_delta_m"),
-        "mean_joint_acceleration_p95_mm_per_frame2": ("temporal", "mean_joint_acceleration_m_per_frame2"),
-        "mean_joint_jerk_p95_mm_per_frame3": ("temporal", "mean_joint_jerk_m_per_frame3"),
-        "joint_mpjpe_p95_mm": ("whole_body", "joint_mpjpe_m"),
-        "vertex_rms_p95_mm": ("whole_body", "vertex_rms_m"),
-    }.items():
-        a = _p95_metric(pre, path)
-        b = _p95_metric(terminal, path)
-        result[name] = None if a is None or b is None else float(b - a)
+    for name, path, summary_key in (
+        ("pelvis_mae_deg", ("pelvis", "error_deg"), "mean"),
+        ("pelvis_p95_deg", ("pelvis", "error_deg"), "p95"),
+        ("heel_slip_p95_mm_per_frame", ("feet", "left", "heel_slip_m_per_frame"), "p95"),
+        ("toe_slip_p95_mm_per_frame", ("feet", "left", "toe_slip_m_per_frame"), "p95"),
+        ("lift_p95_mm", ("feet", "left", "lift_m"), "p95"),
+        ("penetration_p95_mm", ("feet", "left", "penetration_m"), "p95"),
+        ("root_translation_from_m0_p95_mm", ("root", "translation_from_m0_m"), "p95"),
+        ("root_terminal_delta_p95_mm", ("root", "terminal_translation_delta_m"), "p95"),
+        ("mean_joint_acceleration_p95_mm_per_frame2", ("temporal", "mean_joint_acceleration_m_per_frame2"), "p95"),
+        ("mean_joint_jerk_p95_mm_per_frame3", ("temporal", "mean_joint_jerk_m_per_frame3"), "p95"),
+        ("joint_mpjpe_p95_mm", ("whole_body", "joint_mpjpe_m"), "p95"),
+        ("vertex_rms_p95_mm", ("whole_body", "vertex_rms_m"), "p95"),
+    ):
+        left: Any = pre
+        right: Any = terminal
+        for key in path:
+            left = left.get(key) if isinstance(left, Mapping) else None
+            right = right.get(key) if isinstance(right, Mapping) else None
+        a = left.get(summary_key) if isinstance(left, Mapping) else None
+        b = right.get(summary_key) if isinstance(right, Mapping) else None
+        result[name] = None if a is None or b is None else float(b) - float(a)
     for side in ("left", "right"):
         for metric in ("heel_slip_m_per_frame", "toe_slip_m_per_frame", "lift_m", "penetration_m"):
             path = ("feet", side, metric)
@@ -602,28 +607,61 @@ def _write_plots(output: Path, flat_rows: list[dict[str, Any]]) -> None:
     doses = np.asarray([float(row["dose_deg"]) for row in flat_rows], dtype=float)
     gain = np.asarray([-float(row["pelvis_delta_mae_deg"] or 0.0) for row in flat_rows], dtype=float)
     mode = [str(row["mode"]) for row in flat_rows]
+    from matplotlib.lines import Line2D
+
     palette = {name: color for name, color in zip(EXPECTED_MODES, ("#1b9e77", "#d95f02", "#7570b3", "#e7298a", "#66a61e"))}
+    markers = {2.0: "o", 5.0: "s", 10.0: "^"}
+    mode_handles = [
+        Line2D([0], [0], marker="o", linestyle="", markerfacecolor=palette[name], markeredgecolor=palette[name], label=name)
+        for name in EXPECTED_MODES
+    ]
+    dose_handles = [
+        Line2D([0], [0], marker=markers[dose], linestyle="", color="#555555", label=f"+{dose:g}°")
+        for dose in EXPECTED_DOSES
+    ]
+
+    def decorate(ax: Any) -> None:
+        ax.axhline(0.0, color="#888888", linewidth=0.8)
+        ax.set_xlabel("Pelvis MAE reduction (deg; positive is better)")
+        ax.grid(True, alpha=0.25)
+
+    def add_legends(ax: Any) -> None:
+        mode_legend = ax.legend(handles=mode_handles, title="Contact mode", loc="upper left", bbox_to_anchor=(1.01, 1.0), fontsize=8)
+        ax.add_artist(mode_legend)
+        ax.legend(handles=dose_handles, title="Target dose", loc="lower left", bbox_to_anchor=(1.01, 0.0), fontsize=8)
 
     def scatter(y_key: str, ylabel: str, filename: str, title: str) -> None:
-        fig, ax = plt.subplots(figsize=(8, 5))
+        fig, ax = plt.subplots(figsize=(10.5, 5))
         for idx, row in enumerate(flat_rows):
             y = row.get(y_key)
             if y is None:
                 continue
-            ax.scatter(gain[idx], float(y), color=palette.get(mode[idx], "#333333"), marker={2.0: "o", 5.0: "s", 10.0: "^"}.get(doses[idx], "o"), s=55)
-        ax.axhline(0.0, color="#888888", linewidth=0.8)
-        ax.set_xlabel("Pelvis MAE reduction (deg; positive is better)")
+            ax.scatter(gain[idx], float(y), color=palette.get(mode[idx], "#333333"), marker=markers.get(doses[idx], "o"), s=55)
+        decorate(ax)
         ax.set_ylabel(ylabel)
         ax.set_title(title)
-        ax.grid(True, alpha=0.25)
-        fig.tight_layout()
+        add_legends(ax)
+        fig.tight_layout(rect=(0.0, 0.0, 0.78, 1.0))
         fig.savefig(output / filename, dpi=160)
         plt.close(fig)
 
     scatter("heel_slip_delta_p95_mm_per_frame", "Heel slip Δ P95 (mm/frame)", "pelvis_gain_vs_heel_slip_delta.png", "Pelvis gain vs heel-slip cost")
     scatter("penetration_delta_p95_mm", "Penetration Δ P95 (mm)", "pelvis_gain_vs_penetration_delta.png", "Pelvis gain vs penetration cost")
     scatter("terminal_root_translation_p95_mm", "Terminal root translation Δ P95 (mm)", "terminal_root_translation_delta.png", "Terminal root-translation edit")
-    scatter("joint_mpjpe_delta_p95_mm", "Joint MPJPE Δ P95 (mm)", "temporal_whole_body_delta.png", "Temporal / whole-body deviation")
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    for idx, row in enumerate(flat_rows):
+        style = {"color": palette.get(mode[idx], "#333333"), "marker": markers.get(doses[idx], "o"), "s": 55}
+        axes[0].scatter(gain[idx], float(row["mean_joint_acceleration_delta_p95_mm_per_frame2"]), **style)
+        axes[1].scatter(gain[idx], float(row["joint_mpjpe_delta_p95_mm"]), **style)
+    decorate(axes[0])
+    decorate(axes[1])
+    axes[0].set_ylabel("Mean joint acceleration Δ P95 (mm/frame²)")
+    axes[1].set_ylabel("Joint MPJPE Δ P95 (mm)")
+    add_legends(axes[1])
+    fig.suptitle("Temporal smoothness and whole-body deviation")
+    fig.tight_layout(rect=(0.0, 0.0, 0.86, 0.94))
+    fig.savefig(output / "temporal_whole_body_delta.png", dpi=160)
+    plt.close(fig)
 
 
 def evaluate_all(
