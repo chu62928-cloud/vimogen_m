@@ -467,7 +467,7 @@ def _run_2x2_if_needed(output: Path, payload: Mapping[str, Any], v04_root: Path,
             result = projector.project_clean_endpoint(pre_norm.to(device), projector.baseline_motion, projector.contact_data, 2.0, {"valid_mask": valid_batch.to(device), "terminal_dead_zone_deg": 0.0, "terminal_pelvis_enabled": pelvis_enabled, "terminal_contact_enabled": contact_enabled})
             endpoint = _load_motion(result.projected_clean_motion.detach().cpu(), mean, std, valid_batch, "2x2_endpoint")[0]
             pre = _load_motion(pre_norm, mean, std, valid_batch, "2x2_pre")[0]
-            record = _endpoint_record(m0[0], endpoint, pre, valid_batch[0], 2.0, model, device, patches, sides, m0_joints, m0_vertices, vertical_axis)
+            record = _endpoint_record(m0, endpoint, pre, valid_batch[0], 2.0, model, device, patches, sides, m0_joints, m0_vertices, vertical_axis)
             rows.append({"pelvis_terminal_enabled": pelvis_enabled, "contact_terminal_enabled": contact_enabled, "root_terminal_p95_mm": record["root"]["terminal_increment"]["xyz_m"]["norm"]["p95"], "root_terminal_max_mm": record["root"]["terminal_increment"]["xyz_m"]["norm"]["max"], "pelvis_mae_deg": record["pelvis"]["error_deg"]["mean"], "left_heel_slip_p95_mm_per_frame": record["feet"]["left"]["heel_slip_p95_mm_per_frame"]["p95"], "left_penetration_p95_mm": record["feet"]["left"]["penetration_p95_mm"]["p95"]})
     write_strict_json(output / "pelvis_contact_2x2.json", {"protocol": ANALYSIS_PROTOCOL, "condition": "temporal_weak_plus2deg", "rows": rows, "effects": "pelvis/contact main effects and interaction are computed from the four rows; metrics retain their native units."})
 
