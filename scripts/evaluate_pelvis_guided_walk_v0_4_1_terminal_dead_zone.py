@@ -270,9 +270,9 @@ def _metric_delta(pre: Mapping[str, Any], terminal: Mapping[str, Any]) -> dict[s
     for name, a_path, b_path in (
         ("pelvis_mae_deg", ("pelvis", "error_deg", "mean"), ("pelvis", "error_deg", "mean")),
         ("pelvis_p95_deg", ("pelvis", "error_deg", "p95"), ("pelvis", "error_deg", "p95")),
-        ("terminal_root_translation_p95_mm", ("root", "terminal_increment", "norm", "p95"), ("root", "terminal_increment", "norm", "p95")),
-        ("overall_root_from_m0_p95_mm", ("root", "overall_from_m0", "norm", "p95"), ("root", "overall_from_m0", "norm", "p95")),
-        ("aligned_root_shape_p95_mm", ("root", "aligned_shape_deviation", "norm", "p95"), ("root", "aligned_shape_deviation", "norm", "p95")),
+        ("terminal_root_translation_p95_mm", ("root", "terminal_increment", "xyz_m", "norm", "p95"), ("root", "terminal_increment", "xyz_m", "norm", "p95")),
+        ("overall_root_from_m0_p95_mm", ("root", "overall_from_m0", "xyz_m", "norm", "p95"), ("root", "overall_from_m0", "xyz_m", "norm", "p95")),
+        ("aligned_root_shape_p95_mm", ("root", "aligned_shape_deviation", "xyz_m", "norm", "p95"), ("root", "aligned_shape_deviation", "xyz_m", "norm", "p95")),
         ("mean_joint_acceleration_p95_mm", ("temporal", "mean_joint_acceleration_p95_mm", "p95"), ("temporal", "mean_joint_acceleration_p95_mm", "p95")),
         ("mean_joint_jerk_p95_mm", ("temporal", "mean_joint_jerk_p95_mm", "p95"), ("temporal", "mean_joint_jerk_p95_mm", "p95")),
         ("joint_mpjpe_p95_mm", ("whole_body", "joint_mpjpe_mm", "p95"), ("whole_body", "joint_mpjpe_mm", "p95")),
@@ -291,8 +291,8 @@ def _classification(pre: Mapping[str, Any], terminal: Mapping[str, Any], delta: 
     if not checks["pelvis_accuracy"]["within"]:
         reasons.append("pelvis_accuracy")
     for key, limit in (("terminal_root_translation_p95_mm", 1.0),):
-        value = terminal["root"]["terminal_increment"]["norm"]["p95"]
-        maximum = terminal["root"]["terminal_increment"]["norm"]["max"]
+        value = terminal["root"]["terminal_increment"]["xyz_m"]["norm"]["p95"]
+        maximum = terminal["root"]["terminal_increment"]["xyz_m"]["norm"]["max"]
         checks[key] = {"p95": value, "max": maximum, "within": value <= limit + EPS and maximum <= 10.0 + EPS}
         if not checks[key]["within"]:
             reasons.append(key)
@@ -331,7 +331,7 @@ def _flat_row(record: Mapping[str, Any]) -> dict[str, Any]:
         "left_heel_slip_pre_p95_mm_per_frame": pre["feet"]["left"]["heel_slip_p95_mm_per_frame"]["p95"], "left_heel_slip_terminal_p95_mm_per_frame": terminal["feet"]["left"]["heel_slip_p95_mm_per_frame"]["p95"], "left_heel_slip_delta_p95_mm_per_frame": delta["left_heel_slip_p95_mm_per_frame_delta"],
         "left_toe_slip_pre_p95_mm_per_frame": pre["feet"]["left"]["toe_slip_p95_mm_per_frame"]["p95"], "left_toe_slip_terminal_p95_mm_per_frame": terminal["feet"]["left"]["toe_slip_p95_mm_per_frame"]["p95"], "left_toe_slip_delta_p95_mm_per_frame": delta["left_toe_slip_p95_mm_per_frame_delta"],
         "left_penetration_pre_p95_mm": pre["feet"]["left"]["penetration_p95_mm"]["p95"], "left_penetration_terminal_p95_mm": terminal["feet"]["left"]["penetration_p95_mm"]["p95"], "left_penetration_delta_p95_mm": delta["left_penetration_p95_mm_delta"],
-        "terminal_root_delta_p95_mm": terminal["root"]["terminal_increment"]["norm"]["p95"], "terminal_root_delta_max_mm": terminal["root"]["terminal_increment"]["norm"]["max"], "overall_root_m0_p95_mm": terminal["root"]["overall_from_m0"]["norm"]["p95"], "aligned_root_shape_p95_mm": terminal["root"]["aligned_shape_deviation"]["norm"]["p95"],
+        "terminal_root_delta_p95_mm": terminal["root"]["terminal_increment"]["xyz_m"]["norm"]["p95"], "terminal_root_delta_max_mm": terminal["root"]["terminal_increment"]["xyz_m"]["norm"]["max"], "overall_root_m0_p95_mm": terminal["root"]["overall_from_m0"]["xyz_m"]["norm"]["p95"], "aligned_root_shape_p95_mm": terminal["root"]["aligned_shape_deviation"]["xyz_m"]["norm"]["p95"],
         "joint_acceleration_pre_p95_mm": pre["temporal"]["mean_joint_acceleration_p95_mm"]["p95"], "joint_acceleration_terminal_p95_mm": terminal["temporal"]["mean_joint_acceleration_p95_mm"]["p95"], "joint_acceleration_delta_p95_mm": delta["mean_joint_acceleration_p95_mm"], "joint_jerk_delta_p95_mm": delta["mean_joint_jerk_p95_mm"], "joint_mpjpe_delta_p95_mm": delta["joint_mpjpe_p95_mm"],
         "right_position_status": terminal["feet"]["right"]["evidence"]["position_status"], "right_velocity_status": terminal["feet"]["right"]["evidence"]["velocity_status"],
     }
@@ -468,7 +468,7 @@ def _run_2x2_if_needed(output: Path, payload: Mapping[str, Any], v04_root: Path,
             endpoint = _load_motion(result.projected_clean_motion.detach().cpu(), mean, std, valid_batch, "2x2_endpoint")[0]
             pre = _load_motion(pre_norm, mean, std, valid_batch, "2x2_pre")[0]
             record = _endpoint_record(m0[0], endpoint, pre, valid_batch[0], 2.0, model, device, patches, sides, m0_joints, m0_vertices, vertical_axis)
-            rows.append({"pelvis_terminal_enabled": pelvis_enabled, "contact_terminal_enabled": contact_enabled, "root_terminal_p95_mm": record["root"]["terminal_increment"]["norm"]["p95"], "root_terminal_max_mm": record["root"]["terminal_increment"]["norm"]["max"], "pelvis_mae_deg": record["pelvis"]["error_deg"]["mean"], "left_heel_slip_p95_mm_per_frame": record["feet"]["left"]["heel_slip_p95_mm_per_frame"]["p95"], "left_penetration_p95_mm": record["feet"]["left"]["penetration_p95_mm"]["p95"]})
+            rows.append({"pelvis_terminal_enabled": pelvis_enabled, "contact_terminal_enabled": contact_enabled, "root_terminal_p95_mm": record["root"]["terminal_increment"]["xyz_m"]["norm"]["p95"], "root_terminal_max_mm": record["root"]["terminal_increment"]["xyz_m"]["norm"]["max"], "pelvis_mae_deg": record["pelvis"]["error_deg"]["mean"], "left_heel_slip_p95_mm_per_frame": record["feet"]["left"]["heel_slip_p95_mm_per_frame"]["p95"], "left_penetration_p95_mm": record["feet"]["left"]["penetration_p95_mm"]["p95"]})
     write_strict_json(output / "pelvis_contact_2x2.json", {"protocol": ANALYSIS_PROTOCOL, "condition": "temporal_weak_plus2deg", "rows": rows, "effects": "pelvis/contact main effects and interaction are computed from the four rows; metrics retain their native units."})
 
 
