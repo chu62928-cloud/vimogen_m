@@ -538,6 +538,15 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def _pad_per_frame(values: Iterable[Any], length: int = 100) -> list[Any]:
+    """Align pair/triple/quad difference curves to the original frame axis."""
+
+    result = list(values)
+    if len(result) > length:
+        raise ValueError(f"per-frame curve has {len(result)} values; expected at most {length}")
+    return result + [""] * (length - len(result))
+
+
 def _write_summary_markdown(path: Path, payload: Mapping[str, Any]) -> None:
     rows = payload["rows"]
     counts: dict[str, int] = {}
@@ -728,8 +737,8 @@ def evaluate_all(
             "mean_joint_acceleration_m_per_frame2",
             "mean_joint_jerk_m_per_frame3",
         ):
-            per_frame[f"{key}_pre"] = pre_record["temporal"][key]["per_frame"]
-            per_frame[f"{key}_terminal"] = terminal_record["temporal"][key]["per_frame"]
+            per_frame[f"{key}_pre"] = _pad_per_frame(pre_record["temporal"][key]["per_frame"])
+            per_frame[f"{key}_terminal"] = _pad_per_frame(terminal_record["temporal"][key]["per_frame"])
         for side in ("left", "right"):
             for key in ("heel", "toe"):
                 pre_values = pre_record["feet"][side]["per_frame"][key]
