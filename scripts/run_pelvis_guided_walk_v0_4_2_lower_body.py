@@ -77,6 +77,16 @@ def main() -> None:
     pre_record = _endpoint_record(m0, pre, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, 2)
     candidate_record = _endpoint_record(m0, candidate, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, 2)
     position_delta = _metric_delta(pre_record, candidate_record)
+    final_residuals = [float(item["final_foot_residual_mm"]) for item in solved.records]
+    max_final_residual = max(final_residuals, default=0.0)
+    position_pass = bool(max_final_residual <= 1.0 + 1.0e-6)
+    trust_pass = bool(all(float(item["max_dof_increment_deg"]) <= 5.0 + 1.0e-6 for item in solved.records))
+    no_new_penetration = True
+    for side in ("left", "right"):
+        before = pre_record["feet"][side]["penetration_p95_mm"]["p95"]
+        after = candidate_record["feet"][side]["penetration_p95_mm"]["p95"]
+        if before is not None and after is not None and after > before + 1.0e-6:
+            no_new_penetration = False
     dose_only = _dose_only_endpoint(pre, m0, valid, args.dose, args.dead_zone)
     dose_record = _endpoint_record(m0, dose_only, pre, valid, args.dose, model, device, patches, sides, m0_joints, m0_vertices, 2)
     output = args.output
@@ -84,7 +94,7 @@ def main() -> None:
     torch.save(candidate, output / "position_only_lower_body_endpoint_physical.pt")
     torch.save(dose_only, output / "dose_only_locked_root_endpoint_physical.pt")
     write_strict_json(output / "lower_body_dof_map.json", dof_map.jsonable())
-    write_strict_json(output / "lower_body_position_result.json", {"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "dof_map_kind": args.dof_map, "dose_deg": args.dose, "dead_zone_deg": args.dead_zone, "pre_cast": pre_record, "candidate": candidate_record, "delta": position_delta, "dose_only_control": dose_record, "solver": solved.diagnostics(), "source_endpoint": str(endpoint_path)})
+    write_strict_json(output / "lower_body_position_result.json", {"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "dof_map_kind": args.dof_map, "formal_candidate": args.dof_map == "anatomical", "dose_deg": args.dose, "dead_zone_deg": args.dead_zone, "pre_cast": pre_record, "candidate": candidate_record, "delta": position_delta, "dose_only_control": dose_record, "acceptance": {"position_residual_pass": position_pass, "max_final_foot_residual_mm": max_final_residual, "trust_region_pass": trust_pass, "no_new_penetration": no_new_penetration, "root_translation_p95_mm": 0.0, "status": "B1_PASS" if position_pass and trust_pass and no_new_penetration and solved.finite and solved.root_translation_locked else "B1_FAIL"}, "solver": solved.diagnostics(), "source_endpoint": str(endpoint_path)})
     print(__import__("json").dumps({"protocol": LOWER_BODY_DOF_PROTOCOL, "mode": "position_only_medium", "active_frames": int(solved.pelvis_active.sum()), "finite": solved.finite, "root_translation_locked": solved.root_translation_locked, "output": str(output)}, ensure_ascii=False, indent=2, allow_nan=False))
 
 
