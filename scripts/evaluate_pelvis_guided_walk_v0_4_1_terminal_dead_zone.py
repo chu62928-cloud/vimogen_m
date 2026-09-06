@@ -197,6 +197,11 @@ def _root_decomposition(m0: torch.Tensor, endpoint: torch.Tensor, pre: torch.Ten
             "horizontal_mm": _stats(torch.linalg.vector_norm(aligned[valid][:, horizontal], dim=-1), MM),
             "vertical_abs_mm": _stats(aligned[valid, vertical_axis].abs(), MM),
         },
+        "per_frame_terminal_increment_mm": (torch.linalg.vector_norm(terminal, dim=-1) * MM).tolist(),
+        "per_frame_overall_from_m0_mm": (torch.linalg.vector_norm(overall, dim=-1) * MM).tolist(),
+        "per_frame_aligned_shape_deviation_mm": (torch.linalg.vector_norm(aligned, dim=-1) * MM).tolist(),
+        "per_frame_terminal_increment_xyz_mm": (terminal * MM).tolist(),
+        "per_frame_overall_from_m0_xyz_mm": (overall * MM).tolist(),
         "path_length_m": float(torch.linalg.vector_norm((endpoint_t[1:] - endpoint_t[:-1])[valid[1:] & valid[:-1]], dim=-1).sum()),
         "pre_path_length_m": float(torch.linalg.vector_norm((pre_t[1:] - pre_t[:-1])[valid[1:] & valid[:-1]], dim=-1).sum()),
     }
@@ -351,15 +356,27 @@ def _write_per_frame(path: Path, record: Mapping[str, Any]) -> None:
         "frame": list(range(100)),
         "pelvis_error_pre_deg": pre["pelvis"]["per_frame_error_deg"],
         "pelvis_error_terminal_deg": terminal["pelvis"]["per_frame_error_deg"],
-        "root_terminal_increment_norm_mm": [None] * 100,
+        "root_terminal_increment_norm_mm": terminal["root"]["per_frame_terminal_increment_mm"],
+        "root_overall_from_m0_norm_mm_pre": pre["root"]["per_frame_overall_from_m0_mm"],
+        "root_overall_from_m0_norm_mm_terminal": terminal["root"]["per_frame_overall_from_m0_mm"],
+        "root_aligned_shape_deviation_norm_mm_pre": pre["root"]["per_frame_aligned_shape_deviation_mm"],
+        "root_aligned_shape_deviation_norm_mm_terminal": terminal["root"]["per_frame_aligned_shape_deviation_mm"],
         "joint_mpjpe_pre_mm": pre["whole_body"]["per_frame_joint_mpjpe_mm"],
         "joint_mpjpe_terminal_mm": terminal["whole_body"]["per_frame_joint_mpjpe_mm"],
     }
+    def pad(values: list[Any]) -> list[Any]:
+        return list(values) + [None] * (100 - len(values))
+    for name in ("root_speed", "root_acceleration", "mean_joint_speed", "mean_joint_acceleration", "mean_joint_jerk"):
+        columns[name + "_pre_mm"] = pad(pre["temporal"][name + "_per_frame"])
+        columns[name + "_terminal_mm"] = pad(terminal["temporal"][name + "_per_frame"])
     for side in ("left", "right"):
         for marker in ("heel", "toe"):
             for idx, axis in enumerate(("x", "y", "z")):
                 columns[f"{side}_{marker}_pre_{axis}_m"] = [float(value[idx]) for value in pre["feet"][side]["per_frame"][marker]]
                 columns[f"{side}_{marker}_terminal_{axis}_m"] = [float(value[idx]) for value in terminal["feet"][side]["per_frame"][marker]]
+            for label, source in (("pre", pre), ("terminal", terminal)):
+                values = source["feet"][side]["per_frame"][marker]
+                columns[f"{side}_{marker}_slip_{label}_mm_per_frame"] = [None] + [float(torch.linalg.vector_norm(torch.as_tensor(values[index][:2]) - torch.as_tensor(values[index - 1][:2])).item() * MM) for index in range(1, 100)]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(columns))
