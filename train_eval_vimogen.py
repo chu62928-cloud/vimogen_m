@@ -2025,9 +2025,13 @@ def main(args):
                                 motion_mean=condition_mean,
                                 motion_std=condition_std,
                                 return_artifacts=True,
+                                # M4's forward-shoot runtime carries the
+                                # complete condition context, so its state
+                                # must not be sliced to per-sample batches.
                                 batch_invariant=(
                                     m0_sample_noise_protocol is not None
                                     and bool(m0_cfg.get('batch_invariant', False))
+                                    and scale_method != 'M4'
                                 ),
                                 unified_guidance_hook=scale_hook,
                                 trace_enabled=scale_trace_enabled,
