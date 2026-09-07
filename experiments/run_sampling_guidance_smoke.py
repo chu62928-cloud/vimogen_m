@@ -128,6 +128,7 @@ def run(args: argparse.Namespace) -> dict:
         "sample_ids": ["94", "34122"],
         "settings": settings,
         "code_commit": args.code_commit,
+        "checkpoint_hash": sha256(ROOT / "checkpoints/model.pt") if (ROOT / "checkpoints/model.pt").is_file() else "not_available_on_runner_host",
         "protocol_sha256": sha256(PROTOCOL),
         "manifest": str(args.manifest),
         "manifest_sha256": sha256(args.manifest),
