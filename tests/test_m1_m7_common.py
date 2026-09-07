@@ -328,6 +328,36 @@ def test_m4_forward_shoots_and_terminal_gn_hits_c0() -> None:
     )
 
 
+def test_m4_batched_statistics_broadcast() -> None:
+    single = _request(2.0)
+    baseline = single.baseline_motion.repeat(2, 1, 1)
+    valid = single.shared_evidence.valid_mask.repeat(2, 1)
+    target = single.shared_evidence.target_angle_curve_deg.repeat(2, 1)
+    request = GuidanceRequest(
+        prompt_id="fixture_batch",
+        seed=7,
+        target_dose_deg=2.0,
+        constraint_pack=ConstraintPack.C0,
+        base_noise=torch.zeros_like(baseline),
+        baseline_motion=baseline,
+        shared_evidence=SharedEvidence(valid, target),
+    )
+    hook = M4PCFMHook(
+        request,
+        runtime=_ShootingRuntime(),
+        mean=torch.zeros((2, MOTION_LAYOUT.total_dim)),
+        std=torch.ones((2, MOTION_LAYOUT.total_dim)),
+        config=M4Config(shooting_sigmas=(0.5,), trust_radius_deg=2.0),
+    )
+    corrected, record = hook.correct_velocity(
+        x_sigma=baseline.clone(),
+        velocity=torch.zeros_like(baseline),
+        sigma=0.5,
+        valid_mask=valid,
+    )
+    assert record["active"] and corrected.shape == baseline.shape
+
+
 def test_m5_updates_dual_state_without_projection_or_pseudoinverse() -> None:
     request = _request(2.0)
     hook = M5LagrangianDualFlowHook(
