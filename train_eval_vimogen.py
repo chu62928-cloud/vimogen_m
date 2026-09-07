@@ -667,7 +667,14 @@ def main(args):
         raise ValueError('m1_m7_guidance target_delta_deg must lie in [-10,10]')
     scale_artifact_dir = scale_cfg.get('artifact_dir', None) if scale_enabled else None
     scale_trace_enabled = bool(scale_cfg.get('trace_enabled', True)) if scale_enabled else False
-    scale_settings = dict(scale_cfg.get('settings', {}))
+    # Resolve nested OmegaConf containers (notably M4's shooting-sigma list)
+    # before writing strict JSON run artifacts or passing settings to method
+    # constructors.
+    scale_settings = OmegaConf.to_container(
+        scale_cfg.get('settings', {}), resolve=True
+    )
+    if not isinstance(scale_settings, dict):
+        raise TypeError('m1_m7_guidance.settings must resolve to a mapping')
     if scale_enabled and scale_artifact_dir is None:
         raise ValueError('m1_m7_guidance.enabled requires artifact_dir')
     if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled, scale_enabled)) > 1:
