@@ -60,6 +60,12 @@ def _find_reusable(method: str, seed: int, dose: float) -> Path | None:
 
 def _evaluate(attempt: Path) -> dict:
     evaluation = attempt / "evaluation"
+    summary = evaluation / "summary.json"
+    if summary.is_file():
+        try:
+            return json.loads(summary.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return {"status": "EVALUATION_OUTPUT_INVALID", "path": str(summary)}
     command = [sys.executable, str(EVALUATOR), "--run-root", str(attempt), "--output", str(evaluation)]
     completed = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False)
     if completed.returncode != 0:
@@ -89,7 +95,13 @@ def main() -> None:
             progress = json.loads(matrix_record.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             pass
-    completed_keys = {tuple(item.get(key) for key in ("method", "seed", "dose")) for item in progress.get("jobs", [])}
+    completed_keys = {
+        tuple(item.get(key) for key in ("method", "seed", "dose"))
+        for item in progress.get("jobs", [])
+        if item.get("evaluation", {}).get("status") not in {
+            "EVALUATION_FAILED", "EVALUATION_OUTPUT_INVALID"
+        }
+    }
     selected_jobs = [job for job in JOBS if job not in completed_keys]
     if args.max_jobs > 0:
         selected_jobs = selected_jobs[: args.max_jobs]
