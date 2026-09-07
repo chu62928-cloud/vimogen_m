@@ -103,6 +103,12 @@ from sampling.absolute_mean_pelvis_guidance_v4 import (
 )
 from motion_rep.baselines import build_b0
 from motion_rep.pose_authority import authority_project
+from geometry.pelvis_angle import target_angle_curve_deg
+from guidance.base import ConstraintPack, GuidanceRequest, SharedEvidence
+from guidance.m1_loss_guidance import M1Config as ScaleM1Config, M1LossGuidanceHook
+from guidance.m3_projflow_local import M3Config as ScaleM3Config, M3ProjFlowLocalHook
+from guidance.m5_ldf import M5Config as ScaleM5Config, M5LagrangianDualFlowHook
+from guidance.m6_lyaguide import M6Config as ScaleM6Config, M6LyaGuideHook
 
 # yapf: enable
 
@@ -646,10 +652,25 @@ def main(args):
             raise ValueError('v0.4 contact_mode is not in the frozen ablation matrix')
     if projection_enabled and projection_target_delta_deg not in {2.0, 5.0, 10.0}:
         raise ValueError('pelvis_contact_projection target must be +2, +5, or +10')
-    if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled)) > 1:
+    scale_cfg = args.get('m1_m7_guidance', {})
+    scale_enabled = bool(scale_cfg.get('enabled', False))
+    scale_method = str(scale_cfg.get('method', '')).upper()
+    if scale_enabled and scale_method not in {'M1', 'M3', 'M5', 'M6'}:
+        raise ValueError(
+            'm1_m7_guidance.method must be M1, M3, M5, or M6 in this runner'
+        )
+    scale_target_delta_deg = float(scale_cfg.get('target_delta_deg', 0.0))
+    if scale_enabled and not -10.0 <= scale_target_delta_deg <= 10.0:
+        raise ValueError('m1_m7_guidance target_delta_deg must lie in [-10,10]')
+    scale_artifact_dir = scale_cfg.get('artifact_dir', None) if scale_enabled else None
+    scale_trace_enabled = bool(scale_cfg.get('trace_enabled', True)) if scale_enabled else False
+    scale_settings = dict(scale_cfg.get('settings', {}))
+    if scale_enabled and scale_artifact_dir is None:
+        raise ValueError('m1_m7_guidance.enabled requires artifact_dir')
+    if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled, scale_enabled)) > 1:
         raise ValueError(
             'm1, absolute_mean_pelvis, relative_root_forward, and '
-            'pelvis_contact_projection are mutually exclusive'
+            'pelvis_contact_projection, and m1_m7_guidance are mutually exclusive'
         )
     source_noise_cfg = (
         relative_cfg
@@ -678,7 +699,7 @@ def main(args):
     if source_noise_enabled and not -10.0 <= source_noise_target_delta_deg <= 10.0:
         raise ValueError('source noise target_delta_deg must lie in [-10,10]')
     if source_noise_enabled and (
-        m1_enabled or absolute_enabled or relative_enabled or projection_enabled
+        m1_enabled or absolute_enabled or relative_enabled or projection_enabled or scale_enabled
     ):
         raise ValueError(
             'source-noise v2 is mutually exclusive with m1, absolute_mean_pelvis, '
@@ -690,6 +711,7 @@ def main(args):
         or relative_enabled
         or projection_enabled
         or source_noise_enabled
+        or scale_enabled
     )
 
     # Source-noise v2 begins with a strict, opt-in reproduction stop gate.
@@ -1123,6 +1145,15 @@ def main(args):
                         source_noise_artifact_dir_current,
                         f'batch_{test_batch_idx:03d}',
                     )
+                scale_artifact_dir_current = scale_artifact_dir
+                if (
+                    scale_artifact_dir_current is not None
+                    and m0_sample_noise_protocol is not None
+                ):
+                    scale_artifact_dir_current = os.path.join(
+                        scale_artifact_dir_current,
+                        f'batch_{test_batch_idx:03d}',
+                    )
 
                 raw_latents_full = (
                     torch.zeros_like(latents, dtype=torch.float32)
@@ -1200,6 +1231,23 @@ def main(args):
                     if projection_enabled else None
                 )
                 projection_summary_records = []
+                scale_raw_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if scale_enabled else None
+                )
+                scale_official_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if scale_enabled else None
+                )
+                scale_g0_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if scale_enabled else None
+                )
+                scale_baseline_latents_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if scale_enabled else None
+                )
+                scale_summary_records = []
 
                 attend_to_text_mask_bool = attend_to_text_mask.bool()
                 text_mask = attend_to_text_mask_bool
@@ -1209,7 +1257,7 @@ def main(args):
                 gen_latents_full = torch.zeros_like(
                     latents,
                     dtype=torch.float32
-                    if (absolute_enabled or relative_enabled or source_noise_enabled)
+                    if (absolute_enabled or relative_enabled or source_noise_enabled or scale_enabled)
                     else latents.dtype,
                 )
                 for condition_name, sample_mask in (('text', text_mask), ('motion', motion_mask)):
@@ -1556,6 +1604,7 @@ def main(args):
                     absolute_result = None
                     relative_result = None
                     projection_result = None
+                    scale_result = None
                     if absolute_enabled:
                         if not isinstance(m0_result, FlowSampleResult):
                             raise RuntimeError(
@@ -1730,6 +1779,107 @@ def main(args):
                             trace_enabled=True,
                         )
                         condition_result = projection_result
+                    if scale_enabled:
+                        if not isinstance(m0_result, FlowSampleResult):
+                            raise RuntimeError('M1-M7 sampling guidance requires FlowSampleResult from M0')
+                        condition_mean = motion_mean[sample_mask]
+                        condition_std = motion_std[sample_mask]
+                        condition_valid = latents_mask[sample_mask].bool()
+                        baseline_norm = authority_canonicalize_m0_batch(
+                            m0_result.official_pre_cast,
+                            condition_mean,
+                            condition_std,
+                            condition_valid,
+                        )
+                        baseline_physical = authority_project(
+                            baseline_norm.float(),
+                            valid_mask=condition_valid,
+                            mean=condition_mean.float(),
+                            std=condition_std.float(),
+                            input_standardized=True,
+                            output_standardized=False,
+                            output_dtype=torch.float32,
+                        ).motion
+                        current_ids = [
+                            str(test_sample_ids[index])
+                            for index in torch.nonzero(
+                                sample_mask, as_tuple=False
+                            ).flatten().tolist()
+                        ]
+                        scale_request = GuidanceRequest(
+                            prompt_id=','.join(current_ids),
+                            seed=int(seed),
+                            target_dose_deg=scale_target_delta_deg,
+                            constraint_pack=ConstraintPack.C0,
+                            base_noise=m0_result.initial_noise.detach().float(),
+                            baseline_motion=baseline_physical,
+                            shared_evidence=SharedEvidence(
+                                valid_mask=condition_valid,
+                                target_angle_curve_deg=target_angle_curve_deg(
+                                    baseline_physical, scale_target_delta_deg
+                                ),
+                                contact_evidence_version='pending_shared_fk_materialization',
+                                ground_version='pending_shared_fk_materialization',
+                                metadata={'sample_ids': current_ids},
+                            ),
+                            run_id=f'{scale_method}_seed{int(seed)}_dose{scale_target_delta_deg:+g}',
+                            baseline_motion_id='current_environment_authority_m0',
+                        )
+                        hook_arguments = {
+                            'mean': condition_mean,
+                            'std': condition_std,
+                        }
+                        if scale_method == 'M1':
+                            scale_hook = M1LossGuidanceHook(
+                                scale_request, **hook_arguments,
+                                config=ScaleM1Config.from_mapping(scale_settings),
+                            )
+                        elif scale_method == 'M3':
+                            scale_hook = M3ProjFlowLocalHook(
+                                scale_request, **hook_arguments,
+                                config=ScaleM3Config.from_mapping(scale_settings),
+                            )
+                        elif scale_method == 'M5':
+                            scale_hook = M5LagrangianDualFlowHook(
+                                scale_request, **hook_arguments,
+                                config=ScaleM5Config.from_mapping(scale_settings),
+                            )
+                        else:
+                            scale_hook = M6LyaGuideHook(
+                                scale_request, **hook_arguments,
+                                config=ScaleM6Config.from_mapping(scale_settings),
+                            )
+                        scale_result = generate_pipe(
+                            model=model,
+                            prompt_emb=prompt_emb[sample_mask],
+                            prompt_emb_null=prompt_emb_null[sample_mask],
+                            latents=latents[sample_mask],
+                            latents_mask=latents_mask[sample_mask],
+                            ref_latents=condition_ref_latents,
+                            ref_latents_mask=ref_latents_visual_mask[sample_mask],
+                            num_inference_steps=args.experiment.get('validation_steps', 50),
+                            cfg_scale=args.experiment.get('cfg_scale', 5.0),
+                            use_ema=False,
+                            device=device,
+                            dtype=dtype,
+                            scheduler=wan_scheduler,
+                            seed=seed,
+                            logger=logger,
+                            condition_on_text=(condition_name == 'text'),
+                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                            initial_noise=condition_initial_noise,
+                            motion_mean=condition_mean,
+                            motion_std=condition_std,
+                            return_artifacts=True,
+                            batch_invariant=(
+                                m0_sample_noise_protocol is not None
+                                and bool(m0_cfg.get('batch_invariant', False))
+                            ),
+                            unified_guidance_hook=scale_hook,
+                            trace_enabled=scale_trace_enabled,
+                        )
+                        scale_baseline_latents_full[sample_mask] = baseline_norm
+                        condition_result = scale_result
                     if isinstance(condition_result, FlowSampleResult):
                         condition_gen_latents = (
                             condition_result.g0
@@ -1737,6 +1887,7 @@ def main(args):
                                 absolute_result is not None
                                 or relative_result is not None
                                 or projection_result is not None
+                                or scale_result is not None
                             )
                             else condition_result.reconciled
                             if condition_result.reconciled is not None
@@ -1768,6 +1919,11 @@ def main(args):
                             projection_summary_records.append(
                                 projection_result.guidance_summary
                             )
+                        if scale_result is not None:
+                            scale_raw_latents_full[sample_mask] = scale_result.raw
+                            scale_official_latents_full[sample_mask] = scale_result.official_pre_cast
+                            scale_g0_latents_full[sample_mask] = scale_result.g0
+                            scale_summary_records.append(scale_result.guidance_summary)
                     else:
                         condition_gen_latents = condition_result
                     gen_latents_full[sample_mask] = condition_gen_latents.to(gen_latents_full.dtype)
@@ -1939,6 +2095,30 @@ def main(args):
                             'side': projection_side,
                             'sample_id': projection_sample_id,
                             'records': projection_summary_records,
+                        },
+                    )
+
+                if scale_artifact_dir_current is not None and global_rank == 0:
+                    os.makedirs(scale_artifact_dir_current, exist_ok=True)
+                    for filename, tensor in (
+                        ('m0_authority_norm_batch.pt', scale_baseline_latents_full),
+                        ('guided_raw_norm_batch.pt', scale_raw_latents_full),
+                        ('guided_official_norm_batch.pt', scale_official_latents_full),
+                        ('g0_norm_batch.pt', scale_g0_latents_full),
+                    ):
+                        torch.save(
+                            tensor.detach().cpu(),
+                            os.path.join(scale_artifact_dir_current, filename),
+                        )
+                    write_strict_json(
+                        Path(scale_artifact_dir_current) / 'guidance_summary.json',
+                        {
+                            'protocol': 'vimogen_pelvis_m1_m7_scale_v1',
+                            'method': scale_method,
+                            'target_delta_deg': scale_target_delta_deg,
+                            'constraint_pack': 'C0',
+                            'settings': scale_settings,
+                            'records': scale_summary_records,
                         },
                     )
                 
