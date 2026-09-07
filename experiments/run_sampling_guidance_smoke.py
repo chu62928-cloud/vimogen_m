@@ -47,6 +47,14 @@ DEFAULT_SETTINGS = {
         "sigma_min": 0.0662879,
         "sigma_max": 0.65,
     },
+    "M4": {
+        "shooting_sigmas": [0.55, 0.35, 0.15],
+        "gn_iterations": 3,
+        "damping": 1.0e-5,
+        "trust_radius_deg": 4.0,
+        "propagation_gain": 1.0,
+        "terminal_tolerance_deg": 1.0e-4,
+    },
     "M5": {
         "primal_gain": 0.05,
         "penalty": 0.1,
