@@ -795,6 +795,7 @@ def main(args):
         absolute_mean_guidance=None,
         relative_root_forward_guidance=None,
         pelvis_contact_projection=None,
+        unified_guidance_hook=None,
         trace_enabled: bool = False,
         motion_mean: torch.Tensor | None = None,
         motion_std: torch.Tensor | None = None,
@@ -830,6 +831,7 @@ def main(args):
             absolute_mean_guidance=absolute_mean_guidance,
             relative_root_forward_guidance=relative_root_forward_guidance,
             pelvis_contact_projection=pelvis_contact_projection,
+            unified_guidance_hook=unified_guidance_hook,
             trace_enabled=trace_enabled,
             reconciliation_config=(
                 None

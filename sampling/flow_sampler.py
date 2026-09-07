@@ -176,6 +176,7 @@ class FlowSampler:
         absolute_mean_guidance=None,
         relative_root_forward_guidance=None,
         pelvis_contact_projection=None,
+        unified_guidance_hook=None,
         trace_enabled: bool = False,
         reconciliation_config: Optional[dict] = None,
         motion_mean: Optional[torch.Tensor] = None,
@@ -197,12 +198,14 @@ class FlowSampler:
                 absolute_mean_guidance,
                 relative_root_forward_guidance,
                 pelvis_contact_projection,
+                unified_guidance_hook,
             )
         )
         if guidance_count > 1:
             raise ValueError(
                 "m1_guidance, absolute_mean_guidance, and "
-                "relative_root_forward_guidance, and pelvis_contact_projection "
+                "relative_root_forward_guidance, pelvis_contact_projection, "
+                "and unified_guidance_hook "
                 "are mutually exclusive"
             )
         if guidance_count and reconciliation_config and bool(reconciliation_config.get("enabled", False)):
@@ -217,6 +220,8 @@ class FlowSampler:
             if relative_root_forward_guidance is not None
             else pelvis_contact_projection
             if pelvis_contact_projection is not None
+            else unified_guidance_hook
+            if unified_guidance_hook is not None
             else m1_guidance
         )
         if batch_invariant and initial_noise.shape[0] > 1:
@@ -263,6 +268,13 @@ class FlowSampler:
                         pelvis_contact_projection=(
                             None if pelvis_contact_projection is None
                             else pelvis_contact_projection.slice(index)
+                        ),
+                        unified_guidance_hook=(
+                            None
+                            if unified_guidance_hook is None
+                            else unified_guidance_hook.slice(index)
+                            if hasattr(unified_guidance_hook, "slice")
+                            else unified_guidance_hook
                         ),
                         trace_enabled=trace_enabled,
                         reconciliation_config=reconciliation_config,
@@ -445,6 +457,10 @@ class FlowSampler:
                         # hook and does not alter the frozen M0 path.
                         "valid_mask": valid_mask.bool(),
                     }
+                    if bool(
+                        getattr(guidance_hook, "requires_sigma_next", False)
+                    ):
+                        guidance_kwargs["sigma_next"] = sigma_next_step
                     if trace_enabled:
                         guidance_kwargs["return_trace"] = True
                     velocity, guidance_diagnostics = guidance_hook.correct_velocity(
@@ -489,6 +505,7 @@ class FlowSampler:
                 if (
                     relative_root_forward_guidance is not None
                     or pelvis_contact_projection is not None
+                    or unified_guidance_hook is not None
                 ):
                     guidance_step_records.append({
                         key: value for key, value in guidance_diagnostics.items()
@@ -582,11 +599,52 @@ class FlowSampler:
                 **projection_outputs.summary,
                 "step_records": guidance_step_records,
             }
+        if unified_guidance_hook is not None:
+            if motion_mean is None or motion_std is None:
+                raise ValueError(
+                    "unified guidance finalization requires motion_mean and motion_std"
+                )
+            from motion_rep.pose_authority import authority_project
+
+            terminal_records = []
+            unified_official = official.float()
+            if hasattr(unified_guidance_hook, "finalize_output"):
+                unified_official, terminal_records = unified_guidance_hook.finalize_output(
+                    unified_official, valid_mask.bool()
+                )
+            unified_outputs = authority_project(
+                unified_official,
+                valid_mask=valid_mask.bool(),
+                mean=motion_mean.float(),
+                std=motion_std.float(),
+                input_standardized=True,
+                output_standardized=True,
+                output_dtype=torch.float32,
+            )
+            g0 = unified_outputs.motion
+            reconciled = g0.to(dtype=dtype)
+            representation_protocol = str(
+                getattr(
+                    unified_guidance_hook,
+                    "protocol",
+                    "m1_m7_unified_guidance_v1",
+                )
+            )
+            guidance_summary = {
+                "protocol": representation_protocol,
+                "method": str(
+                    getattr(unified_guidance_hook, "name", "unknown")
+                ),
+                "final_projection_audits": list(unified_outputs.audits),
+                "terminal_records": terminal_records,
+                "step_records": guidance_step_records,
+            }
         if reconciliation_config and bool(reconciliation_config.get("enabled", False)):
             if (
                 absolute_mean_guidance is not None
                 or relative_root_forward_guidance is not None
                 or pelvis_contact_projection is not None
+                or unified_guidance_hook is not None
             ):
                 raise ValueError(
                     "guided protocol owns the final reconciliation boundary; "

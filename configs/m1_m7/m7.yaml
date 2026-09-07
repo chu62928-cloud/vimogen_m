@@ -1,0 +1,9 @@
+method: M7
+implementation: paht_geometric_edit
+constraint_pack: C0
+epsilon: 0.000001
+theoretical_role: post_generation_geometric_edit_baseline
+claims_generator_response: false
+forbidden:
+  - noisy_state_geometric_edit
+  - exact_conjugacy_naturalness_claim

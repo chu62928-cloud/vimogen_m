@@ -1,0 +1,9 @@
+method: M4
+implementation: pcfm_forward_shooting
+constraint_pack: C0
+shooting_steps: 3
+gauss_newton_iterations: 4
+damping: 0.001
+trust_radius_deg: 5.0
+terminal_projection: true
+inequality_extension: false

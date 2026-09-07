@@ -1,0 +1,11 @@
+method: M5
+implementation: lagrangian_dual_flow
+constraint_pack: C0
+penalty_gain: 1.0
+dual_gain: 0.1
+dual_norm_max: 100.0
+gradient_clip_rms: 1.0
+terminal_time_epsilon: 0.001
+forbidden:
+  - explicit_projection
+  - pseudoinverse_step
