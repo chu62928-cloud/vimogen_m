@@ -34,6 +34,7 @@ from sampling.flow_sampler import FlowSampler, FlowSampleResult
 from sampling.differentiable_flow_sampler import (
     DifferentiableSamplerConfig,
     SourceNoiseGateConfig,
+    differentiable_generate,
     run_source_noise_subspace_probe,
     run_source_noise_reproduction_gate,
 )
@@ -106,7 +107,9 @@ from motion_rep.pose_authority import authority_project
 from geometry.pelvis_angle import target_angle_curve_deg
 from guidance.base import ConstraintPack, GuidanceRequest, SharedEvidence
 from guidance.m1_loss_guidance import M1Config as ScaleM1Config, M1LossGuidanceHook
+from guidance.m2_dflow_source import M2DFlowSourceOptimization
 from guidance.m3_projflow_local import M3Config as ScaleM3Config, M3ProjFlowLocalHook
+from guidance.m4_pcfm import M4Config as ScaleM4Config, M4PCFMHook
 from guidance.m5_ldf import M5Config as ScaleM5Config, M5LagrangianDualFlowHook
 from guidance.m6_lyaguide import M6Config as ScaleM6Config, M6LyaGuideHook
 
@@ -655,9 +658,9 @@ def main(args):
     scale_cfg = args.get('m1_m7_guidance', {})
     scale_enabled = bool(scale_cfg.get('enabled', False))
     scale_method = str(scale_cfg.get('method', '')).upper()
-    if scale_enabled and scale_method not in {'M1', 'M3', 'M5', 'M6'}:
+    if scale_enabled and scale_method not in {'M1', 'M2', 'M3', 'M4', 'M5', 'M6'}:
         raise ValueError(
-            'm1_m7_guidance.method must be M1, M3, M5, or M6 in this runner'
+            'm1_m7_guidance.method must be M1, M2, M3, M4, M5, or M6 in this runner'
         )
     scale_target_delta_deg = float(scale_cfg.get('target_delta_deg', 0.0))
     if scale_enabled and not -10.0 <= scale_target_delta_deg <= 10.0:
@@ -1829,55 +1832,192 @@ def main(args):
                             'mean': condition_mean,
                             'std': condition_std,
                         }
-                        if scale_method == 'M1':
-                            scale_hook = M1LossGuidanceHook(
-                                scale_request, **hook_arguments,
-                                config=ScaleM1Config.from_mapping(scale_settings),
-                            )
-                        elif scale_method == 'M3':
-                            scale_hook = M3ProjFlowLocalHook(
-                                scale_request, **hook_arguments,
-                                config=ScaleM3Config.from_mapping(scale_settings),
-                            )
-                        elif scale_method == 'M5':
-                            scale_hook = M5LagrangianDualFlowHook(
-                                scale_request, **hook_arguments,
-                                config=ScaleM5Config.from_mapping(scale_settings),
+                        if scale_method == 'M2':
+                            class _DFlowRuntime:
+                                nfe_per_rollout = int(
+                                    args.experiment.get('validation_steps', 50)
+                                )
+
+                                def rollout(self, source_noise, *, request, differentiable):
+                                    if not differentiable:
+                                        raise ValueError('M2 runtime requires differentiable=True')
+                                    return differentiable_generate(
+                                        model=model,
+                                        scheduler=deepcopy(wan_scheduler),
+                                        prompt_emb=prompt_emb[sample_mask],
+                                        prompt_emb_null=prompt_emb_null[sample_mask],
+                                        initial_noise=source_noise,
+                                        valid_mask=condition_valid,
+                                        ref_motion=condition_ref_latents,
+                                        ref_motion_mask=ref_latents_visual_mask[sample_mask],
+                                        condition_on_text=(condition_name == 'text'),
+                                        attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                                        dtype=dtype,
+                                        config=DifferentiableSamplerConfig(
+                                            num_inference_steps=args.experiment.get('validation_steps', 50),
+                                            denoising_strength=0.7,
+                                            cfg_scale=args.experiment.get('cfg_scale', 5.0),
+                                            use_gradient_checkpointing=True,
+                                        ),
+                                    ).official_pre_cast
+
+                            parameter_requires_grad = [
+                                parameter.requires_grad for parameter in model.parameters()
+                            ]
+                            for parameter in model.parameters():
+                                parameter.requires_grad_(False)
+                            try:
+                                m2_result = M2DFlowSourceOptimization().run(
+                                    _DFlowRuntime(), scale_request, scale_settings
+                                )
+                            finally:
+                                for parameter, requires_grad in zip(
+                                    model.parameters(), parameter_requires_grad
+                                ):
+                                    parameter.requires_grad_(requires_grad)
+                            m2_norm = authority_project(
+                                m2_result.motion.float(),
+                                valid_mask=condition_valid,
+                                mean=condition_mean.float(),
+                                std=condition_std.float(),
+                                input_standardized=False,
+                                output_standardized=True,
+                                output_dtype=torch.float32,
+                            ).motion
+                            scale_result = FlowSampleResult(
+                                initial_noise=m0_result.initial_noise,
+                                raw=m2_norm,
+                                official_pre_cast=m2_norm,
+                                official=m2_norm.to(dtype=dtype),
+                                sigmas=m0_result.sigmas,
+                                timesteps=m0_result.timesteps,
+                                reconciled=m2_norm,
+                                representation_protocol='vimogen_m2_dflow_source_optimization_c0_v1',
+                                g0=m2_norm,
+                                guidance_summary={
+                                    'protocol': 'vimogen_m2_dflow_source_optimization_c0_v1',
+                                    'method': 'M2',
+                                    'diagnostics': m2_result.diagnostics_dict(),
+                                },
                             )
                         else:
-                            scale_hook = M6LyaGuideHook(
-                                scale_request, **hook_arguments,
-                                config=ScaleM6Config.from_mapping(scale_settings),
+                            runtime = None
+                            if scale_method == 'M4':
+                                class _FlowShootRuntime:
+                                    def forward_shoot(self, *, x_sigma, sigma, request):
+                                        del request
+                                        shoot_scheduler = deepcopy(wan_scheduler)
+                                        steps = int(args.experiment.get('validation_steps', 50))
+                                        shoot_scheduler.set_timesteps(
+                                            steps, training=False, denoising_strength=0.7
+                                        )
+                                        device_shoot = x_sigma.device
+                                        timesteps_shoot = shoot_scheduler.timesteps.to(device_shoot)
+                                        sigmas_shoot = shoot_scheduler.sigmas.to(device_shoot)
+                                        sigma_id = int(torch.argmin(
+                                            (sigmas_shoot - torch.as_tensor(
+                                                sigma, device=device_shoot, dtype=sigmas_shoot.dtype
+                                            )).abs()
+                                        ).detach().cpu())
+                                        state = x_sigma.float()
+                                        context_shoot = torch.cat(
+                                            [prompt_emb[sample_mask], prompt_emb_null[sample_mask]], dim=0
+                                        )
+                                        ref_shoot = torch.cat(
+                                            [condition_ref_latents, torch.zeros_like(condition_ref_latents)], dim=0
+                                        )
+                                        ref_mask_shoot = torch.cat(
+                                            [ref_latents_visual_mask[sample_mask]] * 2, dim=0
+                                        )
+                                        valid_shoot = torch.cat([condition_valid] * 2, dim=0)
+                                        attend_shoot = torch.cat(
+                                            [attend_to_text_mask_bool[sample_mask]] * 2, dim=0
+                                        )
+                                        with torch.no_grad():
+                                            for shoot_id in range(sigma_id, len(timesteps_shoot)):
+                                                with torch.amp.autocast(
+                                                    device_type=device_shoot.type,
+                                                    enabled=(device_shoot.type == 'cuda' and dtype in (torch.float16, torch.bfloat16)),
+                                                    dtype=dtype,
+                                                ):
+                                                    velocity_shoot = model(
+                                                        x=torch.cat([state] * 2, dim=0),
+                                                        timestep=timesteps_shoot[shoot_id].unsqueeze(0),
+                                                        context=context_shoot,
+                                                        x_mask=valid_shoot,
+                                                        ref_motion=ref_shoot,
+                                                        ref_motion_mask=ref_mask_shoot,
+                                                        use_gradient_checkpointing=False,
+                                                        attend_to_text_mask=attend_shoot,
+                                                    )
+                                                    cond, uncond = velocity_shoot.chunk(2)
+                                                    velocity_shoot = (
+                                                        uncond + args.experiment.get('cfg_scale', 5.0) * (cond - uncond)
+                                                        if condition_name == 'text' else cond
+                                                    )
+                                                state = shoot_scheduler.step(
+                                                    velocity_shoot, timesteps_shoot[shoot_id], state
+                                                )
+                                        return torch.stack([
+                                            smooth_motion_rep(state[index], kernel_size=5, sigma=1.0)
+                                            for index in range(state.shape[0])
+                                        ])
+
+                                runtime = _FlowShootRuntime()
+                            if scale_method == 'M1':
+                                scale_hook = M1LossGuidanceHook(
+                                    scale_request, **hook_arguments,
+                                    config=ScaleM1Config.from_mapping(scale_settings),
+                                )
+                            elif scale_method == 'M3':
+                                scale_hook = M3ProjFlowLocalHook(
+                                    scale_request, **hook_arguments,
+                                    config=ScaleM3Config.from_mapping(scale_settings),
+                                )
+                            elif scale_method == 'M4':
+                                scale_hook = M4PCFMHook(
+                                    scale_request, runtime=runtime, **hook_arguments,
+                                    config=ScaleM4Config.from_mapping(scale_settings),
+                                )
+                            elif scale_method == 'M5':
+                                scale_hook = M5LagrangianDualFlowHook(
+                                    scale_request, **hook_arguments,
+                                    config=ScaleM5Config.from_mapping(scale_settings),
+                                )
+                            else:
+                                scale_hook = M6LyaGuideHook(
+                                    scale_request, **hook_arguments,
+                                    config=ScaleM6Config.from_mapping(scale_settings),
+                                )
+                            scale_result = generate_pipe(
+                                model=model,
+                                prompt_emb=prompt_emb[sample_mask],
+                                prompt_emb_null=prompt_emb_null[sample_mask],
+                                latents=latents[sample_mask],
+                                latents_mask=latents_mask[sample_mask],
+                                ref_latents=condition_ref_latents,
+                                ref_latents_mask=ref_latents_visual_mask[sample_mask],
+                                num_inference_steps=args.experiment.get('validation_steps', 50),
+                                cfg_scale=args.experiment.get('cfg_scale', 5.0),
+                                use_ema=False,
+                                device=device,
+                                dtype=dtype,
+                                scheduler=wan_scheduler,
+                                seed=seed,
+                                logger=logger,
+                                condition_on_text=(condition_name == 'text'),
+                                attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
+                                initial_noise=condition_initial_noise,
+                                motion_mean=condition_mean,
+                                motion_std=condition_std,
+                                return_artifacts=True,
+                                batch_invariant=(
+                                    m0_sample_noise_protocol is not None
+                                    and bool(m0_cfg.get('batch_invariant', False))
+                                ),
+                                unified_guidance_hook=scale_hook,
+                                trace_enabled=scale_trace_enabled,
                             )
-                        scale_result = generate_pipe(
-                            model=model,
-                            prompt_emb=prompt_emb[sample_mask],
-                            prompt_emb_null=prompt_emb_null[sample_mask],
-                            latents=latents[sample_mask],
-                            latents_mask=latents_mask[sample_mask],
-                            ref_latents=condition_ref_latents,
-                            ref_latents_mask=ref_latents_visual_mask[sample_mask],
-                            num_inference_steps=args.experiment.get('validation_steps', 50),
-                            cfg_scale=args.experiment.get('cfg_scale', 5.0),
-                            use_ema=False,
-                            device=device,
-                            dtype=dtype,
-                            scheduler=wan_scheduler,
-                            seed=seed,
-                            logger=logger,
-                            condition_on_text=(condition_name == 'text'),
-                            attend_to_text_mask=attend_to_text_mask_bool[sample_mask],
-                            initial_noise=condition_initial_noise,
-                            motion_mean=condition_mean,
-                            motion_std=condition_std,
-                            return_artifacts=True,
-                            batch_invariant=(
-                                m0_sample_noise_protocol is not None
-                                and bool(m0_cfg.get('batch_invariant', False))
-                            ),
-                            unified_guidance_hook=scale_hook,
-                            trace_enabled=scale_trace_enabled,
-                        )
                         scale_baseline_latents_full[sample_mask] = baseline_norm
                         condition_result = scale_result
                     if isinstance(condition_result, FlowSampleResult):

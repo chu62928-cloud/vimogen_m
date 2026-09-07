@@ -35,6 +35,12 @@ DEFAULT_SETTINGS = {
         "sigma_min": 0.0662879,
         "sigma_max": 0.65,
     },
+    "M2": {
+        "learning_rate": 0.01,
+        "iterations": 2,
+        "source_regularization": 0.001,
+        "gradient_clip_norm": 10.0,
+    },
     "M3": {
         "damping": 1.0e-6,
         "max_step_deg": 2.0,

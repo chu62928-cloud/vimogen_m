@@ -29,7 +29,11 @@ def _one(root: Path, pattern: str) -> Path:
 
 
 def _diag(summary: dict, index: int, before: torch.Tensor, after: torch.Tensor, valid: torch.Tensor, elapsed: float) -> dict:
-    samples = summary.get("samples", [])
+    # The batch-invariant sampler stores one outer record per condition and
+    # puts the actual per-sample step traces below ``records[0].samples``.
+    outer = summary.get("records", [])
+    payload = outer[0] if outer and isinstance(outer[0], dict) else summary
+    samples = payload.get("samples", [])
     sample = samples[index] if index < len(samples) else summary
     steps = sample.get("step_records", [])
     active = [row for row in steps if row.get("active", False)]
