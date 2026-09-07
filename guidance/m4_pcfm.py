@@ -10,7 +10,7 @@ import torch
 from geometry.authoritative_motion import authoritative_motion
 from geometry.pelvis_angle import pelvis_angle_curve_deg, wrap_angle_deg
 from guidance.base import ConstraintPack, GuidanceRequest, slice_batch_stat, slice_request
-from guidance.sampling_common import masked_rms, normalized_from_physical, velocity_from_clean
+from guidance.sampling_common import align_stat, masked_rms, normalized_from_physical, velocity_from_clean
 from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe, encode_rot6d
 from motion_rep.sagittal_pelvis_angle import apply_person_right_axis_rotation
 
@@ -136,7 +136,9 @@ class M4PCFMHook:
             # Runtime terminal states are standardized; the GN solve is physical.
             mean = self.mean.to(x_sigma.device)
             std = self.std.to(x_sigma.device)
-            physical = terminal.float() * std + mean
+            physical = terminal.float() * align_stat(std, terminal, "std") + align_stat(
+                mean, terminal, "mean"
+            )
             corrected_physical, gn_records = _terminal_gn(
                 physical, self.request.shared_evidence.target_angle_curve_deg,
                 valid_mask, self.config,
@@ -172,7 +174,9 @@ class M4PCFMHook:
     ) -> tuple[torch.Tensor, list[dict[str, float]]]:
         mean = self.mean.to(official_norm.device)
         std = self.std.to(official_norm.device)
-        physical = official_norm.float() * std + mean
+        physical = official_norm.float() * align_stat(
+            std, official_norm, "std"
+        ) + align_stat(mean, official_norm, "mean")
         projected, records = _terminal_gn(
             physical, self.request.shared_evidence.target_angle_curve_deg,
             valid_mask, self.config,
