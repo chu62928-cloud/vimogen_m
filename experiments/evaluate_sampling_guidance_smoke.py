@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 from evaluation.content_metrics import evaluate_content_metrics
 from evaluation.control_metrics import evaluate_control_metrics
 from guidance.base import ConstraintPack, mapping_sha256, tensor_sha256, write_run_record
-from geometry.authoritative_motion import authoritative_motion
+from motion_rep.pose_authority import authority_project
 from geometry.pelvis_angle import target_angle_curve_deg
 
 
@@ -69,8 +69,14 @@ def run(run_root: Path, output: Path) -> dict:
     valid = archive["motion_mask"].bool()
     before_norm = torch.load(artifact / "m0_authority_norm_batch.pt", map_location="cpu", weights_only=True).float()
     after_norm = torch.load(artifact / "g0_norm_batch.pt", map_location="cpu", weights_only=True).float()
-    before = authoritative_motion(before_norm, valid_mask=valid, mean=mean, std=std).motion
-    after = authoritative_motion(after_norm, valid_mask=valid, mean=mean, std=std).motion
+    before = authority_project(
+        before_norm, valid_mask=valid, mean=mean, std=std,
+        input_standardized=True, output_standardized=False,
+    ).motion
+    after = authority_project(
+        after_norm, valid_mask=valid, mean=mean, std=std,
+        input_standardized=True, output_standardized=False,
+    ).motion
     summary = json.loads((artifact / "guidance_summary.json").read_text(encoding="utf-8"))
     sample_ids = [str(x) for x in archive["sample_ids"]]
     output.mkdir(parents=True)
