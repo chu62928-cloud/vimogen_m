@@ -97,17 +97,21 @@ class M6LyaGuideHook:
             gradient, gradient_rms = clip_rms(
                 gradient, valid_mask, cfg.gradient_clip_rms, cfg.eps
             )
-            candidate = -cfg.candidate_scale * gradient
+            # FlowSampler integrates from larger to smaller sigma.  The
+            # Lyapunov derivative is therefore written in the descending-
+            # sigma direction: a positive state gradient gives a positive
+            # velocity correction because ``sigma_next - sigma < 0``.
+            candidate = cfg.candidate_scale * gradient
             flat_mask = valid_mask.unsqueeze(-1).expand_as(gradient)
             g = gradient[flat_mask]
             u = velocity.float()[flat_mask]
             c = candidate[flat_mask]
-            before = (g * (u + c)).sum() + cfg.delta * loss
+            before = -(g * (u + c)).sum() + cfg.delta * loss
             coefficient = torch.relu(before) / (g.square().sum() + cfg.eps)
-            projected = candidate - coefficient * gradient
+            projected = candidate + coefficient * gradient
             corrected = velocity.float() + projected
             corrected = torch.where(valid_mask.unsqueeze(-1), corrected, velocity.float())
-            after = (g * (u + c - coefficient * g)).sum() + cfg.delta * loss
+            after = -(g * (u + c + coefficient * g)).sum() + cfg.delta * loss
         record.update(
             {
                 "active": True,
