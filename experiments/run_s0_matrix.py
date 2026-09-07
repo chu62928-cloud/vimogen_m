@@ -130,7 +130,19 @@ def main() -> None:
         matrix_record.write_text(json.dumps(progress, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(item, ensure_ascii=False))
 
-    progress["remaining_jobs"] = len(JOBS) - len(progress.get("jobs", []))
+    # A repair pass appends a corrected evaluation record for a failed key so
+    # the original failure remains auditable.  Count unique non-failed keys
+    # here instead of raw history entries, otherwise the progress can become
+    # negative after such a repair pass.
+    completed_keys = {
+        tuple(item.get(key) for key in ("method", "seed", "dose"))
+        for item in progress.get("jobs", [])
+        if item.get("evaluation", {}).get("status") not in {
+            "EVALUATION_FAILED", "EVALUATION_OUTPUT_INVALID"
+        }
+    }
+    progress["completed_unique_jobs"] = len(completed_keys)
+    progress["remaining_jobs"] = len(JOBS) - len(completed_keys)
     progress["updated_at"] = time.time()
     matrix_record.write_text(json.dumps(progress, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(json.dumps({"status": "MATRIX_PROGRESS", "completed_jobs": len(progress.get("jobs", [])), "total_jobs": len(JOBS), "remaining_jobs": progress["remaining_jobs"]}, ensure_ascii=False))
