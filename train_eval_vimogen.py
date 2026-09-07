@@ -1841,7 +1841,7 @@ def main(args):
                                 def rollout(self, source_noise, *, request, differentiable):
                                     if not differentiable:
                                         raise ValueError('M2 runtime requires differentiable=True')
-                                    return differentiable_generate(
+                                    rollout_result = differentiable_generate(
                                         model=model,
                                         scheduler=deepcopy(wan_scheduler),
                                         prompt_emb=prompt_emb[sample_mask],
@@ -1859,7 +1859,21 @@ def main(args):
                                             cfg_scale=args.experiment.get('cfg_scale', 5.0),
                                             use_gradient_checkpointing=True,
                                         ),
-                                    ).official_pre_cast
+                                    )
+                                    # The differentiable sampler returns the
+                                    # standardised representation.  M2's
+                                    # objective is defined on the authoritative
+                                    # physical motion, so convert at this
+                                    # boundary while preserving autograd.
+                                    return authority_project(
+                                        rollout_result.official_pre_cast,
+                                        valid_mask=condition_valid,
+                                        mean=condition_mean.float(),
+                                        std=condition_std.float(),
+                                        input_standardized=True,
+                                        output_standardized=False,
+                                        output_dtype=torch.float32,
+                                    ).motion
 
                             parameter_requires_grad = [
                                 parameter.requires_grad for parameter in model.parameters()
