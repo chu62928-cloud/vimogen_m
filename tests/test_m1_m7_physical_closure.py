@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from geometry.contacts import freeze_marker_contact_evidence
 from evaluation.physical_metrics import (
     EVALUATED_PASS,
     NOT_EVALUATED,
@@ -37,6 +38,18 @@ def _markers(frames: int = 6) -> dict[str, dict[str, torch.Tensor]]:
         "left": {"heel": zero.clone(), "toe": zero.clone()},
         "right": {"heel": zero.clone(), "toe": zero.clone()},
     }
+
+
+def test_marker_contact_does_not_promote_an_airborne_toe_from_heel_contact() -> None:
+    frames = 6
+    markers = _markers(frames)
+    markers["left"]["toe"][..., 2] = 0.10
+    valid = torch.ones((1, frames), dtype=torch.bool)
+
+    evidence = freeze_marker_contact_evidence(markers, valid, torch.zeros(1))
+
+    assert evidence.contact["left"]["heel"][0, 1:].all()
+    assert not evidence.contact["left"]["toe"].any()
 
 
 def test_reference_uses_authoritative_fk_joint_markers_and_freezes_metadata() -> None:
@@ -72,8 +85,19 @@ def test_candidate_cannot_escape_by_redefining_m0_contact_mask() -> None:
     candidate["left"]["heel"][..., 2] = 0.05
     candidate["left"]["toe"][..., 2] = 0.05
     valid = torch.ones((1, frames), dtype=torch.bool)
-    contacts = {"left": torch.tensor([[False, True, True, True, True, True]]), "right": torch.zeros((1, frames), dtype=torch.bool)}
-    pairs = {"left": contacts["left"][:, 1:] & contacts["left"][:, :-1], "right": torch.zeros((1, frames - 1), dtype=torch.bool)}
+    left = torch.tensor([[False, True, True, True, True, True]])
+    empty = torch.zeros((1, frames), dtype=torch.bool)
+    contacts = {
+        "left": {"heel": left, "toe": left.clone()},
+        "right": {"heel": empty, "toe": empty.clone()},
+    }
+    pairs = {
+        side: {
+            marker: mask[:, 1:] & mask[:, :-1]
+            for marker, mask in side_masks.items()
+        }
+        for side, side_masks in contacts.items()
+    }
 
     result = evaluate_physical_metrics_v2(
         candidate,
@@ -85,7 +109,8 @@ def test_candidate_cannot_escape_by_redefining_m0_contact_mask() -> None:
     )
     row = result["per_sequence"][0]
     assert row["contact_evaluable"] is True
-    assert row["floating_frame_rate"] > 0.0
+    assert row["floating_frame_rate"] is None
+    assert row["contact_height_p95_mm"] > 0.0
     assert row["total_slide_distance_mm"] > 0.0
     assert row["support_height_error_p95_mm"] > 0.0
 
@@ -94,8 +119,19 @@ def test_raw_physical_metrics_are_not_a_gate_pass_without_frozen_thresholds() ->
     frames = 6
     markers = _markers(frames)
     valid = torch.ones((1, frames), dtype=torch.bool)
-    contacts = {"left": torch.tensor([[False, True, True, True, True, True]]), "right": torch.zeros((1, frames), dtype=torch.bool)}
-    pairs = {"left": contacts["left"][:, 1:] & contacts["left"][:, :-1], "right": torch.zeros((1, frames - 1), dtype=torch.bool)}
+    left = torch.tensor([[False, True, True, True, True, True]])
+    empty = torch.zeros((1, frames), dtype=torch.bool)
+    contacts = {
+        "left": {"heel": left, "toe": left.clone()},
+        "right": {"heel": empty, "toe": empty.clone()},
+    }
+    pairs = {
+        side: {
+            marker: mask[:, 1:] & mask[:, :-1]
+            for marker, mask in side_masks.items()
+        }
+        for side, side_masks in contacts.items()
+    }
     raw = evaluate_physical_metrics_v2(
         markers,
         markers,
@@ -106,8 +142,12 @@ def test_raw_physical_metrics_are_not_a_gate_pass_without_frozen_thresholds() ->
     )
     assert raw["status"] == NOT_EVALUATED
     assert raw["reason"] == "THRESHOLDS_NOT_FROZEN"
+    assert raw["per_sequence"][0]["penetration_frame_rate"] is None
+    assert raw["per_sequence"][0]["floating_frame_rate"] is None
 
     thresholds = {
+        "penetration_tolerance_mm": 1.0,
+        "floating_height_threshold_mm": 25.0,
         "penetration_p95_mm": 1.0,
         "penetration_max_mm": 1.0,
         "penetration_frame_rate": 0.0,
