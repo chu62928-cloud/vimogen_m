@@ -15,11 +15,13 @@ from guidance.base import (
     ConstraintPack,
     GuidanceRequest,
     SharedEvidence,
+    slice_request,
     write_run_record,
 )
 from guidance.m7_paht_edit import M7PAHTGeometricEdit
 from guidance.m1_loss_guidance import M1Config, M1LossGuidanceHook
 from guidance.m2_dflow_source import M2DFlowSourceOptimization
+from guidance.m2_dflow_source_v2 import M2DFlowSourceOptimizationV2
 from guidance.m3_projflow_local import M3Config, M3ProjFlowLocalHook
 from guidance.m4_pcfm import M4Config, M4PCFMHook
 from guidance.m5_ldf import M5Config, M5LagrangianDualFlowHook
@@ -272,6 +274,58 @@ def test_m2_optimizes_only_source_noise_against_frozen_target() -> None:
         request.shared_evidence.target_angle_curve_deg,
         target_angle_curve_deg(request.baseline_motion, 2.0),
     )
+
+
+def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:
+    one = _request(2.0)
+    batch = GuidanceRequest(
+        prompt_id=one.prompt_id,
+        seed=one.seed,
+        target_dose_deg=one.target_dose_deg,
+        constraint_pack=one.constraint_pack,
+        base_noise=one.base_noise.repeat(2, 1, 1),
+        baseline_motion=one.baseline_motion.repeat(2, 1, 1),
+        shared_evidence=SharedEvidence(
+            one.shared_evidence.valid_mask.repeat(2, 1),
+            one.shared_evidence.target_angle_curve_deg.repeat(2, 1),
+        ),
+    )
+    config = {
+        "learning_rate": 0.05,
+        "iterations": 5,
+        "source_regularization": 0.0,
+        "content_weight": 0.0,
+        "root_weight": 0.0,
+        "source_trust_radius": 10.0,
+        "step_trust_radius": 10.0,
+    }
+    method = M2DFlowSourceOptimizationV2()
+    batched = method.run(_DifferentiableRollout(), batch, config)
+    singles = [
+        method.run(_DifferentiableRollout(), slice_request(batch, index), config)
+        for index in range(2)
+    ]
+
+    torch.testing.assert_close(
+        batched.motion, torch.cat([item.motion for item in singles], dim=0)
+    )
+    diagnostics = batched.diagnostics_dict()
+    assert len(diagnostics["per_sample_best_iteration"]) == 2
+    assert diagnostics["optimization_scope"] == "independent_per_sample"
+
+
+def test_m2_v2_zero_dose_is_an_exact_no_rollout_bypass() -> None:
+    request = _request(0.0)
+
+    class _ForbiddenRollout:
+        def rollout(self, *args, **kwargs):
+            raise AssertionError("zero-dose bypass must not call rollout")
+
+    result = M2DFlowSourceOptimizationV2().run(_ForbiddenRollout(), request)
+
+    assert result.status == "COMPLETED_ZERO_DOSE_BYPASS"
+    assert torch.equal(result.motion, request.baseline_motion)
+    assert result.diagnostics_dict()["full_rollout_count"] == 0
 
 
 def test_m3_projects_predicted_endpoint_towards_target() -> None:
