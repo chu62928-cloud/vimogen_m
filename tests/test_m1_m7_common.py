@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
@@ -33,6 +34,7 @@ from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
 from motion_rep.phase1 import decode_rot6d_safe
 from motion_rep.sagittal_pelvis_angle import apply_person_right_axis_rotation
 from scripts.freeze_m1_m7_protocol import validate_configs
+from scripts.freeze_m1_m7_method_revisions import freeze_revisions, validate_revisions
 
 
 def _motion(frames: int = 5) -> torch.Tensor:
@@ -83,6 +85,17 @@ def test_request_rejects_non_prefix_masks() -> None:
                 mask, target_angle_curve_deg(baseline, 2.0)
             ),
         )
+
+
+def test_v2_method_revisions_freeze_without_overwrite(tmp_path: Path) -> None:
+    configs = validate_revisions()
+    assert configs["m2_v2.yaml"]["selection_scope"] == "independent_per_sample"
+    assert configs["m4_v2.yaml"]["shooting_sigmas"] == []
+    output = tmp_path / "protocol_v2_revisions"
+    manifest = freeze_revisions(output, code_commit="abc123")
+    assert manifest["status"] == "METHOD_REVISIONS_FROZEN_FOR_S1"
+    with pytest.raises(FileExistsError):
+        freeze_revisions(output, code_commit="abc123")
 
 
 @pytest.mark.parametrize("dose", [-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0])
