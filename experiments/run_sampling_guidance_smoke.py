@@ -84,6 +84,16 @@ M2_V2_SETTINGS = {
     "early_stop_patience": 2,
 }
 
+M3_V2_SETTINGS = {
+    "sigma_min": 0.10,
+    "sigma_max": 0.45,
+    "damping": 1.0e-6,
+    "max_step_deg": 1.0,
+    "projection_stride": 2,
+    "max_projections": 4,
+    "max_endpoint_delta_rms": 0.05,
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -135,10 +145,12 @@ def run(args: argparse.Namespace) -> dict:
     for required in (args.base_config, args.manifest, args.noise_cache, args.protocol):
         if not required.exists():
             raise FileNotFoundError(required)
+    versioned_settings = {
+        ("M2", "v2"): M2_V2_SETTINGS,
+        ("M3", "v2"): M3_V2_SETTINGS,
+    }
     settings = dict(
-        M2_V2_SETTINGS
-        if args.method == "M2" and args.method_version == "v2"
-        else DEFAULT_SETTINGS[args.method]
+        versioned_settings.get((args.method, args.method_version), DEFAULT_SETTINGS[args.method])
     )
     if args.settings_json:
         settings.update(json.loads(args.settings_json))
@@ -213,8 +225,8 @@ def main() -> None:
     parser.add_argument("--settings-json", default="")
     parser.add_argument("--trace", action="store_true")
     args = parser.parse_args()
-    if args.method_version == "v2" and args.method != "M2":
-        parser.error("--method-version v2 is currently valid only for M2")
+    if args.method_version == "v2" and args.method not in {"M2", "M3"}:
+        parser.error("--method-version v2 is currently valid only for M2/M3")
     print(json.dumps(run(args), indent=2, ensure_ascii=False))
 
 

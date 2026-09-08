@@ -83,7 +83,7 @@ class M3ProjFlowLocalHook:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         sigma_value = float(torch.as_tensor(sigma).detach().cpu())
         cfg = self.config
-        record: dict[str, Any] = {"protocol": PROTOCOL_NAME, "active": False, "sigma": sigma_value}
+        record: dict[str, Any] = {"protocol": self.protocol, "active": False, "sigma": sigma_value}
         if sigma_value < cfg.sigma_min or sigma_value > cfg.sigma_max or sigma_value <= cfg.eps:
             self.step_records.append(record)
             return velocity, record

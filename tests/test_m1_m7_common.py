@@ -23,6 +23,7 @@ from guidance.m1_loss_guidance import M1Config, M1LossGuidanceHook
 from guidance.m2_dflow_source import M2DFlowSourceOptimization
 from guidance.m2_dflow_source_v2 import M2DFlowSourceOptimizationV2
 from guidance.m3_projflow_local import M3Config, M3ProjFlowLocalHook
+from guidance.m3_projflow_local_v2 import M3ProjFlowLocalHookV2
 from guidance.m4_pcfm import M4Config, M4PCFMHook
 from guidance.m5_ldf import M5Config, M5LagrangianDualFlowHook
 from guidance.m6_lyaguide import M6Config, M6LyaGuideHook
@@ -336,6 +337,51 @@ def test_m3_projects_predicted_endpoint_towards_target() -> None:
         std=torch.ones(MOTION_LAYOUT.total_dim),
         config=M3Config(max_step_deg=2.0),
     )
+
+
+def test_m3_v2_limits_projection_count_and_bypasses_zero_dose() -> None:
+    request = _request(2.0)
+    hook = M3ProjFlowLocalHookV2(
+        request,
+        mean=torch.zeros(MOTION_LAYOUT.total_dim),
+        std=torch.ones(MOTION_LAYOUT.total_dim),
+        config={
+            "sigma_min": 0.0,
+            "sigma_max": 1.0,
+            "projection_stride": 1,
+            "max_projections": 1,
+            "max_endpoint_delta_rms": 1.0,
+        },
+    )
+    state = request.baseline_motion.clone()
+    velocity = torch.zeros_like(state)
+    _, first = hook.correct_velocity(
+        x_sigma=state, velocity=velocity, sigma=0.5,
+        valid_mask=request.shared_evidence.valid_mask,
+    )
+    second_velocity, second = hook.correct_velocity(
+        x_sigma=state, velocity=velocity, sigma=0.4,
+        valid_mask=request.shared_evidence.valid_mask,
+    )
+    assert first["active"] is True
+    assert second["active"] is False
+    assert second["reason"] == "PROJECTION_BUDGET_EXHAUSTED"
+    torch.testing.assert_close(second_velocity, velocity)
+
+    zero = _request(0.0)
+    zero_hook = M3ProjFlowLocalHookV2(
+        zero,
+        mean=torch.zeros(MOTION_LAYOUT.total_dim),
+        std=torch.ones(MOTION_LAYOUT.total_dim),
+    )
+    zero_velocity, record = zero_hook.correct_velocity(
+        x_sigma=zero.baseline_motion,
+        velocity=torch.zeros_like(zero.baseline_motion),
+        sigma=0.3,
+        valid_mask=zero.shared_evidence.valid_mask,
+    )
+    assert record["reason"] == "ZERO_DOSE_STRICT_BYPASS"
+    assert torch.equal(zero_velocity, torch.zeros_like(zero_velocity))
     state = request.baseline_motion.clone()
     corrected, record = hook.correct_velocity(
         x_sigma=state,
