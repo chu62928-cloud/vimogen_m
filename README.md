@@ -1,503 +1,238 @@
-# ViMoGen 骨盆姿态控制研究代码
+# ViMoGen M1–M7 骨盆控制规模实验
 
-本仓库保存基于 [MotrixLab/ViMoGen](https://github.com/MotrixLab/ViMoGen) 开展的骨盆姿态控制、276 维动作表示一致性、评价与可视化研究代码。
+本分支实现并验证 ViMoGen 骨盆姿态控制的 M1–M7 统一比较框架。当前完成的是冻结协议下的 **S0 小规模机制检查**：7 种方法、2 个动作、2 个随机种子和 3 个剂量，共 84 条受控序列。
 
-当前主线新增独立协议 `vimogen_absolute_mean_pelvis_v4_anatomical_local`：它在 v3 完整前向运动学和末端安全融合基础上，使用冻结的项目专用 LASI/RASI/LPSI/RPSI 标志，并提供局部骨盆主导与防作弊审计。v3 仍是只读历史基线。
+当前结论不是最终论文结论。S0 已完成角度与内容诊断，但共享脚部标记尚未物化，足部接触、脚滑和地面穿透等物理评价仍为待评估状态。因此现有 Table 1 必须标记为 `PRELIMINARY_S0_ONLY`，不能直接作为最终论文主表。
 
-## ViMoGen v0.4：sample94 全序列骨盆优先与接触强度消融（2026-09-05）
+## 当前状态
 
-### 目的与固定条件
+- 当前分支：`codex/pelvis-m1-m7-scale-experiments`
+- 冻结协议：`vimogen_pelvis_m1_m7_scale_v1`
+- 约束包：C0，仅控制局部矢状面骨盆角
+- S0 动作：sample94、sample34122
+- 随机种子：0、42
+- 剂量：−2°、0°、+2°
+- 每种方法：12 条序列
+- 总序列数：84 条，其中 M1–M6 为 72 条，M7 为 12 条
+- 服务器最终完整回归：`324 passed, 1 skipped`
+- S0 状态：生成、评价、汇总均已完成；物理门待共享脚部标记物化
+- S1/S2 状态：尚未启动
 
-本轮针对简单直线行走提示词 `a person walks forward in a straight line`，检验“先满足骨盆剂量，再逐步增加足部接触约束”是否改善动作。sample94 的 100 个有效帧全部施加相对同帧 M0 的恒定 `+2°/+5°/+10°` 目标；固定当前 RTX 4080 SUPER 32 GB 环境、seed0、50 步、BF16、CFG5、原始样本级噪声、`kinematic_temporal` 度量和同一当前环境 M0。v0.3 协议、代码和结果未覆盖。
+## 研究目标
 
-约束优先级已按本轮设计修正：骨盆角是任务目标，进入一级硬等式；严重穿地是安全硬约束；足跟/脚尖位置和速度是二级软目标，不得为了接触门而阻止骨盆剂量达标。这样可以直接观察接触约束的收益与副作用，而不是把两个目标混成一个“全都必须通过”的黑箱门。
+实验使用统一的动作权威边界、同一骨盆角定义、同一配对 M0、同一剂量和同一评价契约，比较七类控制机制：
 
-### 实现
+| 方法 | 机制 | 当前角色 |
+|---|---|---|
+| M1 | 采样状态能量引导 | 生成期控制候选 |
+| M2 | 源噪声优化 | 完整轨迹可微优化候选 |
+| M3 | 局部投影流 | 采样期投影候选 |
+| M4 | 前向射击与终端高斯—牛顿校正 | 规划式控制候选 |
+| M5 | 原始—对偶流 | 约束优化候选 |
+| M6 | 李雅普诺夫伪投影 | 稳定性引导候选 |
+| M7 | 生成后几何编辑 | 角度命中参考，不代表生成器自然响应 |
 
-- 新分支：`codex/pelvis-guided-walk-v0-4-dose-first-contact-ablation`；协议：`vimogen_pelvis_guided_walk_v0_4_dose_first_contact_ablation`。
-- 新结果根目录：`results/phase8/pelvis_guided_walk_v0_4/`。只读协议为服务器 `protocol_current_env_sample94_v2/`，从当前 M0 的 `official_pre_cast → GPU authority_project` 重新冻结，并重新计算 sample94 接触证据。
-- 新增 `sample_id`、`projection_scope=full_sequence`、`contact_position_weight`、`contact_velocity_weight` 和五种接触模式；保留旧 v0.1–v0.3 的 `contact_weight` 兼容行为。全序列采用低内存等价投影，避免 100 帧稠密 KKT 的显存爆炸；终端再次投影并保存回弹差异。
-- 每个剂量运行 `dose_only`、`position_only_medium`、`temporal_weak`、`temporal_medium`、`temporal_strong` 五种配对模式，均保存 M0、候选、投影日志、严格评价和三种 walk 视频（全身、慢放、足部局部）。
+动作表示以身体姿态、根旋转和根平移为直接权威通道；关节、关节速度、根旋转速度和根平移速度均由权威动作重新计算。候选不得从自身重新定义接触帧、地面或目标曲线。
 
-运行与评价命令示例：
+## 本次实施过程
+
+### 1. 冻结公共协议与评价契约
+
+首先建立 `guidance/` 下的统一方法接口，以及 `configs/m1_m7/` 下的公共协议和七种方法配置。协议冻结了：
+
+- 直接与派生动作通道；
+- 局部矢状面骨盆角评价器；
+- C0–C3 约束包；
+- 七档完整剂量与 S0 的 −2°/0°/+2° 子集；
+- S0 动作、随机种子和每方法最多 8 组等价调参预算；
+- 角度、数值稳定性、物理副作用、内容保持和计算成本的选择顺序。
+
+核心框架提交为 `57a689d`。
+
+### 2. 接入 M1–M7 方法
+
+七种机制分别位于：
+
+- `guidance/m1_loss_guidance.py`
+- `guidance/m2_dflow_source.py`
+- `guidance/m3_projflow_local.py`
+- `guidance/m4_pcfm.py`
+- `guidance/m5_ldf.py`
+- `guidance/m6_lyaguide.py`
+- `guidance/m7_paht_edit.py`
+
+M1、M3、M5、M6 通过统一采样钩子运行；M2 使用可微完整轨迹反传并只优化源噪声；M4 在预定噪声尺度执行剩余轨迹射击和终端求解；M7 读取配对 M0 缓存执行生成后几何编辑。
+
+### 3. 真实服务器冒烟与边界修正
+
+真实 ViMoGen 冒烟中发现并保留了以下问题和修正记录：
+
+- M6 首次运行方向错误，但梯度有限。原因是噪声尺度递减时李雅普诺夫导数符号使用错误；在 `91722a2` 修正后，独立运行通过当前角度门。
+- M2 首次运行把标准化动作当作物理动作计算角度，导致方向和全身内容严重错误；在 `951d410` 增加标准化到物理权威动作的边界转换。修正后方向正确，但仍存在过冲和个体不稳定。
+- M4 首次运行暴露批上下文、批统计广播和嵌套配置解析问题；分别在 `4d9b292`、`83e9713`、`89ee3ce` 修正。修正后角度可精确命中，但内容副作用仍然存在。
+
+失败尝试均保留在独立 attempt 目录，没有覆盖或选择性删除。
+
+### 4. 可恢复 S0 矩阵运行
+
+`experiments/run_s0_matrix.py` 顺序执行 M1–M6 的 36 个唯一批次，每批包含两个动作。运行器使用方法、随机种子和剂量作为唯一键，保存每次命令、配置、运行状态和评价状态；已完成项可跳过，失败评价可单独恢复。
+
+可恢复运行器和进度修正对应提交：
+
+- `4bb22b6`：增加 S0 矩阵运行器；
+- `85048a3`：增加评价恢复能力；
+- `2aaa02b`：修正唯一键完成状态统计。
+
+M7 由 `experiments/run_m7_smoke_from_cache.py` 使用两组经过验证的配对 M0 缓存独立生成 12 条序列。最终 S0 共 84 条序列。
+
+### 5. 统一评价与 Table 1
+
+每条序列先经过权威动作重建，再计算：
+
+- 骨盆角平均绝对误差和 P95；
+- 非零剂量符号；
+- 剂量响应斜率；
+- 零剂量漂移；
+- 相对 M0 的 22 关节平均位置误差；
+- 根平移 P95 偏差；
+- 物理评价状态。
+
+`experiments/build_s0_table1.py` 对严格 JSON 结果做完整性检查并生成 Markdown、LaTeX、PNG 和机器可读 JSON。生成器不会把缺失的脚部标记解释为物理门通过。
+
+## S0 预备结果
+
+### 角度控制
+
+| 方法 | 角度 MAE（°）↓ | 角度 P95（°）↓ | 符号正确率↑ | 剂量响应斜率→1 | 零剂量漂移（°）↓ | 序列角度通过率↑ |
+|---|---:|---:|---:|---:|---:|---:|
+| M1 能量引导 | 0.273 [0.148, 0.487] | 0.557 [0.346, 0.940] | 100.0% | 0.788 | 0.113 [0.100, 0.129] | 12/12 |
+| M2 源噪声优化 | 0.757 [0.044, 0.984] | 1.308 [0.100, 2.187] | 100.0% | 0.996 | 0.038 [0.037, 0.040] | 8/12 |
+| M3 局部投影 | 0.181 [0.173, 0.200] | 0.425 [0.384, 0.505] | 100.0% | 0.950 | 0.173 [0.172, 0.180] | 12/12 |
+| M4 前向射击 | 0.000 [0.000, 0.000] | 0.000 [0.000, 0.000] | 100.0% | 1.000 | 0.000 [0.000, 0.000] | 12/12 |
+| M5 原始—对偶流 | 1.487 [0.054, 1.560] | 1.573 [0.196, 1.769] | 100.0% | 0.230 | 0.045 [0.039, 0.052] | 4/12 |
+| M6 李雅普诺夫引导 | 0.467 [0.086, 0.501] | 0.600 [0.292, 0.979] | 100.0% | 0.730 | 0.082 [0.069, 0.085] | 12/12 |
+| M7 生成后几何编辑† | 0.000 [0.000, 0.000] | 0.000 [0.000, 0.000] | 100.0% | 1.000 | 0.000 [0.000, 0.000] | 12/12 |
+
+数值为每种方法 12 条 S0 序列的中位数 `[Q1, Q3]`。当前序列角度门为 MAE≤1°、P95≤2°，且非零剂量符号正确。†M7 是生成后编辑参考。
+
+### 内容保持诊断
+
+| 方法 | 22 关节 MPJPE vs M0（mm）↓ | 根平移 P95 偏差（mm）↓ | 最大 MPJPE（mm） | 物理门 |
+|---|---:|---:|---:|---|
+| M1 能量引导 | 8.4 [2.7, 9.7] | 4.5 [4.1, 5.0] | 11.0 | 待评估 |
+| M2 源噪声优化 | 33.8 [2.9, 72.4] | 39.3 [5.2, 105.8] | 552.7 | 待评估 |
+| M3 局部投影 | 34.5 [30.6, 63.6] | 50.9 [45.5, 93.1] | 148.8 | 待评估 |
+| M4 前向射击 | 51.9 [45.8, 59.5] | 88.5 [74.5, 95.8] | 75.7 | 待评估 |
+| M5 原始—对偶流 | 3.6 [2.5, 3.8] | 4.4 [3.9, 4.7] | 4.0 | 待评估 |
+| M6 李雅普诺夫引导 | 8.0 [2.4, 9.5] | 4.6 [4.1, 4.9] | 10.7 | 待评估 |
+| M7 生成后几何编辑† | 13.4 [0.0, 13.5] | 0.0 [0.0, 0.0] | 13.7 | 待评估 |
+
+![S0 预备 Table 1](artifacts/table1_s0_preliminary/table1_s0_preliminary.png)
+
+完整表格与机器可读数据：
+
+- [Markdown 表格](artifacts/table1_s0_preliminary/TABLE1_S0_PRELIMINARY.md)
+- [LaTeX 表格](artifacts/table1_s0_preliminary/table1_s0_preliminary.tex)
+- [汇总 JSON](artifacts/table1_s0_preliminary/table1_s0_summary.json)
+- [PNG 图片](artifacts/table1_s0_preliminary/table1_s0_preliminary.png)
+
+## 结果诊断
+
+### M1 与 M6
+
+两者在当前 ±2° S0 上均通过角度门，内容偏差较小，是当前较稳定的生成期候选。但剂量响应斜率分别为 0.788 和 0.730，提示更大剂量下可能欠响应，仍需在 S1 校准后验证 ±5° 和 ±10°。
+
+### M2
+
+M2 只有 8/12 条序列通过。当前实现仅运行两次源噪声更新，并按批平均角度误差选择最佳状态，可能出现批平均改善但单个样本过冲的情况。最差案例 MPJPE 达到 552.7 mm，说明较弱的源噪声正则不足以保证内容保持。下一版本需要逐样本独立保存最佳状态、验证单样本/批运行一致性，并增加步长保护和内容约束。
+
+### M3
+
+M3 的角度门为 12/12，但 sample94 在 −2°、0°、+2° 下均出现约 146–149 mm 的 MPJPE，说明主要偏差来自反复局部投影对采样轨迹的剂量无关扰动。特别是零剂量仍改变动作，下一版本必须先实现严格零剂量旁路，再缩窄投影窗口、降低修正幅度并增加内容信赖域。
+
+### M4
+
+M4 借助终端高斯—牛顿校正精确命中角度，但零剂量仍出现约 75 mm MPJPE 和约 95 mm 根轨迹偏差。根平移不是终端根旋转校正直接写入的，而是多次前向射击通过生成轨迹传播产生的。下一版本需要严格零剂量旁路、降低传播增益、减少射击时刻，并设置根轨迹和全身内容保护。
+
+### M5
+
+M5 的梯度和对偶变量均保持有限，且没有触发对偶裁剪，但 ±2° 实际只产生约 ±0.5° 响应。问题是当前有效更新过弱，而不是数值爆炸或方向错误。可在冻结的每方法 8 组预算内调整原始增益、对偶增益、惩罚系数和启用噪声区间。
+
+### M7
+
+M7 的精确角度是生成后几何编辑的预期结果，只能作为角度命中的参考上界。它不能证明 ViMoGen 在条件控制下自然地产生目标动作，也必须接受与其他方法相同的物理和内容评价。
+
+## 为什么暂不进入 S2
+
+当前存在三类未解决问题：
+
+1. M2、M5 尚未稳定通过当前角度门；
+2. M3、M4 虽命中角度，但存在明显且在零剂量下仍出现的内容副作用；
+3. 全部方法缺少冻结脚跟/脚尖标记，物理门尚未评价。
+
+不能用角度命中抵消内容或物理失败，也不能在看到 S0 结果后静默修改冻结的 v1 协议。任何结构性修正均应登记为新版本，并保留当前 S0-v1 作为诊断证据。
+
+## 下一步
+
+1. 从配对 M0 使用同一骨架、正向运动学和地面定义物化共享脚跟/脚尖标记。
+2. 不重新生成动作，直接对现有 84 条 S0 输出补做接触、脚滑、离地和穿地评价。
+3. 冻结零剂量恒等检查和单样本/批运行一致性检查。
+4. 建立 M2、M3、M4 的版本化修正，不覆盖 v1。
+5. 在每方法最多 8 组配置预算内调节 M1、M5、M6，并验证更大剂量。
+6. 只有通过角度、数值、物理和内容四类门的方法才能进入 S2。
+
+## 运行入口
+
+服务器需要完整 ViMoGen 模型、配置、检查点、数据和配对噪声缓存。本地仓库负责版本管理与推送，GPU 生成在服务器执行。
+
+运行或恢复 M1–M6 的 S0 矩阵：
 
 ```bash
-python scripts/freeze_pelvis_guided_walk_v0_4_protocol.py --source-protocol-root <v0.3协议> --m0-run-root <当前M0重放> --output-root <v0.4协议>
-python scripts/run_pelvis_guided_walk_v0_4.py --sample-id 94 --metric kinematic_temporal --target-delta-deg 2 --contact-mode temporal_weak --protocol-root <v0.4协议>
-python scripts/evaluate_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol-root <v0.4协议>
-python scripts/render_pelvis_guided_walk_v0_4.py --run-root <attempt> --protocol-root <v0.4协议>
+python experiments/run_s0_matrix.py \
+  --code-commit <当前提交> \
+  --manifest <S0清单> \
+  --noise-cache <配对噪声缓存> \
+  --output results/phase9/pelvis_m1_m7/s0_sampling
 ```
 
-### M0 与测试结果
+运行单个方法、剂量和随机种子：
 
-当前环境 M0 双样本重复两次、sample94 单样本重放一次的噪声行哈希完全一致；相对 v2 冻结 M0 的直接姿态最大差为 `1.1921e-7`，状态为 `M0_PAIRING_PASS`。旧 v3 M0 仅作历史参考。服务器专项测试为 `25 passed`，完整回归为 `285 passed`，静态编译和 `git diff --check` 通过。
-
-### 配对消融结果
-
-下表是左脚可评价指标（单位 mm；右脚平足位置证据不足，按协议为 `NOT_EVALUABLE`）。所有 15 个候选的骨盆剂量均精确达到目标（MAE/P95 均为 `0°`），且没有单步信赖域越界；正式状态均为 `DIAGNOSTIC_CONTACT_FAIL`，原因是接触或穿地门失败。
-
-| 剂量 | 模式 | 左足滑 P95 | 左抬脚 P95 | 左穿地 P95 | 状态 |
-|---:|---|---:|---:|---:|---|
-| +2° | dose_only | 36.93 | 0.48 | 30.85 | FAIL |
-| +2° | position_only_medium | 30.51 | 14.36 | 26.43 | FAIL |
-| +2° | temporal_weak | 29.25 | 8.47 | 28.76 | FAIL |
-| +2° | temporal_medium | 36.25 | 11.75 | 27.99 | FAIL |
-| +2° | temporal_strong | 49.93 | 12.72 | 27.71 | FAIL |
-| +5° | dose_only | 42.03 | 17.47 | 40.05 | FAIL |
-| +5° | position_only_medium | 30.59 | 19.08 | 35.53 | FAIL |
-| +5° | temporal_weak | 29.33 | 19.37 | 36.81 | FAIL |
-| +5° | temporal_medium | 42.85 | 18.73 | 37.26 | FAIL |
-| +5° | temporal_strong | 53.87 | 19.33 | 37.52 | FAIL |
-| +10° | dose_only | 39.23 | 54.21 | 50.46 | FAIL |
-| +10° | position_only_medium | 30.69 | 56.15 | 46.14 | FAIL |
-| +10° | temporal_weak | 30.55 | 56.13 | 47.88 | FAIL |
-| +10° | temporal_medium | 54.24 | 56.65 | 50.42 | FAIL |
-| +10° | temporal_strong | 59.88 | 55.32 | 50.59 | FAIL |
-
-`position_only_medium` 和 `temporal_weak` 在部分剂量上比 `dose_only` 降低左足滑，但同时抬脚和穿地仍严重超门；加大时间接触权重没有带来单调改善，反而常使滑动、终端回弹或全身变化增大。因此本 sample94 单例没有证明“强接触约束优于不约束”，也没有找到满足骨盆剂量、足部接触、穿地和自然度的成功模式。右脚证据不足不能支持严格双脚通过结论，应由 sample34122 承担正式双脚检验。
-
-### 视频与停止原因
-
-每个有效 attempt 的 `videos/` 下均保存 `sample94_<mode>_dose_<dose>deg_*.mp4`、慢放版和 `sample94_walk_foot_local.mp4`；服务器路径为 `results/phase8/pelvis_guided_walk_v0_4/pilot_sample94/`。两次早期稠密全序列 OOM attempt 保留在原目录，未覆盖成功的低内存运行。汇总文件为 `v0_4_ablation_summary.json`，M0 审计为 `m0_replay_audit_v2.json`。
-
-本轮完成到 +10°趋势诊断即停止，不进入多样本统计，也不渲染跨样本视频。结果只能说明在当前服务器、sample94、seed0 和当前低内存投影实现下，骨盆目标可精确达到，但接触约束的净收益尚未成立；不能说明接触约束在其他动作、其他硬件或更大样本上必然无效。后续应先修正全序列足部/穿地求解（优先检查活动穿地等式、足部雅可比和终端投影），再以 sample34122 双脚证据验证；只有出现“接触指标相对 dose_only 改善且剂量、躯干、轨迹和时间平滑不越门”时，才值得进入多样本实验。
-
-## ViMoGen v0.4：Terminal Projection 离线消融（2026-09-06）
-
-### 目的与输入
-
-本轮不重新生成动作，专门回答“终端投影把最后约 `0.2–0.4°` 骨盆误差压到 `0°` 时，是否牺牲了脚部和全身自然性”。分析协议为
-`vimogen_pelvis_guided_walk_v0_4_terminal_ablation_v1`，分支为
-`codex/pelvis-guided-walk-v0-4-terminal-ablation`。输入是 v0.4 已完成的
-`3剂量×5模式=15` 个 sample94/seed0 案例；主比较端点为
-`official_pre_cast_norm`（`pre_cast`）与 `terminal_projection_norm`（`terminal`），
-`last_sampling_projection_norm` 只作最后一次采样投影的回弹审计。
-
-两个端点均使用同一当前环境 M0、均值/标准差、有效帧掩码、地面高度、接触帧对和足部贴片，
-经 `authority_project` 重建后再计算指标。原有 attempt 和 `evaluation.json` 未覆盖；首轮逐帧输出失败保留为
-`terminal_ablation_v1/attempt_01/`，早期完整评价和图轴语义审计分别保留为 `attempt_02/attempt_03`，
-修正图中 MAE/P95 语义并补齐图例后的正式结果为服务器
-`results/phase8/pelvis_guided_walk_v0_4/terminal_ablation_v1/attempt_04/`。
-
-### 实现与评价
-
-新增 `scripts/evaluate_pelvis_guided_walk_terminal_ablation.py`，只读取端点文件和冻结协议，不调用采样器或生成入口。
-它分别计算骨盆剂量、脚跟/脚尖水平滑动、抬脚、穿地、终端根平移/旋转修正、根和关节速度/加速度/急动度、
-22关节 MPJPE、SMPL-X 网格偏离，以及躯干、颈部、头部和朝向指标。所有 `Δ` 定义为
-`terminal - pre_cast`；另外报告每降低 `1°` 骨盆 MAE 的各指标代价，不构造跨单位总分。
-
-原 v0.4 低内存路径中的 `terminal.pre_residuals.pelvis_geodesic_rms_deg` 被发现是错误零值：
-它来自已经替换为目标根旋转的中间量。新评价直接从保存的 `official_pre_cast_norm` 根旋转重算，因而不使用该字段。
-图片审计还发现 `attempt_03` 的散点横轴虽然标为 MAE 降低，实际引用了 P95 降低；`attempt_04` 已改为真实 MAE，
-并把第四张图扩展为“关节加速度变化 + 22关节 MPJPE 变化”双面板。该修正不改变15个案例的主指标或分类。
-
-### 结果
-
-| 目标剂量 | pre_cast 骨盆 MAE | terminal 骨盆 MAE | terminal 根平移 P95 | 结论 |
-|---:|---:|---:|---:|---|
-| +2° | `0.159–0.184°` | `0°` | `0–79.3 mm` | 5个案例均有接触/自然性代价 |
-| +5° | `0.237–0.248°` | `0°` | `0–97.7 mm` | 5个案例均有接触/自然性代价 |
-| +10° | `0.400–0.437°` | `0°` | `0–127.7 mm` | 5个案例均有接触/自然性代价 |
-
-15个案例均能把终端骨盆误差变成 `0°`，但分类为 `11` 个 `TERMINAL_HARMFUL` 和 `4` 个
-`TERMINAL_TRADEOFF`，没有 `TERMINAL_SAFE`。接触模式下终端根平移 P95 达到约
-`59–128 mm`，平均关节加速度也可增加约 `59–161 mm/帧²`；部分案例脚跟/脚尖滑动下降，
-但穿地、抬脚或全身偏离同时增加。`dose_only` 的根平移修正为零，但穿地和脚滑仍可能小幅恶化。
-
-因此，本轮不能支持“精确终端投影可以无代价保留”。它说明当前终端投影主要依靠根和接触补偿，
-对骨盆角度有效，却可能引入显著全身变化。结论仅适用于当前 RTX 4080 SUPER、sample94、seed0 和现有低内存实现，
-不能推广为所有动作或所有求解器的结论。完整产物包括 `terminal_ablation.json`、`terminal_ablation.csv`、
-15个逐帧 CSV 和四张诊断图，均位于上述服务器结果目录。
-
-### 测试与后续分流
-
-新增端点评价专项测试 `10 passed`，完整回归 `290 passed`；严格 JSON 无 NaN/Infinity，15个案例各有100帧逐帧文件。
-下一版不直接提高接触权重：若保留终端校正，先改为 `0.25°` 死区；若仍导致根位移、穿地或时间平滑恶化，
-再建立独立的下肢零空间补偿版本，使髋、膝、踝和根平移共同吸收终端修正。进入多样本实验前，必须先在
-sample34122 上完成双脚证据验证。
-
-## ViMoGen 骨盆—接触时间一致性投影 v0.3（当前服务器配对基线，2026-09-05）
-
-### 本次运行目的
-
-本轮建立独立协议 `vimogen_pelvis_contact_flow_projection_v0_3_current_env_paired`，分支为
-`codex/pelvis-contact-flow-projection-v0-3-current-env-paired`，结果根目录为
-`results/phase8/pelvis_contact_flow_projection_v0_3/`。由于旧 RTX 5090 环境与当前 RTX 4080
-SUPER 服务器的采样算子路径不能逐位复现，v0.3 不再把旧服务器 M0 当作当前环境的正式门，
-而是冻结当前环境自己的 M0；旧 v3 M0 只作跨环境诊断。v0.2 保持
-`INELIGIBLE_M0_MISMATCH`，没有被改写或覆盖。
-
-### 固定条件与具体实现
-
-运行在当前服务器 RTX 4080 SUPER 32 GB 上，运行时指纹为 Python 3.10.20、PyTorch
-`2.7.0+cu128`、CUDA 12.8、cuDNN 90701、驱动 580.142；TF32 矩阵乘关闭，确定性算法关闭，
-Flash/Memory/Math 注意力后端均可用。固定 sample94、sample34122 双样本清单，batch size 2、
-`batch_invariant=true`、seed 0、50 步、BF16、CFG 5、原始样本级噪声以及现有检查点、文本条件、
-均值/标准差和 SMPL-X。当前代码来源提交标记为 `83bcfb7`，服务器工作区保持原有脏状态，
-并在 `v0_3_source_revision.txt` 中记录来源。
-
-v0.3 的 M0 边界固定为 `official_pre_cast → authority_project → frozen physical M0`。冻结目录
-`protocol_current_env_refreeze_01/` 只读保存 `m0_physical.pt`、有效帧掩码、脚跟/脚尖贴片、
-接触窗口、协议哈希和环境指纹。采样器沿用 v0.2 的位置约束、脚跟/脚尖位移约束（1 mm/帧）、
-边界上下文、非线性重线性化、范数信赖域和六类回溯规则；v0.3 通过协议集合识别时间约束，
-不使用 `allow_m0_mismatch`。每个候选都保存同次运行的 M0、候选、噪声和配对差异。
-
-### 测试与运行命令
-
-服务器静态编译通过；专项测试为 `23 passed in 6.39 s`，完整兼容回归为 `280 passed in
-54.09 s`。结果目录内 81 个严格 JSON 均可解析，未发现 NaN 或 Infinity。本机没有 PyTorch，
-动态测试均在服务器执行。主要命令为：
-
-```text
-python scripts/run_pelvis_contact_flow_projection_v0_3.py --protocol vimogen_pelvis_contact_flow_projection_v0_3_current_env_paired --metric kinematic_temporal --side left --target-delta-deg 2
-python scripts/evaluate_pelvis_contact_flow_projection_v0_3.py --run-root <attempt> --protocol-root results/phase8/pelvis_contact_flow_projection_v0_3/protocol_current_env_refreeze_01
-python scripts/diagnose_pelvis_contact_flow_projection_v0_3.py --run-root <failed-attempt>
+```bash
+python experiments/run_sampling_guidance_smoke.py \
+  --method M1 \
+  --dose 2 \
+  --seed 0 \
+  --code-commit <当前提交> \
+  --manifest <S0清单> \
+  --noise-cache <配对噪声缓存>
 ```
 
-### M0 复现与冻结结果
+从已有评价结果生成 Table 1：
 
-当前代码双样本重放两次（`m0_audit/dual_01/`、`dual_02/`），sample34122 单样本重放一次
-（`m0_audit/singleton_01/`）。三次的 sample34122 噪声行、有效帧掩码、`raw` 和
-`official_pre_cast` 均逐位一致，检查点、均值、标准差、采样调度和环境指纹一致。以第一次
-双样本的 `official_pre_cast` 冻结当前 M0 后，权威重建直接差为 `0`；每次重放相对该 M0
-的直接姿态最大差为 `1.1920929e-7`，因此当前协议状态为 `M0_PAIRING_PASS`。完整审计见
-`results/phase8/pelvis_contact_flow_projection_v0_3/m0_replay_audit.json`。
-
-旧 v3 M0 与当前 M0 的权威姿态最大差为 `0.0188842`，仅写入 `legacy_v3_diagnostic`，
-不参与 v0.3 通过状态。这说明硬件/驱动/算子环境确实会改变 BF16 采样轨迹，但不说明任一
-环境的动作“绝对更好”；v0.3 只比较同一当前环境中同输入、同噪声、同 M0 的候选。
-
-### 阶段结果
-
-| 阶段/案例 | 剂量窗口 MAE / P95 | 接触主门 | 当前协议解释 |
-|---|---:|---|---|
-| 左端点 +2°（可行性） | `0.0246° / 0.0528°` | 脚跟/脚尖速度 P95 约 `0.041 mm/帧`，PASS | PASS |
-| 左 `kinematic_temporal` +2° | `0.0246° / 0.0528°` | PASS | `PRIMARY_PASS...` |
-| 右 `kinematic_temporal` +2° | `0.0192° / 0.0402°` | PASS，速度 P95 约 `0.343 mm/帧` | `PRIMARY_PASS...` |
-| 左 Euclidean +2° | `0.0284° / 0.1642°` | PASS | 消融 PASS |
-| 右 Euclidean +2° | `0.0577° / 0.2512°` | 速度 P95 约 `1.883 mm/帧`，FAIL | 消融 FAIL（不阻止时间方案） |
-| 左 `kinematic_temporal` +5° | `0.0215° / 0.0503°` | PASS，速度 P95 < `0.058 mm/帧` | 主接触/剂量 PASS；躯干安全诊断超阈值 |
-| 右 `kinematic_temporal` +5° | `0.0798° / 0.2036°` | 脚跟/脚尖速度 P95 `1.515/1.518 mm/帧`，FAIL | `PRIMARY_FAIL_OR_NOT_EVALUABLE` |
-| 左 Euclidean +5° | `0.0457° / 0.1590°` | PASS | 消融 PASS |
-| 右 Euclidean +5° | `0.1184° / 0.4653°` | 速度 P95 `19.387/19.357 mm/帧`，滑动/抬脚 FAIL | 消融 FAIL |
-
-左、右 +2° 时间运动学案例都通过后，已在服务器保存全身三栏、慢放和足部局部视频，
-位于 `results/phase8/pelvis_contact_flow_projection_v0_3/videos/formal_left_2deg/rendered/`
-和 `.../formal_right_2deg/rendered/`。视频来自同一批配对 M0，仅作可视化，不改变评价门。
-随后又对本轮已经执行的 8 个案例（左右两侧、时间运动学/Euclidean、+2°/+5°）全部生成
-完整 100 帧 walk 全序列版本，统一位于服务器和本地结果目录的
-`videos/walk_cases_v0_3/<case>/`；每个案例包含全身三栏、慢放和足部局部视频。+10°未执行，
-因此没有对应 walk 视频。
-
-### 结果解读与停止原因
-
-v0.3 已证明：在当前 RTX 4080 SUPER 环境中，M0 可以在双样本重复和单样本重放之间稳定配对；
-时间接触投影在左右 +2° 以及左 +5° 窗口能把脚跟/脚尖位移残差压到 1 mm/帧以内，同时保持
-骨盆剂量。右 +5° 的失败是实质接触速度回归，而不是旧 M0 不一致伪影。左 +5° 虽然主接触和
-剂量通过，但躯干方向 P95 `3.98°`、骨盆—颈部 P95 `4.20°`、骨盆—头部 P95 `3.96°`，
-已触发计划中的躯干安全包络分流。右 +5° 还出现躯干方向 P95 `4.02°`，进一步支持该分流。
-
-因此本轮在同剂量 Euclidean 消融完成后停止，不运行 +10°，不把失败候选当作成功，也不把
-旧服务器 M0 与当前 M0 混合计算均值、显著性或通过率。失败右 +5° 的逐步诊断保存在其
-`diagnostics_v0_3/`，包括 CSV、严格 JSON 和六面板 PNG，记录骨盆剂量、脚跟/脚尖位置与速度、
-根平移单步/累计值、接受步长、六类归一化违反量以及启用步与端点误差对比。
-所有已执行案例的逐门汇总另存为服务器结果根目录下的
-`results/phase8/pelvis_contact_flow_projection_v0_3/v0_3_gate_summary.json`。
-
-### 后续分流
-
-下一步应新建 `v0.3.1 trunk safety envelope`，只在稳定接触帧对超过阈值时加入铰链型躯干软约束，
-不修改 v0.3 结果；先用左/右 +2° 通过案例验证不会破坏接触，再决定是否重新评估 +5°。若只剩
-支撑漂移超过 20 mm，另行规划支撑关系约束；几何重心仍只作诊断。后续大规模实验必须在同一
-服务器活动期内统一重新生成所有方法的 M0 和候选；再次更换 GPU、驱动或镜像时，必须重新冻结
-基线或整批重跑，不能只重跑单个方法。
-
-## ViMoGen 骨盆—接触时间一致性投影 v0.2（2026-09-04）
-
-### 本次运行目的
-
-本轮在冻结 v0.1 代码和 `attempt_08` 结果之外建立独立分支，协议为
-`vimogen_pelvis_contact_flow_projection_v0_2_temporal_contact`，结果根目录为
-`results/phase8/pelvis_contact_flow_projection_v0_2/`。目标只有两个：严格复现冻结 v3.0.1 的 M0，并在脚跟/脚尖位置约束上增加冻结连续接触帧对的三维位移约束，降低脚滑和抬脚。本轮不训练 ViMoGen、不优化初始噪声，也不加入重心、躯干或头部投影约束。
-
-### 实验内容与固定条件
-
-固定 sample34122、seed0、50 步、BF16、`sample_v1` 样本级初始噪声、原始双样本清单和冻结 v3.0.1 的 SMPL-X/接触贴片/地面高度。M0 复现门依次要求双样本批大小 2、单样本批大小 1，必要时再用冻结提交 `46a1b04` 重放；正式投影默认 `allow_m0_mismatch=false`。窗口前后各读取 1 帧固定上下文，只有窗口帧可修改。
-
-### 具体实现
-
-- `sampling/pelvis_contact_flow_projection_v0_1.py` 保持 v0.1 接口兼容，并加入 v0.2 时间接触协议、脚跟/脚尖位移残差、平足权重 1.0、一般接触权重 0.25、默认位移权重 `1e6`、1 mm/帧门和冻结上下文列；保留原有信赖域、非线性重线性化、有限值检查和逐分量回溯。
-- `train_eval_vimogen.py` 的正式基线固定为 `official_pre_cast → authority_project → frozen physical M0`，并保存 `raw`、`official_pre_cast`、`official` 及权威重建产物。允许不匹配时运行记录标记为 `DIAGNOSTIC_INELIGIBLE`。
-- 新增 `sampling/pelvis_contact_flow_projection_v0_2.py`、v0.2 运行器、M0 审计入口和冻结接触评价层。评价使用协议冻结的接触掩码、地面高度和窗口边界帧对；`NOT_EVALUABLE` 不计为正式通过。
-
-### 测试与运行命令
-
-静态 Python 编译和本次代码变更的 `git diff --check` 已通过。服务器专项回归（采样器、v0.1、v0.2）为 `22 passed`，随后完整兼容回归为 `279 passed in 38.41 s`。服务器第一次完整收集曾因临时源码备份目录含有同名测试而触发导入文件不一致；备份已移到项目目录外的 `/root/autodl-tmp/vimogen_source_backups/frozen_46a1b04_dual_batch2/`，移除收集干扰后完整回归通过。本机没有 PyTorch，动态测试必须在服务器执行。正式入口为：
-
-```text
-python scripts/run_pelvis_contact_flow_projection_v0_2.py --metric kinematic_temporal --side left --target-delta-deg 2
-python scripts/audit_pelvis_contact_m0_replay_v0_2.py --frozen-protocol <protocol> --run dual=<run>=1 --run singleton=<run>=0 --output <audit.json>
-python scripts/evaluate_pelvis_contact_flow_projection_v0_1.py --run-root <run> --protocol-root <protocol>
+```bash
+python experiments/build_s0_table1.py \
+  --sampling-root results/phase9/pelvis_m1_m7/s0_sampling \
+  --m7-root results/phase9/pelvis_m1_m7/s0_m7/attempt_01 \
+  --output results/phase9/pelvis_m1_m7/table1_s0_preliminary
 ```
 
-### M0 复现结果与停止状态
-
-当前服务器已完成三次无投影重放。前两次使用当前代码，第三次使用从冻结提交
-`46a1b04` 导出的 M0 核心入口（`sampling/flow_sampler.py` 和
-`train_eval_vimogen.py`），并保留服务器原有兼容依赖：
-
-- 双样本批大小 2：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/dual_batch2/left/kinematic_temporal/dose_+2deg/attempt_01/`；
-- 单样本批大小 1：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/singleton_batch1/left/kinematic_temporal/dose_+2deg/attempt_01/`。
-- 冻结提交核心入口、双样本批大小 2：`results/phase8/pelvis_contact_flow_projection_v0_2/m0_audit/frozen_46a1b04_dual_batch2/attempt_01/`。
-
-三次重放的 sample34122 `raw` 与 `official_pre_cast` 均形成同一当前环境输出簇：
-`official_pre_cast → authority_project` 直接姿态最大差均为约 `1.8884e-2`，超过冻结门
-`2e-3`；冻结提交核心入口的输出与当前 dual 重放逐位一致。当前 GPU 为 RTX 4080 SUPER，
-PyTorch 为 `2.7.0+cu128`，CUDA 为 `12.8`，驱动为 `580.142`，运行环境指纹保存在冻结重放目录的
-`runtime_environment.json`。三次结果的严格审计位于
-`results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_audit.json`，其中检查点、均值、标准差、
-SMPL-X、冻结协议、采样调度和引导掩码一致，sample34122 噪声行哈希与有效帧掩码一致；singleton
-清单与双样本清单按设计不同，单独记录为 `manifest_equal=false`。总体状态为 `M0_PAIRING_FAIL`。
-诊断摘要位于 `results/phase8/pelvis_contact_flow_projection_v0_2/m0_replay_diagnosis.json`。
-因此阶段 A 判定为 `ENVIRONMENT_OR_OPERATOR_REPRODUCTION_BLOCKED`；阶段 B 端点投影和阶段 C–E
-正式采样均未执行。
-
-### 结果说明、不能说明什么
-
-已验证的是：v0.2 的时间接触残差和严格评价边界已实现；双样本、单样本和冻结提交核心入口
-在当前环境中均稳定复现同一个偏离冻结 M0 的输出。历史冻结 M0、样本噪声、有效帧掩码、均值/标准差、
-采样调度和权威化边界均已核对，故最高概率原因是 GPU/驱动/算子环境变化；旧归档未保存完整运行时指纹，
-不能把该原因写成完全证实。该差异不能说明时间投影几何不可行，也不能支持任何
-`+2°/+5°/+10°` 正式效果结论。没有 `M0_PAIRING_PASS` 时，任何允许漂移的候选都只能作为诊断，
-不能算正式结果。
-
-### 停止原因与下一步分流
-
-第三次重放已完成并仍失败，故本轮停止正式采样。后续只有在云平台恢复旧 GPU、驱动和镜像，
-或能够重新构建等价算子环境并通过 `M0_PAIRING_PASS` 后，才按冻结端点可行性 → 左侧 +2° →
-右侧和消融/高剂量顺序继续。若旧环境无法恢复，本轮保持 `INELIGIBLE_M0_MISMATCH`；如需接受当前环境，
-必须另建“重新冻结 M0”的新协议。任何 v0.2.1 躯干安全包络或支撑关系约束都必须另建协议，不能覆盖本轮结果。
-
-主要提交顺序：`a052bd0` 归档保护 → `11e8fe0` 表示/评价基线 → `a2cb7e5` 脚本/测试 → `9bf94af` 解剖几何 → `55bc0d0` v4 引导/评价/标定 → `592cd30` 局部主导安全项 → `7544acc` 占比统计修正 → `65ee191` 视频标记 → `00d5e66` 训练入口 → `5dcd795` 配置边界修正。
-
-## 存档原则
-
-- 使用分层 Git 提交记录每一阶段的实现和验证变化。
-- 不提交模型权重、SMPL/SMPL-X 受许可模型、数据集、实验视频或大体积结果。
-- 不提交服务器地址、密码、令牌、私钥或本机连接脚本。
-- `results/phase6/absolute_mean_pelvis_v3/` 仅选择性保存冻结协议与小型清单，不保存生成结果。
-
-## 上游与许可
-
-本仓库不是 ViMoGen 官方仓库。上游代码及其模型、数据和第三方依赖仍受各自条款约束；本仓库只记录本研究中的新增或修改内容，不对上游资产授予额外许可。
-
-## sample94 完整步行诊断
-
-本分支新增 `v3_1_walk_diagnostic`，使用 sample94 的完整 100 帧步行动作观察骨盆 +10°、全身姿态与足部自然度。该阶段固定为 `diagnostic_only=true`、`eligible=false`、`can_unlock_v3_2=false`；正式选定动作仍回退 M0，诊断候选单独保存。sample94 左脚只有 5 帧平足证据、右脚没有平足证据，因此它只负责直观诊断，不能替代 sample34122 的严格双脚接触门。
-
-服务器 `attempt_01` 完成于源提交 `433319d`，100 帧求解耗时 `54.07 s`。接触阶段 RMS 为 `0.861 mm`，通过 1 mm 内部门；躯干阶段把接触改善到 `1.236 mm`，但仍超门，因此阶段保护恢复到接触阶段候选。最终状态为 `DIAGNOSTIC_COMPLETED`，求解状态为 `INFEASIBLE_WITHIN_BUDGET`。
-
-自然度对照如下。速度单位换算为 mm/帧，加速度为 mm/帧²：
-
-| 指标 | M0 | 诊断候选 | 结果 |
-|---|---:|---:|---|
-| 骨盆剂量 MAE / P95 | — | `0° / 0°` | PASS |
-| 根速度 P95 | `10.79` | `46.97` | 约 `4.35×`，仅报告 |
-| 平均关节速度 P95 | `19.82` | `64.58` | 约 `3.26×`，仅报告 |
-| 根加速度 P95 | `5.74` | `54.85` | 约 `9.56×`，仅报告 |
-| 平均关节加速度 P95 | `7.24` | `81.62` | 约 `11.27×`，仅报告 |
-| 根轨迹长度 | `0.659 m` | `1.445 m` | 约 `2.19×`，仅报告 |
-| 左脚足滑均值 / P95 | `23.58 / 29.16` | `53.19 / 107.30` | FAIL |
-| 左脚离地均值 / P95 | `14.69 / 22.52 mm` | `64.80 / 157.62 mm` | FAIL |
-| 右脚足滑均值 / P95 | `24.53 / 25.21` | `26.22 / 28.37` | NOT_EVALUABLE（仅 2 个帧对） |
-| 右脚离地均值 / P95 | `17.84 / 23.85 mm` | `104.65 / 182.62 mm` | FAIL |
-| 左右脚穿地 | `0` | `0` | PASS |
-| 躯干方向变化 P95 | `0°` | `15.68°` | FAIL |
-| 骨盆-颈部 / 头部变化 P95 | `0° / 0°` | `14.15° / 14.86°` | FAIL |
-| 骨盆相对支撑漂移 P95 | `0` | `75.73 mm` | FAIL |
-| 水平朝向变化 P95 | `0°` | `0.020°` | PASS |
-
-### 仅根旋转复核与躯干/重心诊断
-
-为确认“接触补偿本身是否造成抖动”，本轮又单独构造了一个仅改变根旋转的候选：保持 M0 的 `body_pose`、根平移和所有派生通道，只按冻结协议构造 `+10°` 根旋转并重新权威化。服务器专项测试为 `14 passed`，候选形状为 `100×276` 且全部有限。
-
-| 指标（sample94，+10°） | M0 | 仅根旋转 | 诊断补偿 | 解释 |
-|---|---:|---:|---:|---|
-| 根速度 P95 | `10.79 mm/帧` | `10.79` | `46.97` | 仅根旋转不增加根部抖动 |
-| 平均关节加速度 P95 | `7.24 mm/帧²` | `7.40` | `81.62` | 额外补偿显著放大抖动 |
-| 左脚足滑均值 / P95 | `23.58 / 29.16` | `24.18 / 28.37` | `53.19 / 107.30` | 仅根旋转基本保持原有水平 |
-| 左脚离地 P95 | `22.52 mm` | `80.17 mm` | `157.62 mm` | 根旋转本身会改变脚底高度 |
-| 左脚穿地 P95 | `0` | `18.72 mm` | `0` | 仅根旋转存在明显穿地 |
-| 躯干方向变化 P95 | `0°` | `10.00°` | `15.68°` | 两者都没有保持躯干直立 |
-| 骨盆-颈部 / 头部变化 P95 | `0° / 0°` | `10.00° / 10.00°` | `14.15° / 14.86°` | 前倾是全身姿态问题 |
-
-重心部分采用完整 SMPL-X 网格顶点几何中心作为可复现的诊断代理，不冒充物理质量模型；支撑区域为冻结 M0 平足接触帧的完整足底贴片凸包。左脚只有 5 个有效稳定帧，右脚没有平足证据，因此该指标只作诊断，不进入正式门：
-
-- M0 重心代理在这 5 帧相对足底支撑多边形的内部比例为 `0%`，说明步行动作不能用“所有帧重心必须落在脚中心”解释。
-- 仅根旋转的重心水平位移 P95 为 `41.2 mm`，相对冻结 M0 支撑的有符号边界距离 P95 为 `−67.3 mm`。
-- 诊断补偿的对应数值为 `91.1 mm` 和 `−107.3 mm`，整体平衡代理反而更差。
-
-因此，当前证据支持：接触补偿增加了抖动，但没有修复身体前倾；接触几何与躯干/全身平衡必须分开处理。重心约束值得加入下一轮，但应先作为稳定支撑帧上的软诊断/软约束，并使用接触置信度渐变，不能直接施加全序列硬约束。
-
-三栏视频依次显示 M0、仅改变根旋转、诊断补偿。固定相机下，诊断补偿在大多数帧仍接近“仅根旋转”，整体前倾没有恢复，同时根平移和时间变化显著放大。这与运行记录一致：能恢复躯干的阶段 2 候选因接触超出 1 mm 而被整体回退。
-
-- [正常速度三栏视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_M0_root_only_compensated.mp4)
-- [慢放三栏视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_M0_root_only_compensated_slow.mp4)
-- [足部局部视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/videos/sample94_walk_foot_local.mp4)
-- [自然度对照表](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation/naturalness_comparison.csv)
-- [完整评价说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation/README.md)
-- [仅根旋转评价说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_root_only_com_v2/README.md)
-- [仅根旋转指标](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_root_only_com_v2/metrics.json)
-- [仅根旋转逐帧重心](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_root_only_com_v2/com_support_per_frame.csv)
-- [诊断补偿（含重心指标）](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_compensated_com_v2/metrics.json)
-- [诊断补偿逐帧重心](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/evaluation_compensated_com_v2/com_support_per_frame.csv)
-
-### v1.3 / v2 引导候选与直接 +10° 对照
-
-为判断“旧的生成过程引导是否比直接旋转更自然”，本轮在 sample94/seed0/+10° 上统一复核 M0、仅根旋转、v1.3 分层根—脊柱引导、v2 源噪声引导和当前诊断补偿。每个历史候选严格配对自己的归档 M0；跨版本比较优先使用相对自身 M0 的倍率，避免把基线差异误算成候选效果。
-
-下表显式保留 M0 行。括号内 `ΔM0` 表示候选减去它自己的配对 M0；负数只表示该单项数值下降，不代表整体接触已经通过。v1.3 与当前 M0 可视为同一基线，v2 必须配对它自己的归档 M0。
-
-| 动作/基线 | 配对 M0 | 剂量 P95 误差 | 躯干变化 P95 | 关节加速度 P95（ΔM0） | 左足滑 P95（ΔM0） | 左离地 / 穿地 P95（ΔM0） | 重心代理位移 P95 |
-|---|---|---:|---:|---:|---:|---:|---:|
-| **M0（当前/v1.3）** | 自身 | — | `0°` | `7.241 mm/帧²（0）` | `29.155 mm/帧（0）` | `22.523 / 0 mm（0 / 0）` | `0 mm` |
-| 仅根旋转 | 当前 M0 | `0°` | `10.00°` | `7.396（+0.156）` | `28.370（−0.785）` | `80.172 / 18.724（+57.649 / +18.724）` | `41.2 mm` |
-| v1.3 引导 | v1.3 M0 | `0.126°` | `0.439°` | `7.439（+0.199）` | `26.763（−2.393）` | `55.156 / 13.513（+32.633 / +13.513）` | `13.3 mm` |
-| **M0（v2）** | 自身 | — | `0°` | `7.460 mm/帧²（0）` | `29.368 mm/帧（0）` | `22.284 / 0 mm（0 / 0）` | `0 mm` |
-| v2 源噪声 | v2 M0 | `1.449°` | `7.59°` | `9.718（+2.257）` | `45.591（+16.222）` | `41.220 / 11.472（+18.936 / +11.472）` | `234.3 mm` |
-| 当前诊断补偿 | 当前 M0 | `0°` | `15.68°` | `81.621（+74.380）` | `107.301（+78.146）` | `157.617 / 0（+135.094 / 0）` | `91.1 mm` |
-
-主要结论是：v1.3 明显优于直接 +10° 和当前诊断补偿，它既实现剂量，也基本保持躯干和原动作的时间平滑，是目前最合适的名义动作；但其双脚垂向接触仍未严格通过。v2 的结果是混合的：右脚离地等局部指标改善，但躯干、左足滑、抖动和整体漂移明显变差，不能判为整体更自然。当前诊断补偿在躯干、足部和时间指标上最差，不应继续作为下一阶段起点。
-
-v2 的 M0 与当前/v1.3 M0 不是逐值相同，权威化后最大通道差约 `0.01481`、均方根差约 `0.00110`。归档确认两条路径的 seed、派生 seed、噪声键和噪声 SHA256 完全一致，所以这不是随机种子变化。现有证据把差异定位到生成路径和批组成：v1.3/current 来自双样本批的正式 BF16 采样，v2 来自单样本可微/正式重放；50 步中的数值差异会累积。尚未做受控的 batch1/batch2 交叉实验，因此不能把它进一步武断归结为“只由批大小导致”。
-
-- [四栏正常速度视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/videos/sample94_M0_root_only_v1_3_v2.mp4)
-- [四栏慢放视频](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/videos/sample94_M0_root_only_v1_3_v2_slow.mp4)
-- [完整对照说明](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/README.md)
-- [指标表](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/comparison.csv)
-- [严格 JSON](results/phase8/pelvis_contact_walk_diagnostic/v3_1_walk_diagnostic/sample_94/dose_+10deg/attempt_01/guided_comparison_v1/comparison.json)
-
-下一步保持协议和阈值不变，但调整技术起点：以 v1.3 引导候选作为名义动作，只在稳定接触期加入最小的下肢/根平移修正；每一步用可行性保持线搜索同时检查接触、躯干和时间平滑，不再从当前阶段 1 补偿候选继续堆叠。重心只在稳定支撑期作为软诊断/软约束。先在 sample94 检查完整步态，再回到 sample34122 完成正式双脚窗口，v3.2 继续锁定。
-
-## 骨盆接触补偿 v3.0.1：本轮执行报告
-
-### 目的
-
-本轮不是继续增加源噪声损失，而是检验一个更基础的问题：在 ViMoGen 冻结的输出姿态空间中，固定的骨盆剂量、躯干保持和足部接触是否能同时成立。`sample34122 / seed0 / +10°` 是严格接触案例；`sample94` 保留为后续完整步行序列的可视化案例。只要严格案例的 v3.1 窗口门未通过，就不进入 v3.2 全序列补偿，也不训练残差适配器。
-
-### 冻结协议与执行计划
-
-- 从提交 `805a6a5` 建立分支 `codex/pelvis-contact-compensation-v3-0-1`，保留旧 v3 结果，不覆盖历史目录。
-- 协议修订为 `vimogen_pelvis_contact_compensation_v3_0_1`。正剂量继续采用 v1.3 语义，根旋转由冻结的 M0 矢状面直接构造；接触阈值、离散 M0 掩码、足底贴片索引和信赖域均固定。
-- v3.1 只解 sample34122 左右最长稳定窗口，固定使用 `+2° → +5° → +10°` 延续路径。优化顺序为接触/穿地 → 躯干与整体直立 → 姿态和时间平滑。
-- 后续阶段增加了硬保护：若躯干优化使已满足的接触约束失效，恢复上一阶段候选，并将本剂量标记为不可行；不可行候选与 M0 回退严格分开。
-- v3.2 只有在左右窗口均通过后才允许运行；sample94 的全序列补偿、采样中投影、物理模块和残差适配器均不在本轮范围内。
-
-### 代码与验证
-
-主要实现位于 `sampling/pelvis_contact_compensation_v3.py`、`evaluation/pelvis_contact_compensation_v3.py`、`scripts/run_pelvis_contact_compensation_v3.py` 和协议冻结脚本。新增整体直立指标（骨盆-颈部、骨盆-头部、骨盆相对支撑中心漂移）、连续接触置信度、精确旋转/平移范数投影、固定延续初始化和分层约束保护。
-
-服务器运行使用 PyTorch `2.7.0+cu128`、RTX 4080 SUPER；冻结协议 SHA256 为 `6884e256e23f6c3d268c3e04c6ed6a22c565e9eccf676abc3386dccd181b937a`，SMPL-X 模型目录 SHA256 为 `c4721f0dbbc741438cac9961efea31d832aa212cf65e34a3f3be82706af55896`，足底贴片 SHA256 为 `1f76af485fa969fc4d813bd61415b69ac8baf5e8cce715ecdd170f9efd4a87ae`。
-
-新增专项测试为 `11 passed`。原服务器工作区的既有完整回归为 `246 passed in 51.29 s`；独立动态树只包含本分支提交的研究代码，缺少若干历史工作区未归档的兼容模块，因此在该树直接收集全部旧测试会出现导入错误，这不改变 v3 专项测试结果。
-
-### 结果
-
-运行记录保存在服务器目录：
-
-`/root/autodl-tmp/vimogen_pelvis_contact_v3_0_1_results/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/`
-
-运行状态为 `STOP_V3_2`，`v3_2_allowed=false`。
-
-- 左脚窗口为帧 `14–25`（稳定帧 8）。+10° 接触 RMS 为 `1.029 mm`，略高于 `1 mm` 门；因此左窗口未通过，后续阶段未执行。
-- 右脚窗口为帧 `78–90`（稳定帧 11）。接触阶段达到 `0.831 mm`，但躯干阶段的候选将接触 RMS 拉高到约 `7.0 mm`；硬保护检测到回归并恢复接触阶段候选，记录为 `preserved_previous_stage=false`、`restored_to_previous_stage=true`，该剂量仍不可行。
-- 对两侧最佳不可行候选的严格配对评价均为 `FAIL`。骨盆剂量本身精确为 `+10°`，但整体躯干/直立指标仍明显超门：左侧骨盆-颈部 P95 `12.94°`、骨盆-头部 P95 `15.25°`、支撑漂移 P95 `35.8 mm`；右侧分别为 `12.85°`、`12.83°`、`234.0 mm`。脚部一般接触、滑动或离地门也存在失败项。由于这些是最佳不可行候选，正式 `selected_motion.pt` 按协议回退为 M0，不冒充补偿成功。
-- 诊断视频（窗口候选，不是 v3.2 成功结果）：[左脚 M0/最佳不可行候选](results/phase8/pelvis_contact_compensation_v3_0_1/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/left_best_infeasible_M0_vs_candidate.mp4)；[右脚 M0/最佳不可行候选](results/phase8/pelvis_contact_compensation_v3_0_1/v3_1_window_feasibility/sample_34122/dose_+10deg/attempt_02/right_best_infeasible_M0_vs_candidate.mp4)。
-
-### 结论
-
-本轮完成了协议冻结、符号和根旋转构造、接触窗口选择、范数信赖域、固定延续路径、严格 JSON/哈希记录、整体直立评价以及失败回退保护。没有完成 v3.1 可行性门，因此 v3.2 全序列补偿尚未执行，sample94 步行样本也没有产生新的补偿候选。
-
-当前负结果的准确含义是“在冻结协议和当前求解器预算内未通过”，还不能单独宣称几何上不可达。右脚结果明确暴露了原实现的层级约束问题；修复后接触可以保持，但躯干目标仍无法在同一信赖域内满足。左脚则仍卡在约 0.03 mm 的接触门边缘。
-
-### 下一步
-
-1. 保持协议、阈值、案例和 M0 完全不变，加入带可行性线搜索的阶段锁定求解：每个躯干/平滑候选只有在接触、方向和穿地约束不超过上一阶段门时才接受；必要时改用约束 SQP 或接触约束的零空间步。
-2. 对左右窗口分别输出逐点接触残差、雅可比秩和信赖域活跃边界，区分“优化预算不足”和“局部几何冲突”；优先把左 +10° 接触压到 1 mm 以内，并验证右侧在保持接触时能否降低整体直立残差。
-3. 只有左右窗口在 `+2°、+5°、+10°` 均通过，才重跑 v3.1 完整记录并解锁 v3.2；随后才处理 sample94 全序列步行可视化。若仍失败，再基于冲突约束另行版本化 v3.3 方案，不修改本协议回溯结果。
-
-## ViMoGen Pelvis-Contact Sampling Projection v0.1：本次执行记录
-
-### 目的
-
-按照冻结方案验证一种独立的、采样过程内的骨盆接触投影：在不修改旧 v1.3、v2、v2.1、v3 或 v3.0.1 结果的前提下，使用 sample34122、seed0、左脚窗口和 `+2°` 剂量，检查骨盆剂量、稳定足跟/脚尖接触、穿地约束以及时间平滑是否能同时成立。方案规定首轮失败即停止后续剂量和方法扩展。
-
-### 内容与实现
-
-- 新协议名为 `vimogen_pelvis_contact_flow_projection_v0_1`，结果根目录为 `results/phase8/pelvis_contact_flow_projection_v0_1/`；投影只编辑根平移、根旋转、spine1–3、双侧髋/膝/踝/脚，接受更新后通过 SMPL-X/FK 权威重建 276D 表示和速度。
-- 实现了 `x0_hat=x_sigma-sigma v`、速度重组、SO(3) 目标、冻结接触贴片、活动穿地等式近似、Euclidean 与 `kinematic_temporal` metric、最多 5 次重线性化、范数信赖域和固定回溯序列。SMPL-X/KKT 投影在 FP32 中执行；最终 clean endpoint 再做同一约束投影，避免末端积分残差重新破坏接触。
-- 服务器运行器冻结了协议、配置、模型、检查点、样本噪声、调度器 sigma 序列和输入快照。由于当前服务器采样器与冻结 v3.0.1 M0 的重放存在直接通道最大约 `0.1583` 的数值漂移，本次明确使用“允许漂移”的探索分支：投影锚定当前重放 M0，冻结 M0 仍作为独立对照并记录 `MISMATCH_ALLOWED`，不把该运行标记为严格复现。
-
-### 结果
-
-- 服务器运行目录：`/root/autodl-tmp/vimogen_clean/results/phase8/pelvis_contact_flow_projection_v0_1/pilot_sample34122/left/kinematic_temporal/dose_+2deg/attempt_08/`；生成耗时约 `79.3 s`。专项测试与兼容回归合计 `36 passed`。
-- 左窗口帧 `14–25` 的剂量控制通过：相对当前重放 M0 的剂量均值 `1.780°`、MAE `0.373°`、P95 `0.765°`；相对冻结 M0 的剂量均值 `1.731°`、MAE `0.406°`。表示一致性和有限值检查通过。
-- 接触门未通过：左脚窗口评价为 `FAIL`，足滑 P95 约 `41.1 mm/帧`，离地 P95 约 `20.4 mm`；穿地 P95 为 `0`，但滑动和离地仍超配对 M0 阈值。整体严格状态为 `PRIMARY_FAIL_OR_NOT_EVALUABLE`。
-- 按停止门，本次未继续右脚窗口、Euclidean metric、`+5°/+10°` 或视频扩展；之前的失败 attempt_01/02/03/05/06 均保留，未覆盖。该结果只说明“当前服务器重放漂移和求解器预算下，左窗口 +2° 未通过”，不能宣称几何上不可达，也不能作为严格 v0.1 成功证据。
-
-## v0.4.1–v0.4.2 终端归因、死区与下肢补偿
-
-### 本次运行目的
-
-本轮只读取已经生成的 sample94、seed0、+2° 端点，区分生成阶段根轨迹偏离、终端骨盆修正和终端接触重锚定三种效应；不重新调用 ViMoGen 采样器，不覆盖 v0.4 结果。
-
-### 实现与固定条件
-
-- v0.4.1 使用独立终端策略模块 `sampling/terminal_projection_policy.py`，死区与求解收敛容差分离；接触约束在骨盆死区内仍保持启用。
-- 运行模式为 `dose_only`、`position_only_medium`、`temporal_weak`，死区为 `0°/0.1°/0.25°/0.5°`。端点、当前环境 M0、均值/标准差、有效帧、冻结地面、接触帧对和足部贴片均从 v0.4 协议读取。
-- A2 在触发条件满足时执行终端骨盆／接触 `2×2`，主效应定义为关闭或开启相对 `OFF/OFF` 的变化，交互项为四格差分。
-- v0.4.2 新增根平移锁定的下肢空间可行性原型。正式解剖映射为髋三维、膝屈伸一维、踝两维、足部趾屈伸一维（双侧共14维）；全 SO(3) 仅作为标记明确的诊断对照。
-- 服务器专项测试 v0.4.1/v0.4.2 为 `11 passed`，当前服务器完整回归为 `301 passed`；旧 v0.1–v0.4 路径未改变。
-
-### A1/A2 结果
-
-结果目录为服务器 `results/phase8/pelvis_guided_walk_v0_4_1/terminal_dead_zone_v1/attempt_06/`，协议为 `vimogen_pelvis_guided_walk_v0_4_1_terminal_dead_zone_v1`。12 个端点均为离线计算，严格 JSON 和源端点哈希检查通过；attempt_04/05 因报告字段修正保留为历史结果。
-
-| 模式 | 死区 | 骨盆活动帧 | 终端根平移 P95 | 状态 |
-|---|---:|---:|---:|---|
-| dose_only | 0.5° | 0 | 0 mm | TERMINAL_STAGE_SAFE |
-| position_only_medium | 0.5° | 6 | 71.99 mm | TERMINAL_TRADEOFF |
-| temporal_weak | 0.5° | 0 | 61.65 mm | TERMINAL_HARMFUL |
-
-`temporal_weak/0.5°` 没有骨盆活动帧，但仍发生约 `61.65 mm` 根平移；A2 的“骨盆关闭、接触开启”仍为约 `61.31 mm`，而关闭接触时几乎为零。因此当前证据支持：大幅终端根平移主要来自接触重锚定，而不是剩余 `0.1–0.5°` 骨盆误差。
-
-死区不能单独解决接触问题：`position_only_medium` 在所有测试死区下仍约 `68–72 mm`，`temporal_weak` 仍约 `59–62 mm`。`dose_only` 的 `0.25°/0.5°` 可保持终端根不动，但其穿地和足滑仍需按绝对门评价，不能称为整体动作通过。
-
-### B1 结果与停止原因
-
-结果目录为服务器 `results/phase8/pelvis_guided_walk_v0_4_2/lower_body_terminal_v1/attempt_01/`。在 `position_only_medium/+2°/0.5°` 下，7 个活动帧的根平移严格锁定为零，雅可比秩为12，最终大多数脚部位置残差为 `0.01–0.08 mm`，但有一帧为约 `3.31 mm`，故正式解剖映射状态为 `B1_FAIL`。
-
-全 SO(3) 诊断目录为 `attempt_02_full_so3_diagnostic/`；该对照把最差帧降至约 `2.21 mm`，仍未达到1 mm门，说明问题不能简单归因于14维自由度不足，可能还包含局部几何可行性或求解目标的冲突。全 SO(3) 结果不晋升为正式配置。
-
-因此本轮在 B1 停止，不进入 B2 地面约束、B3 修正平滑或 C 弱足部速度约束；也不提高剂量、不做多样本统计。下一步应先改进下肢局部目标和地面可行性处理，随后加入独立的修正平滑项，最后才重新加入 `temporal_weak`。
-
-### B1 修正版实施状态
-
-针对上述停止原因，已在 v0.4.2 分支修正下肢空间原型，但尚未重新运行服务器端点：
-
-- 求解器新增冻结的左右脚 `flat_contact` 掩码接口；正式运行器只在有平足证据的对应侧帧加入脚跟和脚尖位置方程，无证据侧不再强行固定。
-- 每个脚跟／脚尖标记点的三维残差单独记录，求解停止条件与正式 `1 mm` 标准统一为“每个有证据标记点不超过 `1 mm`”，不再使用与验收不一致的 `sqrt(12) mm` 总范数停止条件。
-- 穿地回溯使用冻结协议的 `ground_axis_index`，不再固定假定 Z 轴；结果中同时记录证据来源和地面轴。
-- 原有 v0.1–v0.4 采样路径没有改变；本修正只影响 v0.4.2 下肢终端诊断入口。服务器重新运行前，不把 B1 修正版称为通过。
-
-### B1 修正版与可行性诊断结果
-
-修正版 `attempt_05_masked` 在 `0.5°` 死区下发现 7 个骨盆活动帧与冻结平足证据没有重叠，因此状态为 `B1_NOT_EVALUABLE`，不是“残差为零所以通过”。为获得空间可行性证据，独立运行 `attempt_06_exact_masked`（精确 `0°` 死区、仅读取已保存端点）：冻结平足证据共 9 帧，左右脚跟／脚尖位置最大标记点残差 `0.0557 mm`，根平移严格 `0 mm`，最大下肢修正 `0.454°`；位置门和信赖域通过，但全序列穿地相对投影前增加，故整体仍为 `B1_FAIL`。
-
-随后在 `feasibility_diagnostic_v2/` 对 9 个冻结平足帧运行冻结双脚、单脚、单脚跟／脚尖以及根平移上限 `1/5/10 mm` 诊断。根锁定时最大标记点残差约 `0.06 mm`；允许 `5 mm` 根平移时残差约 `0.03 mm`、实际最大根增量约 `2.80 mm`；`1 mm` 上限不足以完全收敛。这说明足部空间补偿本身可行，当前剩余失败主要是终端骨盆旋转与地面安全门的冲突，而不是单纯的下肢自由度数量不足。该诊断不是正式动作生成结果，也不解除 B2 停止门。
-
-### 能说明与不能说明
-
-本轮能说明终端接触重锚定在当前实现中会独立产生约 `60 mm` 级根平移；能说明死区可消除 `dose_only` 的终端骨盆改动，但不能消除接触重锚定；能说明根锁定下肢补偿在大多数活动帧有效。
-
-本轮不能说明整个生成阶段的约 `185–202 mm` 根偏离已经解决，也不能说明 sample94 双脚接触正式通过（右脚平足证据不足，仍为 `NOT_EVALUABLE`），不能把全 SO(3) 诊断结果当作人体自然动作结论。
+## 重要文件
+
+- `PROJECT_MEMORY.md`：跨会话的完整实验状态、已验证事实和继续步骤；
+- `configs/m1_m7/`：冻结公共协议和方法配置；
+- `guidance/`：M1–M7 方法实现；
+- `motion_rep/pose_authority.py`：直接动作权威边界和派生量重建；
+- `experiments/run_s0_matrix.py`：可恢复 S0 矩阵运行器；
+- `experiments/evaluate_sampling_guidance_smoke.py`：逐运行严格评价；
+- `experiments/build_s0_table1.py`：S0 Table 1 生成器；
+- `artifacts/table1_s0_preliminary/`：已归档的预备表格与机器可读结果。
+
+## 结果解释边界
+
+- 当前结果只覆盖 C0、两个动作、两个随机种子和 ±2° 范围；
+- S0 是机制检查，不构成大样本统计证据；
+- 物理门仍待评价；
+- M7 是生成后编辑参考；
+- S1 调参和 S2 正式比较完成前，不得把本页表格称为最终论文 Table 1。
+
+更早的骨盆控制、接触投影和终端补偿实验历史保留在 `PROJECT_MEMORY.md` 与 Git 历史中。本 README 以当前 M1–M7 规模实验主线为准。

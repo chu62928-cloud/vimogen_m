@@ -58,6 +58,7 @@
 - 最新服务器测试：专项 `24 passed in 8.03s`；完整回归 `324 passed, 1 skipped in 45.14s`。服务器仍使用 RTX 4080 SUPER，代码由本地分支推送。
 - 本地分支 `codex/pelvis-m1-m7-scale-experiments` 已推送至 GitHub；矩阵唯一键进度修正在 `2aaa02b`，S0 Table 1 生成器与归档产物在 `e3adc54`，算法提交仍可由历史提交追溯。
 - 已从服务器审计后的 84 条 S0 样本生成预备 Table 1，归档于 `artifacts/table1_s0_preliminary/`，包含 Markdown、LaTeX、PNG 和严格 JSON。表中每方法 12 条序列；M1/M3/M4/M6/M7 为 12/12 角度过门，M2 为 8/12，M5 为 4/12。M7 已加匕首脚注，明确为生成后几何编辑参考。
+- 根目录 `README.md` 已重写为当前 M1–M7 主线入口，记录冻结协议、真实服务器修正过程、84 条 S0 运行结果、方法级问题归因、Table 1 产物、复现入口和进入 S1/S2 前的停止门；旧 v0.x 细节继续由本文件与 Git 历史保存。
 
 ### 待执行事项
 
