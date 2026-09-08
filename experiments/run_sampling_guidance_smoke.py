@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 import hashlib
+import importlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -93,6 +95,33 @@ def runtime_environment(runtime_root: Path | None):
         os.chdir(previous_cwd)
         if added_to_path:
             sys.path.remove(runtime_text)
+
+
+def load_checkout_module(module_name: str, source: Path):
+    """Load one whitelisted checkout module over its runtime counterpart."""
+    parent_name, child_name = module_name.rsplit(".", 1)
+    parent = importlib.import_module(parent_name)
+    spec = importlib.util.spec_from_file_location(module_name, source)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot build import specification for {source}")
+    module = importlib.util.module_from_spec(spec)
+    previous = sys.modules.get(module_name)
+    previous_child = getattr(parent, child_name, None)
+    sys.modules[module_name] = module
+    setattr(parent, child_name, module)
+    try:
+        spec.loader.exec_module(module)
+    except Exception:
+        if previous is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = previous
+        if previous_child is None:
+            delattr(parent, child_name)
+        else:
+            setattr(parent, child_name, previous_child)
+        raise
+    return module
 
 M2_V2_SETTINGS = {
     "learning_rate": 0.005,
@@ -235,6 +264,12 @@ def run(args: argparse.Namespace) -> dict:
         # project root. Keep that root last on sys.path, and temporarily make it
         # the working directory so legacy relative resource paths resolve there.
         with runtime_environment(args.runtime_root):
+            # The runtime package supplies its complete historical module set.
+            # Only this sampler is overlaid because it contains the M1-M7 hook
+            # boundary introduced by the current checkout.
+            load_checkout_module(
+                "sampling.flow_sampler", ROOT / "sampling/flow_sampler.py"
+            )
             from train_eval_vimogen import main as train_eval_main
 
             train_eval_main(config)

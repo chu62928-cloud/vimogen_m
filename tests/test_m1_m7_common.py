@@ -11,7 +11,10 @@ import torch
 from evaluation.control_metrics import dose_response_metrics, evaluate_control_metrics
 from evaluation.content_metrics import evaluate_content_metrics
 from evaluation.physical_metrics import evaluate_physical_metrics
-from experiments.run_sampling_guidance_smoke import runtime_environment
+from experiments.run_sampling_guidance_smoke import (
+    load_checkout_module,
+    runtime_environment,
+)
 from geometry.contacts import freeze_contact_evidence
 from geometry.ground import estimate_ground_height
 from geometry.pelvis_angle import pelvis_angle_curve_deg, target_angle_curve_deg
@@ -316,10 +319,36 @@ def test_runtime_environment_resolves_relative_assets_and_restores_state(
 
 def test_checkout_packages_are_regular_runtime_overlays() -> None:
     root = Path(__file__).resolve().parents[1]
-    for package_name in ("guidance", "motion_rep", "sampling", "evaluation", "geometry"):
+    for package_name in ("guidance", "evaluation", "geometry"):
         package = importlib.import_module(package_name)
         assert Path(package.__file__).resolve() == root / package_name / "__init__.py"
         assert Path(package.__path__[0]).resolve() == root / package_name
+
+
+def test_checkout_module_overlay_replaces_one_runtime_submodule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_name = "runtime_overlay_fixture"
+    module_name = f"{package_name}.selected"
+    runtime_package = tmp_path / "runtime" / package_name
+    runtime_package.mkdir(parents=True)
+    (runtime_package / "__init__.py").write_text("", encoding="utf-8")
+    (runtime_package / "selected.py").write_text(
+        "ORIGIN = 'runtime'\n", encoding="utf-8"
+    )
+    checkout_module = tmp_path / "checkout" / "selected.py"
+    checkout_module.parent.mkdir()
+    checkout_module.write_text("ORIGIN = 'checkout'\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path / "runtime"))
+    importlib.invalidate_caches()
+    try:
+        assert importlib.import_module(module_name).ORIGIN == "runtime"
+        loaded = load_checkout_module(module_name, checkout_module)
+        assert loaded.ORIGIN == "checkout"
+        assert importlib.import_module(module_name) is loaded
+    finally:
+        sys.modules.pop(module_name, None)
+        sys.modules.pop(package_name, None)
 
 
 def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:
