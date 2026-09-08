@@ -132,7 +132,7 @@ def build_config(args: argparse.Namespace, run_root: Path, settings: dict):
 
 
 def run(args: argparse.Namespace) -> dict:
-    for required in (args.base_config, args.manifest, args.noise_cache, PROTOCOL):
+    for required in (args.base_config, args.manifest, args.noise_cache, args.protocol):
         if not required.exists():
             raise FileNotFoundError(required)
     settings = dict(
@@ -162,7 +162,8 @@ def run(args: argparse.Namespace) -> dict:
         "settings": settings,
         "code_commit": args.code_commit,
         "checkpoint_hash": sha256(ROOT / "checkpoints/model.pt") if (ROOT / "checkpoints/model.pt").is_file() else "not_available_on_runner_host",
-        "protocol_sha256": sha256(PROTOCOL),
+        "protocol": str(args.protocol),
+        "protocol_sha256": sha256(args.protocol),
         "manifest": str(args.manifest),
         "manifest_sha256": sha256(args.manifest),
         "noise_cache": str(args.noise_cache),
@@ -205,6 +206,7 @@ def main() -> None:
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--code-commit", required=True)
     parser.add_argument("--base-config", type=Path, default=ROOT / "configs/tm2m_infer.yaml")
+    parser.add_argument("--protocol", type=Path, default=PROTOCOL)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
