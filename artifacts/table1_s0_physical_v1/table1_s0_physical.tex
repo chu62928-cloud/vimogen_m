@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Pre-tuning S0 control and physical-closure results.}
+\label{tab:s0_physical_closure}
+\begin{tabular}{lrrrrr}
+\toprule
+Method & MAE & P95 & Slope & Angle pass & Physical pass \\
+\midrule
+M1 & 0.273 [0.148, 0.487] & 0.557 [0.346, 0.940] & 0.788 & 12/12 & 0/12 \\
+M2 & 0.757 [0.044, 0.984] & 1.308 [0.100, 2.187] & 0.996 & 8/12 & 2/12 \\
+M3 & 0.181 [0.173, 0.200] & 0.425 [0.384, 0.505] & 0.950 & 12/12 & 0/12 \\
+M4 & 0.000 [0.000, 0.000] & 0.000 [0.000, 0.000] & 1.000 & 12/12 & 0/12 \\
+M5 & 1.487 [0.054, 1.560] & 1.573 [0.196, 1.769] & 0.230 & 4/12 & 2/12 \\
+M6 & 0.467 [0.086, 0.501] & 0.600 [0.292, 0.979] & 0.730 & 12/12 & 2/12 \\
+M7$^{\dagger}$ & 0.000 [0.000, 0.000] & 0.000 [0.000, 0.000] & 1.000 & 12/12 & 1/12 \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}\footnotesize $^{\dagger}$Post-generation geometric-edit reference. S1 tuning is pending.\end{flushleft}
+\end{table}

@@ -17,6 +17,7 @@ from evaluation.physical_reference import (
     materialize_reference,
 )
 from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
+from experiments.build_s0_physical_table import build_rows
 from scripts.calibrate_physical_thresholds import freeze_physical_thresholds
 from scripts.freeze_s0_v1 import collect_sequence_records, freeze_s0_manifest
 
@@ -207,6 +208,49 @@ def test_threshold_freeze_uses_only_m0_and_rejects_synthetic_failures(
             output=output,
             code_commit="abc123",
         )
+
+
+def test_physical_table_requires_and_summarizes_all_84_records() -> None:
+    preliminary = {
+        "methods": [
+            {
+                "method": f"M{method}",
+                "label": f"M{method}",
+                "sequence_count": 12,
+            }
+            for method in range(1, 8)
+        ]
+    }
+    records = []
+    for method in range(1, 8):
+        for index in range(12):
+            passed = index == 0
+            records.append(
+                {
+                    "method": f"M{method}",
+                    "physical": {
+                        "status": "EVALUATED_PASS" if passed else "EVALUATED_FAIL",
+                        "per_sequence": [
+                            {
+                                "penetration_p95_mm": 0.0,
+                                "contact_tangent_speed_p95_mm_per_frame": 0.0,
+                                "support_height_error_p95_mm": 0.0,
+                                "physical_fail_reasons": []
+                                if passed
+                                else ["support_height_error_p95_mm_fail"],
+                            }
+                        ],
+                    },
+                }
+            )
+    rows = build_rows(
+        preliminary,
+        {"status": "S0_PHYSICAL_EVALUATED", "records": records},
+    )
+
+    assert len(rows) == 7
+    assert all(row["physical"]["pass_count"] == 1 for row in rows)
+    assert all(row["physical"]["fail_count"] == 11 for row in rows)
 
 
 def test_freeze_s0_manifest_requires_complete_unique_84_records_and_refuses_overwrite(
