@@ -17,6 +17,7 @@ from experiments.run_sampling_guidance_smoke import (
     runtime_environment,
     validate_code_commit,
 )
+from experiments.split_sampling_manifest import split_manifest
 from geometry.contacts import freeze_contact_evidence
 from geometry.ground import estimate_ground_height
 from geometry.pelvis_angle import pelvis_angle_curve_deg, target_angle_curve_deg
@@ -364,6 +365,37 @@ def test_smoke_runner_rejects_a_mismatched_code_commit() -> None:
     assert len(actual) == 40
     with pytest.raises(ValueError, match="does not match checkout HEAD"):
         validate_code_commit("0" * 40, root)
+
+
+def test_singleton_manifest_split_is_exact_and_refuses_overwrite(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.json"
+    source.write_text(
+        json.dumps(
+            [
+                {"id": 94, "global_id": 94, "motion": "first.pt"},
+                {
+                    "sample_id": "34122",
+                    "global_id": "34122",
+                    "motion": "second.pt",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "singletons"
+    summary = split_manifest(source, output, ["94", "34122"])
+
+    assert summary["status"] == "FROZEN_SINGLETON_MANIFESTS"
+    assert json.loads((output / "sample_94.json").read_text(encoding="utf-8")) == [
+        {"id": 94, "global_id": 94, "motion": "first.pt"}
+    ]
+    assert json.loads(
+        (output / "sample_34122.json").read_text(encoding="utf-8")
+    )[0]["motion"] == "second.pt"
+    with pytest.raises(FileExistsError):
+        split_manifest(source, output, ["94"])
 
 
 def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:
