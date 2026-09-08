@@ -71,6 +71,19 @@ DEFAULT_SETTINGS = {
     },
 }
 
+M2_V2_SETTINGS = {
+    "learning_rate": 0.005,
+    "iterations": 8,
+    "source_regularization": 0.001,
+    "content_weight": 0.01,
+    "root_weight": 0.05,
+    "gradient_clip_norm": 10.0,
+    "source_trust_radius": 25.0,
+    "step_trust_radius": 5.0,
+    "early_stop_mae_deg": 1.0,
+    "early_stop_patience": 2,
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -108,6 +121,7 @@ def build_config(args: argparse.Namespace, run_root: Path, settings: dict):
     config.m1_m7_guidance = {
         "enabled": True,
         "method": args.method,
+        "method_version": args.method_version,
         "target_delta_deg": float(args.dose),
         "trace_enabled": bool(args.trace),
         "artifact_dir": str(run_root / "guided_artifacts"),
@@ -121,7 +135,11 @@ def run(args: argparse.Namespace) -> dict:
     for required in (args.base_config, args.manifest, args.noise_cache, PROTOCOL):
         if not required.exists():
             raise FileNotFoundError(required)
-    settings = dict(DEFAULT_SETTINGS[args.method])
+    settings = dict(
+        M2_V2_SETTINGS
+        if args.method == "M2" and args.method_version == "v2"
+        else DEFAULT_SETTINGS[args.method]
+    )
     if args.settings_json:
         settings.update(json.loads(args.settings_json))
     parent = args.output / args.method / f"seed_{args.seed:03d}" / f"dose_{args.dose:+g}"
@@ -137,6 +155,7 @@ def run(args: argparse.Namespace) -> dict:
         "status": "RUNNING",
         "scope": "S0_REAL_VIMOGEN_BATCH",
         "method": args.method,
+        "method_version": args.method_version,
         "seed": args.seed,
         "target_dose_deg": args.dose,
         "sample_ids": ["94", "34122"],
@@ -181,6 +200,7 @@ def run(args: argparse.Namespace) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", choices=tuple(DEFAULT_SETTINGS), required=True)
+    parser.add_argument("--method-version", choices=("v1", "v2"), default="v1")
     parser.add_argument("--dose", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--code-commit", required=True)
@@ -191,6 +211,8 @@ def main() -> None:
     parser.add_argument("--settings-json", default="")
     parser.add_argument("--trace", action="store_true")
     args = parser.parse_args()
+    if args.method_version == "v2" and args.method != "M2":
+        parser.error("--method-version v2 is currently valid only for M2")
     print(json.dumps(run(args), indent=2, ensure_ascii=False))
 
 

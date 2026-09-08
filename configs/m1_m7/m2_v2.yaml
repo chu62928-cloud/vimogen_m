@@ -1,0 +1,22 @@
+method: M2
+method_version: v2
+implementation: protected_per_sample_dflow_source_optimization
+constraint_pack: C0
+optimizer: adam
+learning_rate: 0.005
+iterations: 8
+source_regularization: 0.001
+content_weight: 0.01
+root_weight: 0.05
+gradient_clip_norm: 10.0
+source_trust_radius: 25.0
+step_trust_radius: 5.0
+early_stop_mae_deg: 1.0
+early_stop_patience: 2
+zero_dose_policy: strict_paired_m0_bypass
+selection_scope: independent_per_sample
+forbidden:
+  - overwrite_m2_v1
+  - batch_mean_best_state
+  - redefining_target_from_optimized_output
+  - tuning_from_s2

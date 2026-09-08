@@ -108,6 +108,10 @@ from geometry.pelvis_angle import target_angle_curve_deg
 from guidance.base import ConstraintPack, GuidanceRequest, SharedEvidence
 from guidance.m1_loss_guidance import M1Config as ScaleM1Config, M1LossGuidanceHook
 from guidance.m2_dflow_source import M2DFlowSourceOptimization
+from guidance.m2_dflow_source_v2 import (
+    PROTOCOL_NAME as M2_V2_PROTOCOL,
+    M2DFlowSourceOptimizationV2,
+)
 from guidance.m3_projflow_local import M3Config as ScaleM3Config, M3ProjFlowLocalHook
 from guidance.m4_pcfm import M4Config as ScaleM4Config, M4PCFMHook
 from guidance.m5_ldf import M5Config as ScaleM5Config, M5LagrangianDualFlowHook
@@ -675,6 +679,11 @@ def main(args):
     )
     if not isinstance(scale_settings, dict):
         raise TypeError('m1_m7_guidance.settings must resolve to a mapping')
+    scale_method_version = str(scale_cfg.get('method_version', 'v1')).lower()
+    if scale_method == 'M2' and scale_method_version not in {'v1', 'v2'}:
+        raise ValueError('M2 method_version must be v1 or v2')
+    if scale_method != 'M2' and scale_method_version != 'v1':
+        raise ValueError('method_version is currently supported only for M2-v2')
     if scale_enabled and scale_artifact_dir is None:
         raise ValueError('m1_m7_guidance.enabled requires artifact_dir')
     if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled, scale_enabled)) > 1:
@@ -1888,7 +1897,17 @@ def main(args):
                             for parameter in model.parameters():
                                 parameter.requires_grad_(False)
                             try:
-                                m2_result = M2DFlowSourceOptimization().run(
+                                m2_method = (
+                                    M2DFlowSourceOptimizationV2()
+                                    if scale_method_version == 'v2'
+                                    else M2DFlowSourceOptimization()
+                                )
+                                m2_protocol = (
+                                    M2_V2_PROTOCOL
+                                    if scale_method_version == 'v2'
+                                    else 'vimogen_m2_dflow_source_optimization_c0_v1'
+                                )
+                                m2_result = m2_method.run(
                                     _DFlowRuntime(), scale_request, scale_settings
                                 )
                             finally:
@@ -1913,11 +1932,12 @@ def main(args):
                                 sigmas=m0_result.sigmas,
                                 timesteps=m0_result.timesteps,
                                 reconciled=m2_norm,
-                                representation_protocol='vimogen_m2_dflow_source_optimization_c0_v1',
+                                representation_protocol=m2_protocol,
                                 g0=m2_norm,
                                 guidance_summary={
-                                    'protocol': 'vimogen_m2_dflow_source_optimization_c0_v1',
+                                    'protocol': m2_protocol,
                                     'method': 'M2',
+                                    'method_version': scale_method_version,
                                     'diagnostics': m2_result.diagnostics_dict(),
                                 },
                             )
