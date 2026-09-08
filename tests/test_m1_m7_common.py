@@ -25,6 +25,7 @@ from guidance.m2_dflow_source_v2 import M2DFlowSourceOptimizationV2
 from guidance.m3_projflow_local import M3Config, M3ProjFlowLocalHook
 from guidance.m3_projflow_local_v2 import M3ProjFlowLocalHookV2
 from guidance.m4_pcfm import M4Config, M4PCFMHook
+from guidance.m4_pcfm_v2 import M4PCFMHookV2
 from guidance.m5_ldf import M5Config, M5LagrangianDualFlowHook
 from guidance.m6_lyaguide import M6Config, M6LyaGuideHook
 from guidance.sampling_common import predicted_clean
@@ -426,6 +427,53 @@ def test_m4_forward_shoots_and_terminal_gn_hits_c0() -> None:
         request.shared_evidence.target_angle_curve_deg,
         atol=1.0e-3, rtol=0,
     )
+
+
+def test_m4_v2_terminal_only_skips_shooting_and_zero_dose_is_exact() -> None:
+    request = _request(2.0)
+
+    class _NoShootRuntime:
+        def forward_shoot(self, **kwargs):
+            raise AssertionError("terminal-only M4-v2 must not forward shoot")
+
+    hook = M4PCFMHookV2(
+        request,
+        runtime=_NoShootRuntime(),
+        mean=torch.zeros(MOTION_LAYOUT.total_dim),
+        std=torch.ones(MOTION_LAYOUT.total_dim),
+    )
+    velocity = torch.zeros_like(request.baseline_motion)
+    unchanged, record = hook.correct_velocity(
+        x_sigma=request.baseline_motion,
+        velocity=velocity,
+        sigma=0.5,
+        valid_mask=request.shared_evidence.valid_mask,
+    )
+    assert record["active"] is False
+    assert torch.equal(unchanged, velocity)
+    terminal, iterations = hook.finalize_output(
+        request.baseline_motion, request.shared_evidence.valid_mask
+    )
+    assert iterations
+    torch.testing.assert_close(
+        pelvis_angle_curve_deg(terminal),
+        request.shared_evidence.target_angle_curve_deg,
+        atol=1.0e-3,
+        rtol=0,
+    )
+
+    zero = _request(0.0)
+    zero_hook = M4PCFMHookV2(
+        zero,
+        runtime=_NoShootRuntime(),
+        mean=torch.zeros(MOTION_LAYOUT.total_dim),
+        std=torch.ones(MOTION_LAYOUT.total_dim),
+    )
+    zero_output, zero_iterations = zero_hook.finalize_output(
+        zero.baseline_motion, zero.shared_evidence.valid_mask
+    )
+    assert zero_iterations == []
+    assert torch.equal(zero_output, zero.baseline_motion)
 
 
 def test_m4_batched_statistics_broadcast() -> None:

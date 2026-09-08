@@ -94,6 +94,15 @@ M3_V2_SETTINGS = {
     "max_endpoint_delta_rms": 0.05,
 }
 
+M4_V2_SETTINGS = {
+    "shooting_sigmas": [],
+    "gn_iterations": 3,
+    "damping": 1.0e-5,
+    "trust_radius_deg": 4.0,
+    "propagation_gain": 0.5,
+    "terminal_tolerance_deg": 1.0e-4,
+}
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -150,6 +159,7 @@ def run(args: argparse.Namespace) -> dict:
     versioned_settings = {
         ("M2", "v2"): M2_V2_SETTINGS,
         ("M3", "v2"): M3_V2_SETTINGS,
+        ("M4", "v2"): M4_V2_SETTINGS,
     }
     settings = dict(
         versioned_settings.get((args.method, args.method_version), DEFAULT_SETTINGS[args.method])
@@ -236,8 +246,8 @@ def main() -> None:
     parser.add_argument("--settings-json", default="")
     parser.add_argument("--trace", action="store_true")
     args = parser.parse_args()
-    if args.method_version == "v2" and args.method not in {"M2", "M3"}:
-        parser.error("--method-version v2 is currently valid only for M2/M3")
+    if args.method_version == "v2" and args.method not in {"M2", "M3", "M4"}:
+        parser.error("--method-version v2 is currently valid only for M2/M3/M4")
     print(json.dumps(run(args), indent=2, ensure_ascii=False))
 
 

@@ -115,6 +115,7 @@ from guidance.m2_dflow_source_v2 import (
 from guidance.m3_projflow_local import M3Config as ScaleM3Config, M3ProjFlowLocalHook
 from guidance.m3_projflow_local_v2 import M3ProjFlowLocalHookV2
 from guidance.m4_pcfm import M4Config as ScaleM4Config, M4PCFMHook
+from guidance.m4_pcfm_v2 import M4PCFMHookV2
 from guidance.m5_ldf import M5Config as ScaleM5Config, M5LagrangianDualFlowHook
 from guidance.m6_lyaguide import M6Config as ScaleM6Config, M6LyaGuideHook
 
@@ -681,10 +682,10 @@ def main(args):
     if not isinstance(scale_settings, dict):
         raise TypeError('m1_m7_guidance.settings must resolve to a mapping')
     scale_method_version = str(scale_cfg.get('method_version', 'v1')).lower()
-    if scale_method in {'M2', 'M3'} and scale_method_version not in {'v1', 'v2'}:
+    if scale_method in {'M2', 'M3', 'M4'} and scale_method_version not in {'v1', 'v2'}:
         raise ValueError(f'{scale_method} method_version must be v1 or v2')
-    if scale_method not in {'M2', 'M3'} and scale_method_version != 'v1':
-        raise ValueError('method_version v2 is currently supported only for M2/M3')
+    if scale_method not in {'M2', 'M3', 'M4'} and scale_method_version != 'v1':
+        raise ValueError('method_version v2 is currently supported only for M2/M3/M4')
     if scale_enabled and scale_artifact_dir is None:
         raise ValueError('m1_m7_guidance.enabled requires artifact_dir')
     if sum((m1_enabled, absolute_enabled, relative_enabled, projection_enabled, scale_enabled)) > 1:
@@ -2026,9 +2027,20 @@ def main(args):
                                     )
                                 )
                             elif scale_method == 'M4':
-                                scale_hook = M4PCFMHook(
-                                    scale_request, runtime=runtime, **hook_arguments,
-                                    config=ScaleM4Config.from_mapping(scale_settings),
+                                scale_hook = (
+                                    M4PCFMHookV2(
+                                        scale_request,
+                                        runtime=runtime,
+                                        **hook_arguments,
+                                        config=scale_settings,
+                                    )
+                                    if scale_method_version == 'v2'
+                                    else M4PCFMHook(
+                                        scale_request,
+                                        runtime=runtime,
+                                        **hook_arguments,
+                                        config=ScaleM4Config.from_mapping(scale_settings),
+                                    )
                                 )
                             elif scale_method == 'M5':
                                 scale_hook = M5LagrangianDualFlowHook(

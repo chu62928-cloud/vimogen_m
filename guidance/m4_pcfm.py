@@ -83,6 +83,7 @@ class M4PCFMHook:
 
     name = METHOD_NAME
     protocol = PROTOCOL_NAME
+    protocol = PROTOCOL_NAME
 
     def __init__(
         self,
@@ -121,7 +122,7 @@ class M4PCFMHook:
         sigma_value = float(torch.as_tensor(sigma).detach().cpu())
         tolerance = max(1.0e-6, 0.5 / max(len(self.config.shooting_sigmas), 1))
         active = any(abs(sigma_value - point) <= tolerance for point in self.config.shooting_sigmas)
-        record: dict[str, Any] = {"protocol": PROTOCOL_NAME, "sigma": sigma_value, "active": active}
+        record: dict[str, Any] = {"protocol": self.protocol, "sigma": sigma_value, "active": active}
         if not active or sigma_value <= self.config.eps:
             self.step_records.append(record)
             return velocity, record
