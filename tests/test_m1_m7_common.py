@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
 import pytest
 import torch
@@ -9,6 +10,7 @@ import torch
 from evaluation.control_metrics import dose_response_metrics, evaluate_control_metrics
 from evaluation.content_metrics import evaluate_content_metrics
 from evaluation.physical_metrics import evaluate_physical_metrics
+from experiments.run_sampling_guidance_smoke import runtime_environment
 from geometry.contacts import freeze_contact_evidence
 from geometry.ground import estimate_ground_height
 from geometry.pelvis_angle import pelvis_angle_curve_deg, target_angle_curve_deg
@@ -289,6 +291,26 @@ def test_m2_optimizes_only_source_noise_against_frozen_target() -> None:
         request.shared_evidence.target_angle_curve_deg,
         target_angle_curve_deg(request.baseline_motion, 2.0),
     )
+
+
+def test_runtime_environment_resolves_relative_assets_and_restores_state(
+    tmp_path: Path,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    asset = runtime_root / "data/body_models/smplx_root.pt"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"fixture")
+    previous_cwd = Path.cwd()
+    runtime_text = str(runtime_root.resolve())
+    assert runtime_text not in sys.path
+
+    with runtime_environment(runtime_root):
+        assert Path.cwd() == runtime_root.resolve()
+        assert Path("./data/body_models/smplx_root.pt").is_file()
+        assert sys.path[-1] == runtime_text
+
+    assert Path.cwd() == previous_cwd
+    assert runtime_text not in sys.path
 
 
 def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:

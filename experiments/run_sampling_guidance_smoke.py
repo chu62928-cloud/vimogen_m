@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -70,6 +71,28 @@ DEFAULT_SETTINGS = {
         "sigma_max": 0.65,
     },
 }
+
+
+@contextmanager
+def runtime_environment(runtime_root: Path | None):
+    """Expose unversioned runtime assets while keeping this checkout's code first."""
+    if runtime_root is None:
+        yield
+        return
+
+    resolved = runtime_root.resolve()
+    runtime_text = str(resolved)
+    added_to_path = runtime_text not in sys.path
+    previous_cwd = Path.cwd()
+    if added_to_path:
+        sys.path.append(runtime_text)
+    os.chdir(resolved)
+    try:
+        yield
+    finally:
+        os.chdir(previous_cwd)
+        if added_to_path:
+            sys.path.remove(runtime_text)
 
 M2_V2_SETTINGS = {
     "learning_rate": 0.005,
@@ -207,16 +230,14 @@ def run(args: argparse.Namespace) -> dict:
         os.environ.setdefault("LOCAL_WORLD_SIZE", "1")
         os.environ.setdefault("GROUP_RANK", "0")
         os.environ.setdefault("GROUP_WORLD_SIZE", "1")
-        # The clean Git checkout owns all versioned code.  Large, historically
+        # The clean Git checkout owns all versioned code. Large, historically
         # untracked runtime packages and model resources remain in the server
-        # project root and are added only as a fallback import location.
-        if args.runtime_root is not None:
-            runtime_text = str(args.runtime_root.resolve())
-            if runtime_text not in sys.path:
-                sys.path.append(runtime_text)
-        from train_eval_vimogen import main as train_eval_main
+        # project root. Keep that root last on sys.path, and temporarily make it
+        # the working directory so legacy relative resource paths resolve there.
+        with runtime_environment(args.runtime_root):
+            from train_eval_vimogen import main as train_eval_main
 
-        train_eval_main(config)
+            train_eval_main(config)
         record["status"] = "COMPLETED_GENERATION_PENDING_EVALUATION"
     except Exception as error:
         record["status"] = "FAILED"
