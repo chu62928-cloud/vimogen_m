@@ -145,6 +145,8 @@ def run(args: argparse.Namespace) -> dict:
     for required in (args.base_config, args.manifest, args.noise_cache, args.protocol):
         if not required.exists():
             raise FileNotFoundError(required)
+    if args.runtime_root is not None and not args.runtime_root.is_dir():
+        raise FileNotFoundError(args.runtime_root)
     versioned_settings = {
         ("M2", "v2"): M2_V2_SETTINGS,
         ("M3", "v2"): M3_V2_SETTINGS,
@@ -176,6 +178,7 @@ def run(args: argparse.Namespace) -> dict:
         "checkpoint_hash": sha256(ROOT / "checkpoints/model.pt") if (ROOT / "checkpoints/model.pt").is_file() else "not_available_on_runner_host",
         "protocol": str(args.protocol),
         "protocol_sha256": sha256(args.protocol),
+        "runtime_root": None if args.runtime_root is None else str(args.runtime_root),
         "manifest": str(args.manifest),
         "manifest_sha256": sha256(args.manifest),
         "noise_cache": str(args.noise_cache),
@@ -194,6 +197,13 @@ def run(args: argparse.Namespace) -> dict:
         os.environ.setdefault("LOCAL_WORLD_SIZE", "1")
         os.environ.setdefault("GROUP_RANK", "0")
         os.environ.setdefault("GROUP_WORLD_SIZE", "1")
+        # The clean Git checkout owns all versioned code.  Large, historically
+        # untracked runtime packages and model resources remain in the server
+        # project root and are added only as a fallback import location.
+        if args.runtime_root is not None:
+            runtime_text = str(args.runtime_root.resolve())
+            if runtime_text not in sys.path:
+                sys.path.append(runtime_text)
         from train_eval_vimogen import main as train_eval_main
 
         train_eval_main(config)
@@ -219,6 +229,7 @@ def main() -> None:
     parser.add_argument("--code-commit", required=True)
     parser.add_argument("--base-config", type=Path, default=ROOT / "configs/tm2m_infer.yaml")
     parser.add_argument("--protocol", type=Path, default=PROTOCOL)
+    parser.add_argument("--runtime-root", type=Path)
     parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
