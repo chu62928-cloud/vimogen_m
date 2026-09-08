@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 import sys
@@ -311,6 +312,14 @@ def test_runtime_environment_resolves_relative_assets_and_restores_state(
 
     assert Path.cwd() == previous_cwd
     assert runtime_text not in sys.path
+
+
+def test_checkout_packages_are_regular_runtime_overlays() -> None:
+    root = Path(__file__).resolve().parents[1]
+    for package_name in ("guidance", "motion_rep", "sampling", "evaluation", "geometry"):
+        package = importlib.import_module(package_name)
+        assert Path(package.__file__).resolve() == root / package_name / "__init__.py"
+        assert Path(package.__path__[0]).resolve() == root / package_name
 
 
 def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:
