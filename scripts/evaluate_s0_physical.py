@@ -48,6 +48,14 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def resolve_input_file(path: Path, filename: str) -> Path:
+    """Accept either an immutable artifact directory or its exact file."""
+    resolved = path / filename if path.is_dir() else path
+    if not resolved.is_file():
+        raise FileNotFoundError(resolved)
+    return resolved
+
+
 def _strict_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -59,6 +67,7 @@ def _strict_json(path: Path, value: Any) -> None:
 def _load_thresholds(path: Path | None) -> tuple[dict[str, float] | None, str]:
     if path is None:
         return None, "not_frozen"
+    path = resolve_input_file(path, "thresholds.json")
     value = json.loads(path.read_text(encoding="utf-8"))
     if value.get("status") != "FROZEN_PHYSICAL_THRESHOLDS":
         raise ValueError("threshold file must have status FROZEN_PHYSICAL_THRESHOLDS")
@@ -127,6 +136,7 @@ def run(
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite physical evaluation: {output}")
+    reference_path = resolve_input_file(reference_path, "physical_reference.pt")
     reference = torch.load(reference_path, map_location="cpu", weights_only=True)
     if reference.get("cache_version") != REFERENCE_CACHE_VERSION:
         raise ValueError("unsupported physical reference cache version")

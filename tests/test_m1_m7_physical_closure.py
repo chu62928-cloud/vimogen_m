@@ -19,6 +19,7 @@ from evaluation.physical_reference import (
 from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
 from experiments.build_s0_physical_table import build_rows
 from scripts.calibrate_physical_thresholds import freeze_physical_thresholds
+from scripts.evaluate_s0_physical import resolve_input_file
 from scripts.freeze_s0_v1 import collect_sequence_records, freeze_s0_manifest
 
 
@@ -40,6 +41,23 @@ def _markers(frames: int = 6) -> dict[str, dict[str, torch.Tensor]]:
         "left": {"heel": zero.clone(), "toe": zero.clone()},
         "right": {"heel": zero.clone(), "toe": zero.clone()},
     }
+
+
+def test_physical_evaluator_resolves_artifact_directories(tmp_path: Path) -> None:
+    reference_dir = tmp_path / "reference"
+    threshold_dir = tmp_path / "thresholds"
+    reference_dir.mkdir()
+    threshold_dir.mkdir()
+    reference = reference_dir / "physical_reference.pt"
+    thresholds = threshold_dir / "thresholds.json"
+    reference.write_bytes(b"reference")
+    thresholds.write_text("{}", encoding="utf-8")
+
+    assert resolve_input_file(reference_dir, reference.name) == reference
+    assert resolve_input_file(reference, reference.name) == reference
+    assert resolve_input_file(threshold_dir, thresholds.name) == thresholds
+    with pytest.raises(FileNotFoundError):
+        resolve_input_file(tmp_path / "missing", "physical_reference.pt")
 
 
 def test_marker_contact_does_not_promote_an_airborne_toe_from_heel_contact() -> None:
