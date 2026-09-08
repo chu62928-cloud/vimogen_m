@@ -123,6 +123,7 @@ def run(
     output: Path,
     thresholds_path: Path | None = None,
     spot_check_count: int = 8,
+    expected_count: int = 84,
 ) -> dict[str, Any]:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite physical evaluation: {output}")
@@ -132,8 +133,10 @@ def run(
     thresholds, threshold_version = _load_thresholds(thresholds_path)
     reference_lookup = _reference_index(reference)
     records = collect_sequence_records(source_paths)
-    if len(records) != 84:
-        raise RuntimeError(f"expected 84 canonical S0 records, found {len(records)}")
+    if len(records) != expected_count:
+        raise RuntimeError(
+            f"expected {expected_count} canonical records, found {len(records)}"
+        )
     rows: list[dict[str, Any]] = []
 
     for key in sorted(records):
@@ -214,13 +217,19 @@ def run(
     counts = Counter(row["physical"]["status"] for row in rows)
     spot_checks = _spot_checks(rows, min(max(spot_check_count, 0), 8))
     summary = {
-        "protocol": "vimogen_m1_m7_s0_physical_evaluation_v2",
+        "protocol": (
+            "vimogen_m1_m7_s0_physical_evaluation_v2"
+            if expected_count == 84
+            else "vimogen_m1_m7_physical_record_set_v1"
+        ),
         "status": (
             "S0_PHYSICAL_RAW_COMPLETE_THRESHOLDS_PENDING"
             if thresholds is None
-            and len(rows) == 84
-            and counts.get(NOT_EVALUATED, 0) == 84
+            and len(rows) == expected_count
+            and counts.get(NOT_EVALUATED, 0) == expected_count
             else "S0_PHYSICAL_EVALUATED"
+            if expected_count == 84
+            else "PHYSICAL_RECORD_SET_EVALUATED"
         ),
         "sequence_count": len(rows),
         "reference_cache": str(reference_path),
@@ -258,6 +267,7 @@ def main() -> None:
     parser.add_argument("--thresholds", type=Path)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--spot-check-count", type=int, default=8)
+    parser.add_argument("--expected-count", type=int, default=84)
     args = parser.parse_args()
     sources = args.source or [args.sampling_root, args.m7_root]
     summary = run(
@@ -266,6 +276,7 @@ def main() -> None:
         thresholds_path=args.thresholds,
         output=args.output,
         spot_check_count=args.spot_check_count,
+        expected_count=args.expected_count,
     )
     print(
         json.dumps(
