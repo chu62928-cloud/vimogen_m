@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 from pathlib import Path
+import subprocess
 import sys
 
 import pytest
@@ -14,6 +15,7 @@ from evaluation.physical_metrics import evaluate_physical_metrics
 from experiments.run_sampling_guidance_smoke import (
     load_checkout_module,
     runtime_environment,
+    validate_code_commit,
 )
 from geometry.contacts import freeze_contact_evidence
 from geometry.ground import estimate_ground_height
@@ -349,6 +351,19 @@ def test_checkout_module_overlay_replaces_one_runtime_submodule(
     finally:
         sys.modules.pop(module_name, None)
         sys.modules.pop(package_name, None)
+
+
+def test_smoke_runner_rejects_a_mismatched_code_commit() -> None:
+    root = Path(__file__).resolve().parents[1]
+    actual = validate_code_commit(
+        subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=root, text=True
+        ).strip(),
+        root,
+    )
+    assert len(actual) == 40
+    with pytest.raises(ValueError, match="does not match checkout HEAD"):
+        validate_code_commit("0" * 40, root)
 
 
 def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:

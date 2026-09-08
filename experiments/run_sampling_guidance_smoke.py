@@ -11,6 +11,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 
@@ -123,6 +124,23 @@ def load_checkout_module(module_name: str, source: Path):
         raise
     return module
 
+
+def validate_code_commit(declared: str, checkout_root: Path = ROOT) -> str:
+    """Reject provenance labels that do not match the executing checkout."""
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=checkout_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    actual = completed.stdout.strip()
+    if declared != actual:
+        raise ValueError(
+            f"--code-commit {declared!r} does not match checkout HEAD {actual!r}"
+        )
+    return actual
+
 M2_V2_SETTINGS = {
     "learning_rate": 0.005,
     "iterations": 8,
@@ -208,6 +226,7 @@ def run(args: argparse.Namespace) -> dict:
             raise FileNotFoundError(required)
     if args.runtime_root is not None and not args.runtime_root.is_dir():
         raise FileNotFoundError(args.runtime_root)
+    code_commit = validate_code_commit(args.code_commit)
     versioned_settings = {
         ("M2", "v2"): M2_V2_SETTINGS,
         ("M3", "v2"): M3_V2_SETTINGS,
@@ -236,7 +255,7 @@ def run(args: argparse.Namespace) -> dict:
         "target_dose_deg": args.dose,
         "sample_ids": ["94", "34122"],
         "settings": settings,
-        "code_commit": args.code_commit,
+        "code_commit": code_commit,
         "checkpoint_hash": sha256(ROOT / "checkpoints/model.pt") if (ROOT / "checkpoints/model.pt").is_file() else "not_available_on_runner_host",
         "protocol": str(args.protocol),
         "protocol_sha256": sha256(args.protocol),
