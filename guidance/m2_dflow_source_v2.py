@@ -95,6 +95,7 @@ class M2DFlowSourceOptimizationV2:
         config = M2V2Config.from_mapping(cfg)
         diagnostics = GuidanceDiagnostics()
         batch = request.baseline_motion.shape[0]
+        self.selected_source_noise = request.base_noise.detach().float().clone()
         if float(request.target_dose_deg) == 0.0:
             diagnostics.extra.update(
                 {
@@ -249,12 +250,14 @@ class M2DFlowSourceOptimizationV2:
                         "iteration_history": histories,
                     }
                 )
+                self.selected_source_noise = best_source.detach().clone()
             except Exception as error:
                 best_motion = request.baseline_motion.detach().clone()
                 diagnostics.fallback_used = True
                 diagnostics.failure_reason = repr(error)
                 diagnostics.nonfinite_count = int((~torch.isfinite(best_motion)).sum().cpu())
                 status = "FAILED_FALLBACK_M0"
+                self.selected_source_noise = initial.detach().clone()
         diagnostics.wall_time_sec = timer.wall_time_sec
         diagnostics.peak_gpu_mem_gb = timer.peak_gpu_mem_gb
         return GuidedSample(best_motion, diagnostics, status)

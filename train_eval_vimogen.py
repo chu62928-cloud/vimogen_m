@@ -1269,6 +1269,11 @@ def main(args):
                     if scale_enabled else None
                 )
                 scale_summary_records = []
+                scale_selected_source_noise_full = (
+                    torch.zeros_like(latents, dtype=torch.float32)
+                    if scale_enabled and scale_method == 'M2' and scale_method_version == 'v2'
+                    else None
+                )
 
                 attend_to_text_mask_bool = attend_to_text_mask.bool()
                 text_mask = attend_to_text_mask_bool
@@ -1879,6 +1884,10 @@ def main(args):
                                     'identity_source': 'paired_m0_authority_norm',
                                 },
                             )
+                            if scale_selected_source_noise_full is not None:
+                                scale_selected_source_noise_full[sample_mask] = (
+                                    m0_result.initial_noise.detach().float()
+                                )
                         elif scale_method == 'M2':
                             class _DFlowRuntime:
                                 nfe_per_rollout = int(
@@ -1941,6 +1950,10 @@ def main(args):
                                 m2_result = m2_method.run(
                                     _DFlowRuntime(), scale_request, scale_settings
                                 )
+                                if scale_selected_source_noise_full is not None:
+                                    scale_selected_source_noise_full[sample_mask] = (
+                                        m2_method.selected_source_noise.detach().float()
+                                    )
                             finally:
                                 for parameter, requires_grad in zip(
                                     model.parameters(), parameter_requires_grad
@@ -2345,6 +2358,14 @@ def main(args):
                         torch.save(
                             tensor.detach().cpu(),
                             os.path.join(scale_artifact_dir_current, filename),
+                        )
+                    if scale_selected_source_noise_full is not None:
+                        torch.save(
+                            scale_selected_source_noise_full.detach().cpu(),
+                            os.path.join(
+                                scale_artifact_dir_current,
+                                'selected_source_noise_batch.pt',
+                            ),
                         )
                     write_strict_json(
                         Path(scale_artifact_dir_current) / 'guidance_summary.json',

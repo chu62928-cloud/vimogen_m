@@ -316,6 +316,7 @@ def test_m2_v2_is_single_batch_consistent_and_tracks_per_sample_best() -> None:
     }
     method = M2DFlowSourceOptimizationV2()
     batched = method.run(_DifferentiableRollout(), batch, config)
+    assert method.selected_source_noise.shape == batch.base_noise.shape
     singles = [
         method.run(_DifferentiableRollout(), slice_request(batch, index), config)
         for index in range(2)
