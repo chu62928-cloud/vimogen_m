@@ -136,6 +136,18 @@ M7 由 `experiments/run_m7_smoke_from_cache.py` 使用两组经过验证的配�
 - [汇总 JSON](artifacts/table1_s0_preliminary/table1_s0_summary.json)
 - [PNG 图片](artifacts/table1_s0_preliminary/table1_s0_preliminary.png)
 
+### S0 物理闭环更新
+
+共享 M0 的逐标记点脚跟/脚尖接触、地面和有效帧证据已经物化；物理阈值只由 4 条 paired M0 自评、既有 `M0 + max(5%, 1 mm)` 规则和程序化穿透/离地/滑动扰动冻结，未读取候选方法或 S2 结果。84 条序列现为 `7 EVALUATED_PASS / 77 EVALUATED_FAIL`，各方法物理通过数为 M1 `0/12`、M2 `2/12`、M3 `0/12`、M4 `0/12`、M5 `2/12`、M6 `2/12`、M7 `1/12`。
+
+![S0 物理闭环 Table 1](artifacts/table1_s0_physical_v1/table1_s0_physical.png)
+
+- [物理闭环 Markdown 表格](artifacts/table1_s0_physical_v1/TABLE1_S0_PHYSICAL.md)
+- [物理闭环 LaTeX 表格](artifacts/table1_s0_physical_v1/table1_s0_physical.tex)
+- [物理闭环汇总 JSON](artifacts/table1_s0_physical_v1/table1_s0_physical_summary.json)
+
+这张表仍是 S1 调参前诊断表。物理闭环完成不等于方法入围；当前没有方法满足进入 S2 所需的全部条件。
+
 ## 结果诊断
 
 ### M1 与 M6
@@ -226,12 +238,15 @@ python experiments/build_s0_table1.py \
 - `experiments/evaluate_sampling_guidance_smoke.py`：逐运行严格评价；
 - `experiments/build_s0_table1.py`：S0 Table 1 生成器；
 - `artifacts/table1_s0_preliminary/`：已归档的预备表格与机器可读结果。
+- `evaluation/physical_reference.py`、`evaluation/physical_metrics.py`：共享 M0 物理证据与统一评价器；
+- `scripts/calibrate_physical_thresholds.py`：仅基于 M0 与合成扰动冻结物理阈值；
+- `artifacts/table1_s0_physical_v1/`：已归档的 S0 物理闭环表格与机器可读结果。
 
 ## 结果解释边界
 
 - 当前结果只覆盖 C0、两个动作、两个随机种子和 ±2° 范围；
 - S0 是机制检查，不构成大样本统计证据；
-- 物理门仍待评价；
+- 物理门已对 84 条 S0 序列完成评价，但仅 7 条通过，S1 修正与调参仍待完成；
 - M7 是生成后编辑参考；
 - S1 调参和 S2 正式比较完成前，不得把本页表格称为最终论文 Table 1。
 
