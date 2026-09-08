@@ -1850,7 +1850,36 @@ def main(args):
                             'mean': condition_mean,
                             'std': condition_std,
                         }
-                        if scale_method == 'M2':
+                        strict_zero_bypass = (
+                            scale_method_version == 'v2'
+                            and scale_method in {'M2', 'M3', 'M4'}
+                            and float(scale_target_delta_deg) == 0.0
+                        )
+                        if strict_zero_bypass:
+                            bypass_protocol = {
+                                'M2': M2_V2_PROTOCOL,
+                                'M3': 'vimogen_m3_projflow_local_c0_v2',
+                                'M4': 'vimogen_m4_pcfm_terminal_only_c0_v2',
+                            }[scale_method]
+                            scale_result = FlowSampleResult(
+                                initial_noise=m0_result.initial_noise,
+                                raw=baseline_norm,
+                                official_pre_cast=baseline_norm,
+                                official=baseline_norm.to(dtype=dtype),
+                                sigmas=m0_result.sigmas,
+                                timesteps=m0_result.timesteps,
+                                reconciled=baseline_norm,
+                                representation_protocol=bypass_protocol,
+                                g0=baseline_norm,
+                                guidance_summary={
+                                    'protocol': bypass_protocol,
+                                    'method': scale_method,
+                                    'method_version': 'v2',
+                                    'zero_dose_bypass': True,
+                                    'identity_source': 'paired_m0_authority_norm',
+                                },
+                            )
+                        elif scale_method == 'M2':
                             class _DFlowRuntime:
                                 nfe_per_rollout = int(
                                     args.experiment.get('validation_steps', 50)
