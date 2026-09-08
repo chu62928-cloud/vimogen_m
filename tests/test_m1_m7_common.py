@@ -352,6 +352,21 @@ def test_m3_projects_predicted_endpoint_towards_target() -> None:
         std=torch.ones(MOTION_LAYOUT.total_dim),
         config=M3Config(max_step_deg=2.0),
     )
+    state = request.baseline_motion.clone()
+    corrected, record = hook.correct_velocity(
+        x_sigma=state,
+        velocity=torch.zeros_like(state),
+        sigma=0.5,
+        valid_mask=request.shared_evidence.valid_mask,
+    )
+    projected = predicted_clean(state, corrected, 0.5)
+    assert record["active"]
+    torch.testing.assert_close(
+        pelvis_angle_curve_deg(projected),
+        request.shared_evidence.target_angle_curve_deg,
+        atol=1.0e-3,
+        rtol=0,
+    )
 
 
 def test_m3_v2_limits_projection_count_and_bypasses_zero_dose() -> None:
@@ -397,21 +412,6 @@ def test_m3_v2_limits_projection_count_and_bypasses_zero_dose() -> None:
     )
     assert record["reason"] == "ZERO_DOSE_STRICT_BYPASS"
     assert torch.equal(zero_velocity, torch.zeros_like(zero_velocity))
-    state = request.baseline_motion.clone()
-    corrected, record = hook.correct_velocity(
-        x_sigma=state,
-        velocity=torch.zeros_like(state),
-        sigma=0.5,
-        valid_mask=request.shared_evidence.valid_mask,
-    )
-    projected = predicted_clean(state, corrected, 0.5)
-    assert record["active"]
-    torch.testing.assert_close(
-        pelvis_angle_curve_deg(projected),
-        request.shared_evidence.target_angle_curve_deg,
-        atol=1.0e-3,
-        rtol=0,
-    )
 
 
 class _ShootingRuntime:
