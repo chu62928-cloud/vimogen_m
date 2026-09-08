@@ -22,7 +22,8 @@ from evaluation.physical_metrics import (
     EVAL_ERROR,
     NOT_EVALUATED,
     REFERENCE_MISSING,
-    evaluate_physical_metrics_v2,
+    EVALUATOR_VERSION_V3,
+    evaluate_physical_metrics_v3,
 )
 from evaluation.physical_reference import (
     REFERENCE_CACHE_VERSION,
@@ -35,8 +36,8 @@ from scripts.freeze_s0_v1 import collect_sequence_records
 
 DEFAULT_SAMPLING_ROOT = ROOT / "results/phase9/pelvis_m1_m7/s0_sampling"
 DEFAULT_M7_ROOT = ROOT / "results/phase9/pelvis_m1_m7/s0_m7/attempt_01"
-DEFAULT_REFERENCE = ROOT / "results/phase9/pelvis_m1_m7/physical_reference_v1/physical_reference.pt"
-DEFAULT_OUTPUT = ROOT / "results/phase9/pelvis_m1_m7/s0_physical_evaluation_v1"
+DEFAULT_REFERENCE = ROOT / "results/phase9/pelvis_m1_m7/physical_reference_v2/physical_reference.pt"
+DEFAULT_OUTPUT = ROOT / "results/phase9/pelvis_m1_m7/s0_physical_evaluation_v2"
 
 
 def sha256(path: Path) -> str:
@@ -155,7 +156,7 @@ def run(
         reference_key = (seed, sample_id)
         if reference_key not in reference_lookup:
             physical = {
-                "evaluator_version": "m1_m7_physical_metrics_v2",
+                "evaluator_version": EVALUATOR_VERSION_V3,
                 "status": REFERENCE_MISSING,
                 "reason": "PAIRED_M0_REFERENCE_KEY_MISSING",
                 "physical_pass": None,
@@ -164,7 +165,7 @@ def run(
             row["physical_reference_status"] = REFERENCE_MISSING
         elif not candidate_path.is_file():
             physical = {
-                "evaluator_version": "m1_m7_physical_metrics_v2",
+                "evaluator_version": EVALUATOR_VERSION_V3,
                 "status": EVAL_ERROR,
                 "reason": "CANDIDATE_MOTION_MISSING",
                 "physical_pass": False,
@@ -185,7 +186,7 @@ def run(
                 )
                 baseline_markers = reference_markers(reference, index)
                 contacts, pairs = reference_contact_masks(reference, index)
-                physical = evaluate_physical_metrics_v2(
+                physical = evaluate_physical_metrics_v3(
                     candidate_markers,
                     baseline_markers,
                     valid,
@@ -199,7 +200,7 @@ def run(
                 row["paired_m0_id"] = reference["paired_m0_ids"][index]
             except Exception as error:
                 physical = {
-                    "evaluator_version": "m1_m7_physical_metrics_v2",
+                    "evaluator_version": EVALUATOR_VERSION_V3,
                     "status": EVAL_ERROR,
                     "reason": repr(error),
                     "physical_pass": False,
@@ -213,7 +214,7 @@ def run(
     counts = Counter(row["physical"]["status"] for row in rows)
     spot_checks = _spot_checks(rows, min(max(spot_check_count, 0), 8))
     summary = {
-        "protocol": "vimogen_m1_m7_s0_physical_evaluation_v1",
+        "protocol": "vimogen_m1_m7_s0_physical_evaluation_v2",
         "status": (
             "S0_PHYSICAL_RAW_COMPLETE_THRESHOLDS_PENDING"
             if thresholds is None

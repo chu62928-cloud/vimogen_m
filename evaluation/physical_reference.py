@@ -6,7 +6,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
-from geometry.contacts import CONTACT_VERSION, freeze_contact_evidence
+from geometry.contacts import MARKER_CONTACT_VERSION, freeze_marker_contact_evidence
 from geometry.ground import GROUND_VERSION, estimate_ground_height
 from guidance.base import tensor_sha256
 from motion_rep.consistency_v2 import Skeleton22, default_smplx_neutral_22_skeleton
@@ -14,7 +14,7 @@ from motion_rep.phase1 import MOTION_LAYOUT, SMPLX_22_JOINT_INDEX
 from motion_rep.pose_authority import PROTOCOL_NAME as AUTHORITY_VERSION, authority_project
 
 
-REFERENCE_CACHE_VERSION = "m1_m7_physical_reference_v1"
+REFERENCE_CACHE_VERSION = "m1_m7_physical_reference_v2"
 FK_VERSION = "smplx_neutral_22_fk_v1"
 MARKER_NAMES = ("left_heel", "left_toe", "right_heel", "right_toe")
 MARKER_JOINTS = {
@@ -87,9 +87,16 @@ def _stack_markers(
     )
 
 
-def _stack_side_masks(masks: Mapping[str, torch.Tensor]) -> torch.Tensor:
+def _stack_marker_masks(
+    masks: Mapping[str, Mapping[str, torch.Tensor]],
+) -> torch.Tensor:
     return torch.stack(
-        (masks["left"], masks["left"], masks["right"], masks["right"]),
+        (
+            masks["left"]["heel"],
+            masks["left"]["toe"],
+            masks["right"]["heel"],
+            masks["right"]["toe"],
+        ),
         dim=1,
     )
 
@@ -126,7 +133,7 @@ def materialize_reference(
     ground_height = estimate_ground_height(
         marker_world.permute(0, 2, 1, 3), valid_mask, up_axis=2
     )
-    contact = freeze_contact_evidence(
+    contact = freeze_marker_contact_evidence(
         markers, valid_mask, ground_height, up_axis=2
     )
     normal = torch.zeros((batch, 3), dtype=ground_height.dtype, device=ground_height.device)
@@ -142,7 +149,7 @@ def materialize_reference(
         "authority_version": AUTHORITY_VERSION,
         "fk_version": FK_VERSION,
         "skeleton_source": str(skeleton_source),
-        "contact_version": CONTACT_VERSION,
+        "contact_version": MARKER_CONTACT_VERSION,
         "ground_version": GROUND_VERSION,
         "code_commit": str(code_commit),
         "unit": "m",
@@ -153,10 +160,10 @@ def materialize_reference(
         "seeds": seeds,
         "paired_m0_ids": paired_ids,
         "valid_frame_mask": valid_mask.detach().cpu(),
-        "contact_mask": _stack_side_masks(contact.contact).detach().cpu(),
-        "flat_contact_mask": _stack_side_masks(contact.flat_contact).detach().cpu(),
-        "continuous_contact_pair": _stack_side_masks(contact.continuous_pair).detach().cpu(),
-        "contact_confidence": _stack_side_masks(contact.confidence).detach().cpu(),
+        "contact_mask": _stack_marker_masks(contact.contact).detach().cpu(),
+        "flat_contact_mask": _stack_marker_masks(contact.flat_contact).detach().cpu(),
+        "continuous_contact_pair": _stack_marker_masks(contact.continuous_pair).detach().cpu(),
+        "contact_confidence": _stack_marker_masks(contact.confidence).detach().cpu(),
         "ground_height_m": ground_height.detach().cpu(),
         "ground_plane": ground_plane.detach().cpu(),
         "m0_marker_world": marker_world.detach().cpu(),
@@ -167,6 +174,7 @@ def materialize_reference(
             "speed_threshold_m_per_frame": 0.030,
             "flat_height_difference_m": 0.020,
             "first_frame_excluded": True,
+            "mask_granularity": "PER_MARKER",
             "candidate_reclassification_forbidden": True,
         },
     }
@@ -184,12 +192,21 @@ def reference_markers(
 
 def reference_contact_masks(
     reference: Mapping[str, Any], index: int
-) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+) -> tuple[
+    dict[str, dict[str, torch.Tensor]],
+    dict[str, dict[str, torch.Tensor]],
+]:
     contacts = torch.as_tensor(reference["contact_mask"]).bool()[index : index + 1]
     pairs = torch.as_tensor(reference["continuous_contact_pair"]).bool()[index : index + 1]
     return (
-        {"left": contacts[:, 0], "right": contacts[:, 2]},
-        {"left": pairs[:, 0], "right": pairs[:, 2]},
+        {
+            "left": {"heel": contacts[:, 0], "toe": contacts[:, 1]},
+            "right": {"heel": contacts[:, 2], "toe": contacts[:, 3]},
+        },
+        {
+            "left": {"heel": pairs[:, 0], "toe": pairs[:, 1]},
+            "right": {"heel": pairs[:, 2], "toe": pairs[:, 3]},
+        },
     )
 
 

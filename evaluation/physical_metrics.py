@@ -8,6 +8,12 @@ import torch
 
 
 EVALUATOR_VERSION = "m1_m7_physical_metrics_v1"
+EVALUATOR_VERSION_V3 = "m1_m7_physical_metrics_v3"
+
+EVENT_TOLERANCE_KEYS = {
+    "penetration_tolerance_mm",
+    "floating_height_threshold_mm",
+}
 
 NOT_EVALUATED = "NOT_EVALUATED"
 REFERENCE_MISSING = "REFERENCE_MISSING"
@@ -161,6 +167,8 @@ def _threshold_decision(
         return NOT_EVALUATED, None, ["NO_CONTINUOUS_CONTACT_EVIDENCE"]
     failures: list[str] = []
     for name, limit in thresholds.items():
+        if name in EVENT_TOLERANCE_KEYS:
+            continue
         value = row.get(name)
         if value is None or not torch.isfinite(torch.as_tensor(value)):
             return EVAL_ERROR, False, [f"MISSING_OR_NONFINITE_{name}"]
@@ -171,20 +179,35 @@ def _threshold_decision(
     return EVALUATED_PASS, True, []
 
 
-def evaluate_physical_metrics_v2(
+def _marker_mask(
+    masks: Mapping[str, Any],
+    side: str,
+    marker: str,
+    *,
+    expected: tuple[int, int],
+    name: str,
+) -> torch.Tensor:
+    side_masks = masks[side]
+    value = side_masks if isinstance(side_masks, torch.Tensor) else side_masks[marker]
+    if value.dtype is not torch.bool or tuple(value.shape) != expected:
+        raise ValueError(f"{name}[{side!r}][{marker!r}] must be bool{expected}")
+    return value
+
+
+def evaluate_physical_metrics_v3(
     marker_positions: Mapping[str, Mapping[str, torch.Tensor]],
     baseline_markers: Mapping[str, Mapping[str, torch.Tensor]],
     valid_mask: torch.Tensor,
-    contact_masks: Mapping[str, torch.Tensor],
+    contact_masks: Mapping[str, Any],
     ground_height_m: torch.Tensor,
     *,
-    contact_pair_masks: Mapping[str, torch.Tensor] | None = None,
+    contact_pair_masks: Mapping[str, Any] | None = None,
     up_axis: int = 2,
     thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Evaluate frozen-M0 heel/toe evidence without letting candidates relabel it.
 
-    This is the versioned S0-closure evaluator.  It reports raw metrics even
+    This is the marker-specific S0-closure evaluator.  It reports raw metrics even
     when physical thresholds are not yet frozen.  In that case the state is
     ``NOT_EVALUATED`` and never a pass.  ``contact_masks`` and
     ``contact_pair_masks`` are always supplied by the paired M0 reference.
@@ -203,19 +226,47 @@ def evaluate_physical_metrics_v2(
         raise ValueError("ground_height_m must be finite")
     if set(contact_masks) != {"left", "right"}:
         raise ValueError("contact_masks must contain left and right")
-    for side in ("left", "right"):
-        if contact_masks[side].dtype is not torch.bool or tuple(contact_masks[side].shape) != (batch, frames):
-            raise ValueError(f"contact_masks[{side!r}] must be bool[B,T]")
+    normalized_contacts = {
+        side: {
+            marker: _marker_mask(
+                contact_masks, side, marker,
+                expected=(batch, frames), name="contact_masks",
+            )
+            for marker in ("heel", "toe")
+        }
+        for side in ("left", "right")
+    }
     if contact_pair_masks is None:
         contact_pair_masks = {
-            side: contact_masks[side][:, 1:] & contact_masks[side][:, :-1]
+            side: {
+                marker: normalized_contacts[side][marker][:, 1:]
+                & normalized_contacts[side][marker][:, :-1]
+                for marker in ("heel", "toe")
+            }
             for side in ("left", "right")
         }
     if set(contact_pair_masks) != {"left", "right"}:
         raise ValueError("contact_pair_masks must contain left and right")
-    for side in ("left", "right"):
-        if contact_pair_masks[side].dtype is not torch.bool or tuple(contact_pair_masks[side].shape) != (batch, max(frames - 1, 0)):
-            raise ValueError(f"contact_pair_masks[{side!r}] must be bool[B,T-1]")
+    normalized_pairs = {
+        side: {
+            marker: _marker_mask(
+                contact_pair_masks, side, marker,
+                expected=(batch, max(frames - 1, 0)), name="contact_pair_masks",
+            )
+            for marker in ("heel", "toe")
+        }
+        for side in ("left", "right")
+    }
+    penetration_tolerance_mm: float | None = None
+    floating_height_threshold_mm: float | None = None
+    if thresholds is not None:
+        missing = EVENT_TOLERANCE_KEYS.difference(thresholds)
+        if missing:
+            raise ValueError(f"thresholds missing event tolerances: {sorted(missing)}")
+        penetration_tolerance_mm = float(thresholds["penetration_tolerance_mm"])
+        floating_height_threshold_mm = float(thresholds["floating_height_threshold_mm"])
+        if penetration_tolerance_mm < 0.0 or floating_height_threshold_mm < 0.0:
+            raise ValueError("event tolerances must be non-negative")
 
     rows: list[dict[str, Any]] = []
     for index in range(batch):
@@ -224,7 +275,6 @@ def evaluate_physical_metrics_v2(
         penetration_values: list[torch.Tensor] = []
         speed_values: list[torch.Tensor] = []
         height_values: list[torch.Tensor] = []
-        floating_values: list[torch.Tensor] = []
         support_values: list[torch.Tensor] = []
         marker_rows: dict[str, dict[str, Any]] = {}
         total_slide = torch.zeros((), dtype=ground_height_m.dtype, device=ground_height_m.device)
@@ -232,9 +282,9 @@ def evaluate_physical_metrics_v2(
         contact_count = 0
 
         for side in ("left", "right"):
-            contact = contact_masks[side][index] & valid
-            pairs = contact_pair_masks[side][index] & valid[1:] & valid[:-1]
             for marker in ("heel", "toe"):
+                contact = normalized_contacts[side][marker][index] & valid
+                pairs = normalized_pairs[side][marker][index] & valid[1:] & valid[:-1]
                 key = _marker_key(side, marker)
                 candidate = marker_positions[side][marker][index]
                 baseline = baseline_markers[side][marker][index]
@@ -258,10 +308,8 @@ def evaluate_physical_metrics_v2(
                     candidate_height = (candidate[:, up_axis] - floor).clamp_min(0.0)
                     baseline_height = (baseline[:, up_axis] - floor).clamp_min(0.0)
                     contact_height = candidate_height[contact]
-                    floating = (candidate_height[contact] > 0.0).to(candidate.dtype)
                     support = (candidate_height - baseline_height).abs()[contact]
                     height_values.append(contact_height)
-                    floating_values.append(floating)
                     support_values.append(support)
                 marker_rows[key] = {
                     "penetration_mm": _scalar_summary([penetration[valid]], scale=1000.0),
@@ -283,20 +331,38 @@ def evaluate_physical_metrics_v2(
         penetration = _scalar_summary(penetration_values, scale=1000.0)
         speed = _scalar_summary(speed_values, scale=1000.0)
         height = _scalar_summary(height_values, scale=1000.0)
-        floating_rate = (
-            float(torch.cat(floating_values).mean().detach().cpu())
-            if floating_values
-            else None
-        )
+        penetration_rate = None
+        floating_rate = None
+        if thresholds is not None:
+            penetration_rate = (
+                float(
+                    torch.cat(penetration_values)
+                    .gt(float(penetration_tolerance_mm) / 1000.0)
+                    .to(torch.float32)
+                    .mean()
+                    .cpu()
+                )
+                if penetration_values
+                else None
+            )
+            floating_rate = (
+                float(
+                    torch.cat(height_values)
+                    .gt(float(floating_height_threshold_mm) / 1000.0)
+                    .to(torch.float32)
+                    .mean()
+                    .cpu()
+                )
+                if height_values
+                else None
+            )
         support = _scalar_summary(support_values, scale=1000.0)
         row: dict[str, Any] = {
             "sequence_index": index,
             "marker_metrics": marker_rows,
             "penetration_p95_mm": penetration["p95"],
             "penetration_max_mm": penetration["max"],
-            "penetration_frame_rate": float(
-                torch.cat(penetration_values).gt(0.0).to(torch.float32).mean().cpu()
-            ) if penetration_values else None,
+            "penetration_frame_rate": penetration_rate,
             "contact_tangent_speed_p95_mm_per_frame": speed["p95"],
             "contact_tangent_speed_max_mm_per_frame": speed["max"],
             "total_slide_distance_mm": float(total_slide.detach().cpu() * 1000.0),
@@ -341,7 +407,7 @@ def evaluate_physical_metrics_v2(
         }
     )
     return {
-        "evaluator_version": "m1_m7_physical_metrics_v2",
+        "evaluator_version": EVALUATOR_VERSION_V3,
         "status": overall,
         "reason": reasons[0] if len(reasons) == 1 else reasons,
         "physical_pass": physical_pass,

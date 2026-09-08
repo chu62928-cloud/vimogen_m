@@ -10,7 +10,7 @@ from geometry.contacts import freeze_marker_contact_evidence
 from evaluation.physical_metrics import (
     EVALUATED_PASS,
     NOT_EVALUATED,
-    evaluate_physical_metrics_v2,
+    evaluate_physical_metrics_v3,
 )
 from evaluation.physical_reference import (
     MARKER_JOINTS,
@@ -99,7 +99,7 @@ def test_candidate_cannot_escape_by_redefining_m0_contact_mask() -> None:
         for side, side_masks in contacts.items()
     }
 
-    result = evaluate_physical_metrics_v2(
+    result = evaluate_physical_metrics_v3(
         candidate,
         baseline,
         valid,
@@ -132,7 +132,7 @@ def test_raw_physical_metrics_are_not_a_gate_pass_without_frozen_thresholds() ->
         }
         for side, side_masks in contacts.items()
     }
-    raw = evaluate_physical_metrics_v2(
+    raw = evaluate_physical_metrics_v3(
         markers,
         markers,
         valid,
@@ -160,7 +160,7 @@ def test_raw_physical_metrics_are_not_a_gate_pass_without_frozen_thresholds() ->
         "floating_frame_rate": 0.0,
         "support_height_error_p95_mm": 1.0,
     }
-    judged = evaluate_physical_metrics_v2(
+    judged = evaluate_physical_metrics_v3(
         markers,
         markers,
         valid,

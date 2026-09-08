@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from evaluation.physical_metrics import evaluate_physical_metrics_v2
+from evaluation.physical_metrics import evaluate_physical_metrics_v3
 from evaluation.physical_reference import (
     REFERENCE_CACHE_VERSION,
     materialize_reference,
@@ -28,7 +28,7 @@ from motion_rep.pose_authority import authority_project
 
 
 DEFAULT_SAMPLING_ROOT = ROOT / "results/phase9/pelvis_m1_m7/s0_sampling"
-DEFAULT_OUTPUT = ROOT / "results/phase9/pelvis_m1_m7/physical_reference_v1"
+DEFAULT_OUTPUT = ROOT / "results/phase9/pelvis_m1_m7/physical_reference_v2"
 
 
 def sha256(path: Path) -> str:
@@ -136,7 +136,7 @@ def run(
     for index, paired_id in enumerate(reference["paired_m0_ids"]):
         baseline = reference_markers(reference, index)
         contacts, pairs = reference_contact_masks(reference, index)
-        result = evaluate_physical_metrics_v2(
+        result = evaluate_physical_metrics_v3(
             baseline,
             baseline,
             reference["valid_frame_mask"][index : index + 1],
