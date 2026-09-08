@@ -16,7 +16,7 @@ from evaluation.physical_reference import (
     materialize_reference,
 )
 from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
-from scripts.freeze_s0_v1 import freeze_s0_manifest
+from scripts.freeze_s0_v1 import collect_sequence_records, freeze_s0_manifest
 
 
 def _motion(batch: int = 1, frames: int = 5) -> torch.Tensor:
@@ -165,3 +165,36 @@ def test_freeze_s0_manifest_requires_complete_unique_84_records_and_refuses_over
     assert manifest["sequence_count"] == 84
     with pytest.raises(FileExistsError):
         freeze_s0_manifest(source_paths=[source], output=output, code_commit="3968ace")
+
+
+def test_progress_record_paths_are_resolved_from_repository_root(tmp_path: Path) -> None:
+    sampling = tmp_path / "results" / "phase9" / "pelvis_m1_m7" / "s0_sampling"
+    record_path = sampling / "M1" / "seed_000" / "dose_+0" / "attempt_01" / "evaluation" / "run" / "run_record.json"
+    record_path.parent.mkdir(parents=True)
+    record = {
+        "run_id": "M1_s0_p94_d+0",
+        "method_name": "M1",
+        "prompt_id": "94",
+        "seed": 0,
+        "target_dose_deg": 0.0,
+        "baseline_motion_id": "m0",
+        "evaluator_version": "v1",
+        "all_metrics": {},
+    }
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+    relative = record_path.relative_to(tmp_path).as_posix()
+    progress = {
+        "jobs": [
+            {
+                "method": "M1",
+                "seed": 0,
+                "dose": 0.0,
+                "evaluation": {"status": "COMPLETED", "records": [relative, relative]},
+            }
+        ]
+    }
+    (sampling / "s0_matrix_progress.json").write_text(
+        json.dumps(progress), encoding="utf-8"
+    )
+    records = collect_sequence_records([sampling])
+    assert list(records) == [("M1", 0, 0.0, "94")]

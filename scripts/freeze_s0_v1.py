@@ -79,7 +79,19 @@ def _resolve_record_path(path_text: str, anchor: Path) -> Path:
     path = Path(path_text)
     if path.is_absolute():
         return path
-    candidates = (anchor / path, Path.cwd() / path)
+    project_root = None
+    if "results" in anchor.parts:
+        index = anchor.parts.index("results")
+        project_root = Path(*anchor.parts[:index])
+    candidates = tuple(
+        candidate
+        for candidate in (
+            anchor / path,
+            None if project_root is None else project_root / path,
+            Path.cwd() / path,
+        )
+        if candidate is not None
+    )
     for candidate in candidates:
         if candidate.is_file():
             return candidate
