@@ -17,6 +17,7 @@ from evaluation.physical_reference import (
     materialize_reference,
 )
 from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
+from scripts.calibrate_physical_thresholds import freeze_physical_thresholds
 from scripts.freeze_s0_v1 import collect_sequence_records, freeze_s0_manifest
 
 
@@ -171,6 +172,41 @@ def test_raw_physical_metrics_are_not_a_gate_pass_without_frozen_thresholds() ->
     )
     assert judged["status"] == EVALUATED_PASS
     assert judged["physical_pass"] is True
+
+
+def test_threshold_freeze_uses_only_m0_and_rejects_synthetic_failures(
+    tmp_path: Path,
+) -> None:
+    motion = _motion(frames=8)
+    valid = torch.ones((1, motion.shape[1]), dtype=torch.bool)
+    reference = materialize_reference(
+        motion, valid, sample_ids=["94"], seeds=[0], code_commit="abc123"
+    )
+    reference_path = tmp_path / "physical_reference.pt"
+    torch.save(reference, reference_path)
+    output = tmp_path / "thresholds"
+
+    protocol = freeze_physical_thresholds(
+        reference_path=reference_path,
+        output=output,
+        code_commit="abc123",
+    )
+
+    assert protocol["status"] == "FROZEN_PHYSICAL_THRESHOLDS"
+    assert protocol["calibration_sources"] == ["PAIRED_M0_SELF_EVALUATION"]
+    assert protocol["candidate_results_read"] is False
+    assert protocol["synthetic_sanity"]["all_expected_failures_observed"] is True
+    assert set(protocol["synthetic_sanity"]["cases"]) == {
+        "penetration_20mm",
+        "floating_50mm",
+        "sliding_50mm_per_frame",
+    }
+    with pytest.raises(FileExistsError):
+        freeze_physical_thresholds(
+            reference_path=reference_path,
+            output=output,
+            code_commit="abc123",
+        )
 
 
 def test_freeze_s0_manifest_requires_complete_unique_84_records_and_refuses_overwrite(
