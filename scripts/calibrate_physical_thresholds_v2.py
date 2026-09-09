@@ -16,6 +16,7 @@ import json
 from pathlib import Path
 import sys
 from typing import Any, Mapping
+import math
 
 import torch
 
@@ -37,7 +38,6 @@ from evaluation.physical_reference import (  # noqa: E402
     reference_markers,
 )
 from scripts.calibrate_physical_thresholds import (  # noqa: E402
-    EVENT_TOLERANCES,
     METRIC_NAMES,
     _baseline_rows,
     _derive_thresholds,
@@ -82,7 +82,11 @@ def _contact_indices(mask: torch.Tensor, fraction: float) -> torch.Tensor:
     indices = torch.where(mask)[0]
     if not indices.numel():
         return indices
-    count = max(1, int(round(float(indices.numel()) * fraction)))
+    # Never exceed the declared coverage.  In particular, forcing one point
+    # for a 2% control on a tiny unit-test reference would silently turn it
+    # into a much larger perturbation.  The production M0 reference has
+    # enough contact points for every non-zero ladder level to be represented.
+    count = int(math.floor(float(indices.numel()) * fraction))
     return indices[: min(count, indices.numel())]
 
 
