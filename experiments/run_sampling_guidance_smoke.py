@@ -237,6 +237,19 @@ def run(args: argparse.Namespace) -> dict:
     if args.runtime_root is not None and not args.runtime_root.is_dir():
         raise FileNotFoundError(args.runtime_root)
     code_commit = validate_code_commit(args.code_commit)
+    manifest_items = json.loads(args.manifest.read_text(encoding="utf-8"))
+    if not isinstance(manifest_items, list) or not manifest_items:
+        raise ValueError("--manifest must contain a non-empty list")
+    sample_ids = []
+    for item in manifest_items:
+        if not isinstance(item, dict):
+            raise ValueError("manifest entries must be objects")
+        value = item.get("sample_id", item.get("global_id", item.get("id")))
+        if value is None:
+            raise ValueError("manifest entry is missing sample_id/global_id/id")
+        sample_ids.append(str(value))
+    if len(set(sample_ids)) != len(sample_ids):
+        raise ValueError("manifest contains duplicate sample IDs")
     if args.method == "M2" and args.method_version == "v2":
         # Must be set before the runtime imports CUDA-backed model modules.
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -267,7 +280,7 @@ def run(args: argparse.Namespace) -> dict:
         "method_version": args.method_version,
         "seed": args.seed,
         "target_dose_deg": args.dose,
-        "sample_ids": ["94", "34122"],
+        "sample_ids": sample_ids,
         "settings": settings,
         "code_commit": code_commit,
         "checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),

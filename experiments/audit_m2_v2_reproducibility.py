@@ -15,12 +15,14 @@ from experiments.audit_m2_v2_single_batch import _load_run, _metrics
 
 
 TOLERANCES = {
+    "initial_noise_max_abs": 1.0e-6,
     "candidate_norm_max_abs": 1.0e-6,
     "selected_source_noise_max_abs": 1.0e-6,
     "angle_mae_abs_deg": 1.0e-5,
     "angle_p95_abs_deg": 1.0e-5,
     "mpjpe_abs_mm": 1.0e-3,
     "root_translation_p95_abs_mm": 1.0e-3,
+    "iteration_history_max_abs": 1.0e-6,
 }
 
 
@@ -39,7 +41,30 @@ def _compare(reference: dict[str, Any], other: dict[str, Any]) -> list[dict[str,
     for index, sample in enumerate(reference["sample_ids"]):
         ref_metrics = _metrics(reference["records"][sample])
         other_metrics = _metrics(other["records"][sample])
+        history_values: list[float] = []
+        reference_history = reference["iteration_history"][index]
+        other_history = other["iteration_history"][index]
+        if len(reference_history) != len(other_history):
+            history_values.append(float("inf"))
+        else:
+            for ref_step, other_step in zip(reference_history, other_history):
+                if ref_step.keys() != other_step.keys():
+                    history_values.append(float("inf"))
+                    continue
+                for key in ref_step:
+                    ref_value, other_value = ref_step[key], other_step[key]
+                    if isinstance(ref_value, (int, float)) and isinstance(
+                        other_value, (int, float)
+                    ):
+                        history_values.append(abs(float(ref_value) - float(other_value)))
+                    elif ref_value != other_value:
+                        history_values.append(float("inf"))
         observed = {
+            "initial_noise_max_abs": float(
+                (reference["initial_noise"][index] - other["initial_noise"][index])
+                .abs()
+                .max()
+            ),
             "candidate_norm_max_abs": float(
                 (reference["candidate"][index] - other["candidate"][index]).abs().max()
             ),
@@ -57,6 +82,7 @@ def _compare(reference: dict[str, Any], other: dict[str, Any]) -> list[dict[str,
                 ref_metrics["root_translation_p95_mm"]
                 - other_metrics["root_translation_p95_mm"]
             ),
+            "iteration_history_max_abs": max(history_values, default=0.0),
         }
         checks = {
             name: value <= TOLERANCES[name] for name, value in observed.items()

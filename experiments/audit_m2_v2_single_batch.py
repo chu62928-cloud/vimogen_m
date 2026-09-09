@@ -46,6 +46,11 @@ def _load_run(root: Path) -> dict[str, Any]:
         map_location="cpu",
         weights_only=True,
     ).float()
+    initial_noise = torch.load(
+        root / "m0_artifacts/batch_000/z0_replayed.pt",
+        map_location="cpu",
+        weights_only=True,
+    ).float()
     if candidate.shape[0] != len(sample_ids) or source.shape[0] != len(sample_ids):
         raise ValueError(f"batch/sample metadata mismatch below {root}")
     summary = json.loads((artifact / "guidance_summary.json").read_text(encoding="utf-8"))
@@ -54,6 +59,9 @@ def _load_run(root: Path) -> dict[str, Any]:
     best_iterations = diagnostics.get("per_sample_best_iteration", [])
     if len(best_iterations) != len(sample_ids):
         raise ValueError(f"missing per-sample best iterations below {root}")
+    iteration_history = diagnostics.get("iteration_history", [])
+    if len(iteration_history) != len(sample_ids):
+        raise ValueError(f"missing per-sample iteration history below {root}")
     records: dict[str, dict[str, Any]] = {}
     for path in (root / "evaluation").glob("*/run_record.json"):
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -66,7 +74,9 @@ def _load_run(root: Path) -> dict[str, Any]:
         "sample_ids": sample_ids,
         "candidate": candidate,
         "source": source,
+        "initial_noise": initial_noise,
         "best_iterations": [int(value) for value in best_iterations],
+        "iteration_history": iteration_history,
         "records": records,
     }
 
