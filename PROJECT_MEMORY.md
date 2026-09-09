@@ -1,5 +1,66 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
+## 2026-09-09：S1 有界筛选执行中，物理 v1/v2 与不变量审计已完成
+
+### 已验证事实
+
+- 物理门 v2 已在候选无关的预定义扰动阶梯上冻结，正式阈值为支撑高度误差 P95 `≤3 mm`、悬空帧率 `≤2.5%`，其余硬门沿用 v1；接触高度继续报告但不作为 v2 硬门。v2 校准证据位于服务器 `results/phase9/pelvis_m1_m7/physical_thresholds_v2/attempt_02/`。
+- 84 条 S0 序列已完成双轨物理评价：v1 `7/84`、v2 `22/84`。v1 方法级为 M1 `0/12`、M2 `2/12`、M3 `0/12`、M4 `0/12`、M5 `2/12`、M6 `2/12`、M7 `1/12`；v2 方法级为 M1 `0/12`、M2 `2/12`、M3 `0/12`、M4 `0/12`、M5 `2/12`、M6 `2/12`、M7 `2/12`。双轨 Table 1、84 行附表和热图位于服务器 `results/phase9/pelvis_m1_m7/table1_s0_physical_v2/attempt_01/`。
+- M2 重复批运行和初始噪声/逐轮轨迹复现审计通过；M2 批量—单样本一致性审计失败（sample94 与 sample34122 均有明显动作、源噪声、角度和 MPJPE 差异），因此 M2 已冻结为 `S1_FAILED_INVARIANT`，不进入网格调参。M2/M3/M4 零剂量严格旁路审计通过，共 12 条。
+- S1 有界屏选已从服务器独立检出 `/root/autodl-tmp/vimogen_m1_m7_scale/code_checkouts/m1_m7_s1_latest` 的提交 `57a09339e5c9702f91180db9513a358700883bf7` 启动；只运行一个 GPU 任务，输出根目录为 `results/phase9/pelvis_m1_m7/s1/`。M1、M3–M6 按 8 组配置屏选，M2 由不变量报告跳过；S1 尚未冻结唯一配置，S2 保持未启动。
+
+### 待执行事项
+
+1. 等待屏选完成，读取每方法前两名配置；依次执行 20 条/配置的确认、8 条/方法的 `±10°` 压力测试。
+2. 运行 `--stage freeze` 并生成 S1 主表、失败案例表、压力测试表和可复现清单；M7 另按 2 样本 × 2 种子 × 7 剂量生成 28 条生成后编辑参考。
+3. 服务器最新生成提交为 `57a0933`；报告生成器提交为 `1fb079e`。完成报告后更新本节，明确每种方法的唯一冻结配置和 `S1_*` 状态；在此之前不得启动 S2。
+
+## 2026-09-08：S0 物理闭环完成，M2-v2 正式 pilot 重放中
+
+### 已验证事实
+
+- 当前分支为 `codex/m1-m7-s0-physical-closure`。服务器只在独立 Git 检出目录
+  `/root/autodl-tmp/vimogen_m1_m7_scale/code_checkouts/m1_m7_s0_physical_closure` 拉取已推送代码；
+  S0-v1 的 84 条动作、历史失败和旧 Table 1 均未覆盖。
+- P0 冻结清单已完成：`s0_v1_freeze/manifest.json` 状态 `S0_V1_FROZEN`，84 个唯一序列键与
+  84 个动作哈希；权威记录只来自进度文件和 M7 汇总，不按目录时间选择。
+- 首版物理缓存暴露出 side-level 接触掩码会把离地 toe 随 heel 一起判为接触。旧
+  `physical_reference_v1`/`s0_physical_evaluation_v1` 原样保留；提交 `5da601b` 新增逐 marker
+  接触证据并生成 `physical_reference_v2`，缓存 SHA256 为
+  `946b2883fa7c5743d0f432f360662bd4cd0caa4ed9fd85092aa4176fd7e86a42`。4 条 M0 的接触高度
+  P95 为 22.24–24.33 mm、最大值不超过 25 mm，M0 支撑高度误差为 0。
+- 物理阈值协议 `vimogen_m1_m7_physical_thresholds_v1` 只读取 4 条 paired M0，并用既有
+  `M0 + max(5%, 1 mm)` 规则、1% rate 余量和三种程序化扰动冻结；未读取候选或 S2。
+  正式文件为服务器 `physical_thresholds_v1/attempt_02/thresholds.json`，对应提交
+  `ab6f8e27490e9c0732f948be631f533db7683bcb`；根目录首次文件因手填完整提交号错误而作废保留。
+- 84 条物理补评位于 `s0_physical_evaluation_v3/`：7 条 `EVALUATED_PASS`、77 条
+  `EVALUATED_FAIL`、无未评价项。各方法通过数为 M1 0、M2 2、M3 0、M4 0、M5 2、M6 2、M7 1
+  （每方法 12 条）。归档表为 `artifacts/table1_s0_physical_v1/`，仍标记为 S1 调参前结果。
+- M2/M3/M4-v2 方法修订冻结的正式清单为服务器
+  `protocol_v2_revisions/attempt_02/manifest.json`，SHA256
+  `79a6832b0b775901f28891301fc625186ab14324140b0e44d7760350110f636a`；根目录首次冻结因测试隔离错误
+  作废保留。M2-v2 已实现逐样本 best state、角度+source+内容+root 目标、逐样本梯度/步长/source
+  trust region、selected source 保存和零剂量精确旁路。
+- M2-v2 前三次真实 pilot 均在进入算法前失败并原样保留：attempt_01 缺 `datasets` 搜索路径，attempt_02
+  未以 runtime root 为工作目录，attempt_03 被旧 runtime `guidance` 包遮蔽。提交 `35bbbbc`、`3baeaf1`、
+  `6014ee2` 依次修复资源路径并最终收缩为最小模块白名单；服务器最小覆盖版专项测试为 `37 passed`。
+- attempt_04 首次生成成功，角度门 2/2；sample94 的 MPJPE 约 833.5 mm、根平移 P95 约
+  1856.2 mm，sample34122 的 MPJPE 约 61.7 mm。两样本 source trust/step trust 均零命中。
+  但该运行把旧提交号写入记录，且物理 evaluator 收到目录后报错，因此只作诊断、不作正式证据。
+  提交 `9334e1f` 允许物理 evaluator 解析冻结产物目录，`9d24869` 在创建 attempt 前强制核对当前 Git
+  HEAD。使用动态 HEAD 的 attempt_05 正在服务器重放。
+
+### 待执行事项
+
+1. 完成并审计 M2-v2 attempt_05 seed0/+2°；要求提交号、导入来源、角度、内容、物理和 selected source
+   均完整可追溯，不能用 attempt_04 代替。
+2. 用同一冻结输入补做 sample94/sample34122 的 singleton replay，与 attempt_05 逐项比较；一致性通过前
+   不增加 M2 迭代或启动网格调参。
+3. 建立 M3-v2 的严格零剂量旁路、稀疏/受限投影和 M4-v2 的零剂量旁路、terminal-only 对照；所有
+   v2 结果写新目录。
+4. 按最多 8 组等价配置预算执行 M5 调参，并对 M1/M6 做 ±5°/±10° 校准；S1 唯一配置与四类门完成前，
+   `s2_allowed` 始终为 false。
+
 ## 2026-09-07：M1–M7规模实验公共层与C0机制核心完成
 
 ### 已验证事实

@@ -1,12 +1,12 @@
 # ViMoGen M1–M7 骨盆控制规模实验
 
-本分支实现并验证 ViMoGen 骨盆姿态控制的 M1–M7 统一比较框架。当前完成的是冻结协议下的 **S0 小规模机制检查**：7 种方法、2 个动作、2 个随机种子和 3 个剂量，共 84 条受控序列。
+本分支实现并验证 ViMoGen 骨盆姿态控制的 M1–M7 统一比较框架。当前主线是冻结协议下的 **S0 物理闭环与 S1 有界筛选**：7 种方法、2 个动作、2 个随机种子和 3 个 S0 剂量，共 84 条受控序列。
 
-当前结论不是最终论文结论。S0 已完成角度与内容诊断，但共享脚部标记尚未物化，足部接触、脚滑和地面穿透等物理评价仍为待评估状态。因此现有 Table 1 必须标记为 `PRELIMINARY_S0_ONLY`，不能直接作为最终论文主表。
+当前结论不是最终论文结论。S0 的严格物理门 v1 与独立校准的物理门 v2 均已完成；v1 保留历史审计结论，v2 用于 S1 配置筛选。S1 正在服务器上按每方法最多 8 组配置执行，S2 尚未启动。
 
 ## 当前状态
 
-- 当前分支：`codex/pelvis-m1-m7-scale-experiments`
+- 当前分支：`codex/m1-m7-s0-physical-closure`
 - 冻结协议：`vimogen_pelvis_m1_m7_scale_v1`
 - 约束包：C0，仅控制局部矢状面骨盆角
 - S0 动作：sample94、sample34122
@@ -14,9 +14,10 @@
 - 剂量：−2°、0°、+2°
 - 每种方法：12 条序列
 - 总序列数：84 条，其中 M1–M6 为 72 条，M7 为 12 条
-- 服务器最终完整回归：`324 passed, 1 skipped`
-- S0 状态：生成、评价、汇总均已完成；物理门待共享脚部标记物化
-- S1/S2 状态：尚未启动
+- 服务器专项回归：`43 passed`
+- S0 状态：84 条物理数值已完成 v1/v2 双轨评价；v1 `7/84`，v2 `22/84`
+- S1 状态：不变量已完成；M2 批量—单样本一致性失败，已停止 M2 调参；M1、M3–M6 屏选运行中
+- S2 状态：未启动，保持阻塞
 
 ## 研究目标
 
@@ -117,19 +118,19 @@ M7 由 `experiments/run_m7_smoke_from_cache.py` 使用两组经过验证的配�
 
 ### 内容保持诊断
 
-| 方法 | 22 关节 MPJPE vs M0（mm）↓ | 根平移 P95 偏差（mm）↓ | 最大 MPJPE（mm） | 物理门 |
-|---|---:|---:|---:|---|
-| M1 能量引导 | 8.4 [2.7, 9.7] | 4.5 [4.1, 5.0] | 11.0 | 待评估 |
-| M2 源噪声优化 | 33.8 [2.9, 72.4] | 39.3 [5.2, 105.8] | 552.7 | 待评估 |
-| M3 局部投影 | 34.5 [30.6, 63.6] | 50.9 [45.5, 93.1] | 148.8 | 待评估 |
-| M4 前向射击 | 51.9 [45.8, 59.5] | 88.5 [74.5, 95.8] | 75.7 | 待评估 |
-| M5 原始—对偶流 | 3.6 [2.5, 3.8] | 4.4 [3.9, 4.7] | 4.0 | 待评估 |
-| M6 李雅普诺夫引导 | 8.0 [2.4, 9.5] | 4.6 [4.1, 4.9] | 10.7 | 待评估 |
-| M7 生成后几何编辑† | 13.4 [0.0, 13.5] | 0.0 [0.0, 0.0] | 13.7 | 待评估 |
+| 方法 | 22 关节 MPJPE vs M0（mm）↓ | 根平移 P95 偏差（mm）↓ | 最大 MPJPE（mm） | 物理 v1 | 物理 v2 |
+|---|---:|---:|---:|---:|---:|
+| M1 能量引导 | 8.4 [2.7, 9.7] | 4.5 [4.1, 5.0] | 11.0 | 0/12 | 0/12 |
+| M2 源噪声优化 | 33.8 [2.9, 72.4] | 39.3 [5.2, 105.8] | 552.7 | 2/12 | 2/12 |
+| M3 局部投影 | 34.5 [30.6, 63.6] | 50.9 [45.5, 93.1] | 148.8 | 0/12 | 0/12 |
+| M4 前向射击 | 51.9 [45.8, 59.5] | 88.5 [74.5, 95.8] | 75.7 | 0/12 | 0/12 |
+| M5 原始—对偶流 | 3.6 [2.5, 3.8] | 4.4 [3.9, 4.7] | 4.0 | 2/12 | 2/12 |
+| M6 李雅普诺夫引导 | 8.0 [2.4, 9.5] | 4.6 [4.1, 4.9] | 10.7 | 2/12 | 2/12 |
+| M7 生成后几何编辑† | 13.4 [0.0, 13.5] | 0.0 [0.0, 0.0] | 13.7 | 1/12 | 2/12 |
 
 ![S0 预备 Table 1](artifacts/table1_s0_preliminary/table1_s0_preliminary.png)
 
-完整表格与机器可读数据：
+完整表格与机器可读数据（该段为 S0 早期角度/内容预备表，物理数值以“双轨 Table 1”小节为准）：
 
 - [Markdown 表格](artifacts/table1_s0_preliminary/TABLE1_S0_PRELIMINARY.md)
 - [LaTeX 表格](artifacts/table1_s0_preliminary/table1_s0_preliminary.tex)
@@ -138,15 +139,18 @@ M7 由 `experiments/run_m7_smoke_from_cache.py` 使用两组经过验证的配�
 
 ### S0 物理闭环更新
 
-共享 M0 的逐标记点脚跟/脚尖接触、地面和有效帧证据已经物化；物理阈值只由 4 条 paired M0 自评、既有 `M0 + max(5%, 1 mm)` 规则和程序化穿透/离地/滑动扰动冻结，未读取候选方法或 S2 结果。84 条序列现为 `7 EVALUATED_PASS / 77 EVALUATED_FAIL`，各方法物理通过数为 M1 `0/12`、M2 `2/12`、M3 `0/12`、M4 `0/12`、M5 `2/12`、M6 `2/12`、M7 `1/12`。
+共享 M0 的逐标记点脚跟/脚尖接触、地面和有效帧证据已经物化。v1 阈值只由 4 条配对 M0 自评和程序化扰动冻结；v2 在不读取候选或 S2 结果的前提下，使用预注册的支撑误差/悬空阶梯校准，选定支撑误差 `≤3 mm`、悬空率 `≤2.5%`，并取消接触高度作为 v2 硬门但继续报告其数值。
 
-![S0 物理闭环 Table 1](artifacts/table1_s0_physical_v1/table1_s0_physical.png)
+84 条序列的物理通过数为 v1 `7/84`、v2 `22/84`；方法级 v1/v2 分别为 M1 `0/12`/`0/12`、M2 `2/12`/`2/12`、M3 `0/12`/`0/12`、M4 `0/12`/`0/12`、M5 `2/12`/`2/12`、M6 `2/12`/`2/12`、M7 `1/12`/`2/12`。两套门均保留原始 11 项数值、阈值、失败条数和左右脚跟/脚尖明细。
 
-- [物理闭环 Markdown 表格](artifacts/table1_s0_physical_v1/TABLE1_S0_PHYSICAL.md)
-- [物理闭环 LaTeX 表格](artifacts/table1_s0_physical_v1/table1_s0_physical.tex)
-- [物理闭环汇总 JSON](artifacts/table1_s0_physical_v1/table1_s0_physical_summary.json)
+服务器产物目录：`/root/autodl-tmp/vimogen_m1_m7_scale/results/phase9/pelvis_m1_m7/`。
 
-这张表仍是 S1 调参前诊断表。物理闭环完成不等于方法入围；当前没有方法满足进入 S2 所需的全部条件。
+- [双轨 Table 1 Markdown（服务器）](/root/autodl-tmp/vimogen_m1_m7_scale/results/phase9/pelvis_m1_m7/table1_s0_physical_v2/attempt_01/TABLE1_S0_PHYSICAL.md)
+- [双轨 Table 1 汇总 JSON（服务器）](/root/autodl-tmp/vimogen_m1_m7_scale/results/phase9/pelvis_m1_m7/table1_s0_physical_v2/attempt_01/table1_s0_physical_summary.json)
+- [84 行物理附表（服务器）](/root/autodl-tmp/vimogen_m1_m7_scale/results/phase9/pelvis_m1_m7/table1_s0_physical_v2/attempt_01/TABLE1_S0_PHYSICAL_PER_SEQUENCE.md)
+- [物理 v2 校准证据（服务器）](/root/autodl-tmp/vimogen_m1_m7_scale/results/phase9/pelvis_m1_m7/physical_thresholds_v2/attempt_02/calibration_evidence.json)
+
+这张表是 S1 配置筛选的物理输入，不等于方法入围；v1 的 `7/84` 历史审计结论不可被 v2 覆盖。
 
 ## 结果诊断
 
@@ -180,18 +184,17 @@ M7 的精确角度是生成后几何编辑的预期结果，只能作为角度�
 
 1. M2、M5 尚未稳定通过当前角度门；
 2. M3、M4 虽命中角度，但存在明显且在零剂量下仍出现的内容副作用；
-3. 全部方法缺少冻结脚跟/脚尖标记，物理门尚未评价。
+3. S1 尚未完成唯一配置冻结；M2 已因批量—单样本一致性失败冻结为 `S1_FAILED_INVARIANT`。
 
 不能用角度命中抵消内容或物理失败，也不能在看到 S0 结果后静默修改冻结的 v1 协议。任何结构性修正均应登记为新版本，并保留当前 S0-v1 作为诊断证据。
 
 ## 下一步
 
-1. 从配对 M0 使用同一骨架、正向运动学和地面定义物化共享脚跟/脚尖标记。
-2. 不重新生成动作，直接对现有 84 条 S0 输出补做接触、脚滑、离地和穿地评价。
-3. 冻结零剂量恒等检查和单样本/批运行一致性检查。
-4. 建立 M2、M3、M4 的版本化修正，不覆盖 v1。
-5. 在每方法最多 8 组配置预算内调节 M1、M5、M6，并验证更大剂量。
-6. 只有通过角度、数值、物理和内容四类门的方法才能进入 S2。
+1. 完成 M1、M3–M6 的屏选，再对前两名执行确认和唯一配置冻结。
+2. 对每个冻结配置执行 ±10° 压力测试；压力测试只记录，不重新调参。
+3. 生成 S1 主表、失败案例表、压力测试表和可复现清单。
+4. 保留 M2 的不变量失败证据，不追加无界配置。
+5. S1 完成前不启动 S2；即使方法失败，也以有界失败状态结束该方法实验。
 
 ## 运行入口
 
@@ -228,6 +231,24 @@ python experiments/build_s0_table1.py \
   --output results/phase9/pelvis_m1_m7/table1_s0_preliminary
 ```
 
+冻结并执行 S1 的屏选/确认/压力测试：
+
+```bash
+python experiments/run_s1_bounded_tuning.py \
+  --stage all \
+  --output results/phase9/pelvis_m1_m7/s1 \
+  --code-commit <当前提交> \
+  --m2-invariant <M2不变量报告> \
+  --runtime-root <服务器运行时根目录> \
+  --base-config <tm2m_infer.yaml> \
+  --protocol <冻结协议> \
+  --manifest <S1清单> \
+  --noise-cache <配对噪声缓存> \
+  --reference <physical_reference.pt> \
+  --thresholds <v1 thresholds.json> \
+  --thresholds-v2 <v2 thresholds.json>
+```
+
 ## 重要文件
 
 - `PROJECT_MEMORY.md`：跨会话的完整实验状态、已验证事实和继续步骤；
@@ -240,13 +261,18 @@ python experiments/build_s0_table1.py \
 - `artifacts/table1_s0_preliminary/`：已归档的预备表格与机器可读结果。
 - `evaluation/physical_reference.py`、`evaluation/physical_metrics.py`：共享 M0 物理证据与统一评价器；
 - `scripts/calibrate_physical_thresholds.py`：仅基于 M0 与合成扰动冻结物理阈值；
-- `artifacts/table1_s0_physical_v1/`：已归档的 S0 物理闭环表格与机器可读结果。
+- `scripts/calibrate_physical_thresholds_v2.py`：候选无关的物理门 v2 校准；
+- `experiments/audit_m2_v2_reproducibility.py`、`experiments/audit_m2_v2_single_batch.py`：M2 不变量审计；
+- `experiments/audit_zero_dose_identity.py`：M1–M6 零剂量旁路审计；
+- `experiments/run_s1_bounded_tuning.py`：S1 屏选、确认、压力测试和唯一配置冻结；
+- `experiments/build_s1_reports.py`：S1 主表、失败案例、压力测试和复现清单生成器。
 
 ## 结果解释边界
 
 - 当前结果只覆盖 C0、两个动作、两个随机种子和 ±2° 范围；
 - S0 是机制检查，不构成大样本统计证据；
-- 物理门已对 84 条 S0 序列完成评价，但仅 7 条通过，S1 修正与调参仍待完成；
+- 物理门 v1 已对 84 条 S0 序列完成评价，`7/84`；v2 独立校准后为 `22/84`，两套数值表同时保留；
+- S1 正在执行有界筛选；M2 已冻结为不变量失败，M1、M3–M6 尚未完成唯一配置冻结；
 - M7 是生成后编辑参考；
 - S1 调参和 S2 正式比较完成前，不得把本页表格称为最终论文 Table 1。
 
