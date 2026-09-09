@@ -94,7 +94,7 @@ def run(args: argparse.Namespace) -> dict:
     sources = [_load_source(seed, root) for seed, root in args.source]
     if sorted(item["seed"] for item in sources) != [0, 42]:
         raise ValueError("M7 S0 requires exactly seeds 0 and 42")
-    doses = (-2.0, 0.0, 2.0)
+    doses = (-10.0, -5.0, -2.0, 0.0, 2.0, 5.0, 10.0)
     method_config: dict[str, float] = {"eps": 1.0e-6}
     rows = []
     method = M7PAHTGeometricEdit()
@@ -165,8 +165,8 @@ def run(args: argparse.Namespace) -> dict:
     summary = {
         "status": "COMPLETED" if all(row["status"] == "COMPLETED" for row in rows) else "FAILED",
         "protocol": PROTOCOL_NAME,
-        "scope": "S0_M7_ONLY",
-        "expected_runs": 12,
+        "scope": "S1_M7_GENERATED_POST_EDIT_REFERENCE",
+        "expected_runs": 28,
         "completed_runs": sum(row["status"] == "COMPLETED" for row in rows),
         "angle_gate_passes": sum(
             row["all_metrics"]["control"]["summary"]["sequence_angle_pass_rate"] == 1.0
