@@ -10,6 +10,8 @@ from geometry.contacts import freeze_marker_contact_evidence
 from evaluation.physical_metrics import (
     EVALUATED_PASS,
     NOT_EVALUATED,
+    PHYSICAL_DECISION_PROFILE_V1,
+    PHYSICAL_DECISION_PROFILE_V2,
     evaluate_physical_metrics_v3,
 )
 from evaluation.physical_reference import (
@@ -19,6 +21,7 @@ from evaluation.physical_reference import (
 from motion_rep.phase1 import MOTION_LAYOUT, encode_rot6d
 from experiments.build_s0_physical_table import build_rows
 from scripts.calibrate_physical_thresholds import freeze_physical_thresholds
+from scripts.calibrate_physical_thresholds_v2 import freeze_physical_thresholds_v2
 from scripts.evaluate_s0_physical import resolve_input_file
 from scripts.freeze_s0_v1 import collect_sequence_records, freeze_s0_manifest
 
@@ -191,6 +194,90 @@ def test_raw_physical_metrics_are_not_a_gate_pass_without_frozen_thresholds() ->
     )
     assert judged["status"] == EVALUATED_PASS
     assert judged["physical_pass"] is True
+
+
+def test_v2_keeps_contact_height_numeric_but_does_not_double_count_it() -> None:
+    frames = 6
+    baseline = _markers(frames)
+    candidate = _markers(frames)
+    candidate["left"]["heel"][..., 2] = 0.03
+    candidate["left"]["toe"][..., 2] = 0.03
+    valid = torch.ones((1, frames), dtype=torch.bool)
+    left = torch.tensor([[False, True, True, True, True, True]])
+    empty = torch.zeros((1, frames), dtype=torch.bool)
+    contacts = {
+        "left": {"heel": left, "toe": left.clone()},
+        "right": {"heel": empty, "toe": empty.clone()},
+    }
+    pairs = {
+        side: {
+            marker: mask[:, 1:] & mask[:, :-1]
+            for marker, mask in side_masks.items()
+        }
+        for side, side_masks in contacts.items()
+    }
+    thresholds = {
+        "penetration_tolerance_mm": 1.0,
+        "floating_height_threshold_mm": 25.0,
+        "penetration_p95_mm": 1.0,
+        "penetration_max_mm": 1.0,
+        "penetration_frame_rate": 0.0,
+        "contact_tangent_speed_p95_mm_per_frame": 1.0,
+        "contact_tangent_speed_max_mm_per_frame": 1.0,
+        "total_slide_distance_mm": 1.0,
+        "max_segment_slide_distance_mm": 1.0,
+        "contact_height_p95_mm": 1.0,
+        "contact_height_max_mm": 1.0,
+        "floating_frame_rate": 1.0,
+        "support_height_error_p95_mm": 100.0,
+    }
+    v1 = evaluate_physical_metrics_v3(
+        candidate,
+        baseline,
+        valid,
+        contacts,
+        torch.zeros(1),
+        contact_pair_masks=pairs,
+        thresholds=thresholds,
+        decision_profile=PHYSICAL_DECISION_PROFILE_V1,
+    )
+    v2 = evaluate_physical_metrics_v3(
+        candidate,
+        baseline,
+        valid,
+        contacts,
+        torch.zeros(1),
+        contact_pair_masks=pairs,
+        thresholds=thresholds,
+        decision_profile=PHYSICAL_DECISION_PROFILE_V2,
+    )
+    assert v1["physical_pass"] is False
+    assert v2["physical_pass"] is True
+    assert v2["per_sequence"][0]["contact_height_p95_mm"] == pytest.approx(30.0)
+
+
+def test_v2_threshold_freeze_is_candidate_independent(tmp_path: Path) -> None:
+    motion = _motion(frames=12)
+    valid = torch.ones((1, motion.shape[1]), dtype=torch.bool)
+    reference = materialize_reference(
+        motion, valid, sample_ids=["94"], seeds=[0], code_commit="abc123"
+    )
+    reference_path = tmp_path / "physical_reference.pt"
+    torch.save(reference, reference_path)
+    output = tmp_path / "thresholds_v2"
+
+    protocol = freeze_physical_thresholds_v2(
+        reference_path=reference_path,
+        output=output,
+        code_commit="abc123",
+    )
+
+    assert protocol["status"] == "FROZEN_PHYSICAL_THRESHOLDS_V2"
+    assert protocol["candidate_results_read"] is False
+    assert protocol["decision_profile"] == PHYSICAL_DECISION_PROFILE_V2
+    assert protocol["selected_candidate_index"] == 1
+    assert protocol["thresholds"]["support_height_error_p95_mm"] == 3.0
+    assert protocol["thresholds"]["floating_frame_rate"] == 0.025
 
 
 def test_threshold_freeze_uses_only_m0_and_rejects_synthetic_failures(

@@ -182,6 +182,15 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def resolve_checkpoint_path(runtime_root: Path | None) -> Path | None:
+    """Resolve the actual model location used by the runtime overlay."""
+    candidates = []
+    if runtime_root is not None:
+        candidates.append(runtime_root / "checkpoints" / "model.pt")
+    candidates.append(ROOT / "checkpoints" / "model.pt")
+    return next((path for path in candidates if path.is_file()), None)
+
+
 def build_config(args: argparse.Namespace, run_root: Path, settings: dict):
     config = OmegaConf.load(args.base_config)
     config.mode = "eval"
@@ -212,6 +221,7 @@ def build_config(args: argparse.Namespace, run_root: Path, settings: dict):
         "method": args.method,
         "method_version": args.method_version,
         "target_delta_deg": float(args.dose),
+        "deterministic": bool(args.method == "M2" and args.method_version == "v2"),
         "trace_enabled": bool(args.trace),
         "artifact_dir": str(run_root / "guided_artifacts"),
         "settings": settings,
@@ -227,6 +237,9 @@ def run(args: argparse.Namespace) -> dict:
     if args.runtime_root is not None and not args.runtime_root.is_dir():
         raise FileNotFoundError(args.runtime_root)
     code_commit = validate_code_commit(args.code_commit)
+    if args.method == "M2" and args.method_version == "v2":
+        # Must be set before the runtime imports CUDA-backed model modules.
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     versioned_settings = {
         ("M2", "v2"): M2_V2_SETTINGS,
         ("M3", "v2"): M3_V2_SETTINGS,
@@ -246,6 +259,7 @@ def run(args: argparse.Namespace) -> dict:
     run_root.mkdir(parents=True)
     config = build_config(args, run_root, settings)
     OmegaConf.save(config, run_root / "resolved_config.yaml")
+    checkpoint_path = resolve_checkpoint_path(args.runtime_root)
     record = {
         "status": "RUNNING",
         "scope": "S0_REAL_VIMOGEN_BATCH",
@@ -256,7 +270,12 @@ def run(args: argparse.Namespace) -> dict:
         "sample_ids": ["94", "34122"],
         "settings": settings,
         "code_commit": code_commit,
-        "checkpoint_hash": sha256(ROOT / "checkpoints/model.pt") if (ROOT / "checkpoints/model.pt").is_file() else "not_available_on_runner_host",
+        "checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
+        "checkpoint_hash": (
+            sha256(checkpoint_path)
+            if checkpoint_path is not None
+            else "not_available_on_runner_host"
+        ),
         "protocol": str(args.protocol),
         "protocol_sha256": sha256(args.protocol),
         "runtime_root": None if args.runtime_root is None else str(args.runtime_root),

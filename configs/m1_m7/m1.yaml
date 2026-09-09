@@ -1,7 +1,7 @@
 method: M1
 implementation: flow_energy_loss_guidance
 constraint_pack: C0
-guidance_scale: 0.05
+guidance_scale: 0.02
 gradient_clip_rms: 1.0
 sigma_min: 0.0662879
 sigma_max: 0.65

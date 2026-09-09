@@ -527,6 +527,16 @@ class _ShootingRuntime:
         return x_sigma
 
 
+class _CountingShootingRuntime:
+    def __init__(self) -> None:
+        self.sigmas: list[float] = []
+
+    def forward_shoot(self, *, x_sigma, sigma, request):
+        del request
+        self.sigmas.append(float(torch.as_tensor(sigma)))
+        return x_sigma
+
+
 def test_m4_forward_shoots_and_terminal_gn_hits_c0() -> None:
     request = _request(2.0)
     hook = M4PCFMHook(
@@ -548,6 +558,35 @@ def test_m4_forward_shoots_and_terminal_gn_hits_c0() -> None:
         request.shared_evidence.target_angle_curve_deg,
         atol=1.0e-3, rtol=0,
     )
+
+
+def test_m4_each_configured_shooting_sigma_triggers_at_most_once() -> None:
+    request = _request(2.0)
+    runtime = _CountingShootingRuntime()
+    hook = M4PCFMHook(
+        request,
+        runtime=runtime,
+        mean=torch.zeros(MOTION_LAYOUT.total_dim),
+        std=torch.ones(MOTION_LAYOUT.total_dim),
+        config=M4Config(shooting_sigmas=(0.55, 0.35, 0.15), trust_radius_deg=2.0),
+    )
+
+    records = []
+    for sigma in (0.5, 0.4, 0.2, 0.5, 0.4, 0.2):
+        _, record = hook.correct_velocity(
+            x_sigma=request.baseline_motion.clone(),
+            velocity=torch.zeros_like(request.baseline_motion),
+            sigma=sigma,
+            valid_mask=request.shared_evidence.valid_mask,
+        )
+        records.append(record)
+
+    assert runtime.sigmas == pytest.approx([0.5, 0.4, 0.2])
+    assert [record["active"] for record in records] == [True, True, True, False, False, False]
+    assert records[3]["reason"] == "SHOOTING_SIGMA_ALREADY_TRIGGERED"
+    assert records[4]["reason"] == "SHOOTING_SIGMA_ALREADY_TRIGGERED"
+    assert records[5]["reason"] == "SHOOTING_SIGMA_ALREADY_TRIGGERED"
+    assert [record["shooting_sigma_index"] for record in records] == [0, 1, 2, 0, 1, 2]
 
 
 def test_m4_v2_terminal_only_skips_shooting_and_zero_dose_is_exact() -> None:

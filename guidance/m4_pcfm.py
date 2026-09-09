@@ -104,6 +104,12 @@ class M4PCFMHook:
         self.std = std.detach()
         self.config = config if isinstance(config, M4Config) else M4Config.from_mapping(config)
         self.step_records: list[dict[str, Any]] = []
+        # A sampler can expose several nearby sigma values while stepping
+        # through a configured shooting point.  Keep the trigger state on the
+        # hook so one configured point cannot launch multiple full rollouts in
+        # the same sampling run.  ``slice`` creates a fresh hook for each
+        # independent sample and therefore also a fresh trigger ledger.
+        self._triggered_shooting_indices: set[int] = set()
 
     def slice(self, index: int) -> "M4PCFMHook":
         batch = self.request.baseline_motion.shape[0]
@@ -121,8 +127,39 @@ class M4PCFMHook:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         sigma_value = float(torch.as_tensor(sigma).detach().cpu())
         tolerance = max(1.0e-6, 0.5 / max(len(self.config.shooting_sigmas), 1))
-        active = any(abs(sigma_value - point) <= tolerance for point in self.config.shooting_sigmas)
-        record: dict[str, Any] = {"protocol": self.protocol, "sigma": sigma_value, "active": active}
+        matches = [
+            (abs(sigma_value - point), index, point)
+            for index, point in enumerate(self.config.shooting_sigmas)
+            if abs(sigma_value - point) <= tolerance
+        ]
+        match = min(matches) if matches else None
+        available_matches = [
+            item for item in matches if item[1] not in self._triggered_shooting_indices
+        ]
+        if available_matches:
+            _, shooting_index, shooting_sigma = min(available_matches)
+            self._triggered_shooting_indices.add(shooting_index)
+            active = True
+            trigger_reason = None
+        else:
+            shooting_index = match[1] if match is not None else None
+            shooting_sigma = match[2] if match is not None else None
+            active = False
+            trigger_reason = (
+                "SHOOTING_SIGMA_ALREADY_TRIGGERED"
+                if match is not None
+                else "NO_SHOOTING_SIGMA_MATCH"
+            )
+        record: dict[str, Any] = {
+            "protocol": self.protocol,
+            "sigma": sigma_value,
+            "active": active,
+        }
+        if shooting_index is not None:
+            record["shooting_sigma_index"] = shooting_index
+            record["shooting_sigma"] = shooting_sigma
+        if trigger_reason is not None:
+            record["reason"] = trigger_reason
         if not active or sigma_value <= self.config.eps:
             self.step_records.append(record)
             return velocity, record

@@ -10,6 +10,26 @@ import torch
 EVALUATOR_VERSION = "m1_m7_physical_metrics_v1"
 EVALUATOR_VERSION_V3 = "m1_m7_physical_metrics_v3"
 
+# v1 is the historical strict audit: every listed metric is a hard gate.  v2
+# keeps all metrics in the report, but does not count the two contact-height
+# summaries as additional hard failures because floating rate and support
+# height already cover the same vertical-contact failure family.
+PHYSICAL_DECISION_PROFILE_V1 = "all_metrics"
+PHYSICAL_DECISION_PROFILE_V2 = "reduced_redundant_vertical_metrics"
+V2_HARD_METRICS = frozenset(
+    {
+        "penetration_p95_mm",
+        "penetration_max_mm",
+        "penetration_frame_rate",
+        "contact_tangent_speed_p95_mm_per_frame",
+        "contact_tangent_speed_max_mm_per_frame",
+        "total_slide_distance_mm",
+        "max_segment_slide_distance_mm",
+        "floating_frame_rate",
+        "support_height_error_p95_mm",
+    }
+)
+
 EVENT_TOLERANCE_KEYS = {
     "penetration_tolerance_mm",
     "floating_height_threshold_mm",
@@ -159,7 +179,10 @@ def _longest_segment_distance(
 
 
 def _threshold_decision(
-    row: Mapping[str, Any], thresholds: Mapping[str, float] | None
+    row: Mapping[str, Any],
+    thresholds: Mapping[str, float] | None,
+    *,
+    hard_metric_names: frozenset[str] | None = None,
 ) -> tuple[str, bool | None, list[str]]:
     if thresholds is None:
         return NOT_EVALUATED, None, ["THRESHOLDS_NOT_FROZEN"]
@@ -168,6 +191,8 @@ def _threshold_decision(
     failures: list[str] = []
     for name, limit in thresholds.items():
         if name in EVENT_TOLERANCE_KEYS:
+            continue
+        if hard_metric_names is not None and name not in hard_metric_names:
             continue
         value = row.get(name)
         if value is None or not torch.isfinite(torch.as_tensor(value)):
@@ -204,6 +229,7 @@ def evaluate_physical_metrics_v3(
     contact_pair_masks: Mapping[str, Any] | None = None,
     up_axis: int = 2,
     thresholds: Mapping[str, float] | None = None,
+    decision_profile: str = PHYSICAL_DECISION_PROFILE_V1,
 ) -> dict[str, Any]:
     """Evaluate frozen-M0 heel/toe evidence without letting candidates relabel it.
 
@@ -213,6 +239,11 @@ def evaluate_physical_metrics_v3(
     ``contact_pair_masks`` are always supplied by the paired M0 reference.
     """
 
+    if decision_profile not in {
+        PHYSICAL_DECISION_PROFILE_V1,
+        PHYSICAL_DECISION_PROFILE_V2,
+    }:
+        raise ValueError(f"unsupported physical decision profile: {decision_profile}")
     if valid_mask.dtype is not torch.bool or valid_mask.ndim != 2:
         raise ValueError("valid_mask must be bool[B,T]")
     if up_axis not in (0, 1, 2):
@@ -375,7 +406,14 @@ def evaluate_physical_metrics_v3(
             "valid_frames": int(valid.sum().item()),
             "contact_frames": contact_count,
         }
-        status, physical_pass, reasons = _threshold_decision(row, thresholds)
+        hard_metrics = (
+            V2_HARD_METRICS
+            if decision_profile == PHYSICAL_DECISION_PROFILE_V2
+            else None
+        )
+        status, physical_pass, reasons = _threshold_decision(
+            row, thresholds, hard_metric_names=hard_metrics
+        )
         row.update(
             {
                 "status": status,
@@ -412,5 +450,6 @@ def evaluate_physical_metrics_v3(
         "reason": reasons[0] if len(reasons) == 1 else reasons,
         "physical_pass": physical_pass,
         "thresholds": None if thresholds is None else dict(thresholds),
+        "decision_profile": decision_profile,
         "per_sequence": rows,
     }

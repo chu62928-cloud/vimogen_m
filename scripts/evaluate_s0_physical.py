@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from evaluation.physical_metrics import (
     EVAL_ERROR,
     NOT_EVALUATED,
+    PHYSICAL_DECISION_PROFILE_V1,
     REFERENCE_MISSING,
     EVALUATOR_VERSION_V3,
     evaluate_physical_metrics_v3,
@@ -64,15 +65,24 @@ def _strict_json(path: Path, value: Any) -> None:
     )
 
 
-def _load_thresholds(path: Path | None) -> tuple[dict[str, float] | None, str]:
+def _load_thresholds(
+    path: Path | None,
+) -> tuple[dict[str, float] | None, str, str]:
     if path is None:
-        return None, "not_frozen"
+        return None, "not_frozen", PHYSICAL_DECISION_PROFILE_V1
     path = resolve_input_file(path, "thresholds.json")
     value = json.loads(path.read_text(encoding="utf-8"))
-    if value.get("status") != "FROZEN_PHYSICAL_THRESHOLDS":
-        raise ValueError("threshold file must have status FROZEN_PHYSICAL_THRESHOLDS")
+    if value.get("status") not in {
+        "FROZEN_PHYSICAL_THRESHOLDS",
+        "FROZEN_PHYSICAL_THRESHOLDS_V2",
+    }:
+        raise ValueError("threshold file must contain a frozen physical status")
     thresholds = {str(key): float(limit) for key, limit in value["thresholds"].items()}
-    return thresholds, str(value.get("protocol", path.name))
+    return (
+        thresholds,
+        str(value.get("protocol", path.name)),
+        str(value.get("decision_profile", PHYSICAL_DECISION_PROFILE_V1)),
+    )
 
 
 def _reference_index(reference: Mapping[str, Any]) -> dict[tuple[int, str], int]:
@@ -113,6 +123,12 @@ def _spot_checks(rows: list[dict[str, Any]], count: int) -> list[dict[str, Any]]
             "candidate_motion_sha256": row.get("candidate_motion_sha256"),
             "physical_status": row["physical"]["status"],
             "metrics": row["physical"].get("per_sequence", [{}])[0],
+            "physical_v2_status": (
+                row.get("physical_v2") or {}
+            ).get("status"),
+            "physical_v2_metrics": (
+                (row.get("physical_v2") or {}).get("per_sequence", [{}])[0]
+            ),
             "programmatic_checks": {
                 "reference_key_matches": row["physical_reference_status"] == "MATERIALIZED",
                 "candidate_hash_recorded": bool(row.get("candidate_motion_sha256")),
@@ -131,6 +147,7 @@ def run(
     reference_path: Path,
     output: Path,
     thresholds_path: Path | None = None,
+    thresholds_v2_path: Path | None = None,
     spot_check_count: int = 8,
     expected_count: int = 84,
 ) -> dict[str, Any]:
@@ -140,7 +157,10 @@ def run(
     reference = torch.load(reference_path, map_location="cpu", weights_only=True)
     if reference.get("cache_version") != REFERENCE_CACHE_VERSION:
         raise ValueError("unsupported physical reference cache version")
-    thresholds, threshold_version = _load_thresholds(thresholds_path)
+    thresholds, threshold_version, decision_profile = _load_thresholds(thresholds_path)
+    thresholds_v2, threshold_version_v2, decision_profile_v2 = _load_thresholds(
+        thresholds_v2_path
+    )
     reference_lookup = _reference_index(reference)
     records = collect_sequence_records(source_paths)
     if len(records) != expected_count:
@@ -175,6 +195,7 @@ def run(
                 "physical_pass": None,
                 "per_sequence": [],
             }
+            physical_v2 = dict(physical)
             row["physical_reference_status"] = REFERENCE_MISSING
         elif not candidate_path.is_file():
             physical = {
@@ -184,6 +205,7 @@ def run(
                 "physical_pass": False,
                 "per_sequence": [],
             }
+            physical_v2 = dict(physical)
             row["physical_reference_status"] = "MATERIALIZED"
         else:
             index = reference_lookup[reference_key]
@@ -208,6 +230,22 @@ def run(
                     contact_pair_masks=pairs,
                     up_axis=int(reference["world_up_axis"]),
                     thresholds=thresholds,
+                    decision_profile=decision_profile,
+                )
+                physical_v2 = (
+                    evaluate_physical_metrics_v3(
+                        candidate_markers,
+                        baseline_markers,
+                        valid,
+                        contacts,
+                        reference["ground_height_m"][index : index + 1],
+                        contact_pair_masks=pairs,
+                        up_axis=int(reference["world_up_axis"]),
+                        thresholds=thresholds_v2,
+                        decision_profile=decision_profile_v2,
+                    )
+                    if thresholds_v2 is not None
+                    else None
                 )
                 row["physical_reference_status"] = "MATERIALIZED"
                 row["paired_m0_id"] = reference["paired_m0_ids"][index]
@@ -219,12 +257,26 @@ def run(
                     "physical_pass": False,
                     "per_sequence": [],
                 }
+                physical_v2 = {
+                    "evaluator_version": EVALUATOR_VERSION_V3,
+                    "status": EVAL_ERROR,
+                    "reason": repr(error),
+                    "physical_pass": False,
+                    "per_sequence": [],
+                }
                 row["physical_reference_status"] = "MATERIALIZED"
         row["physical"] = physical
+        row["physical_v1"] = physical
+        row["physical_v2"] = physical_v2
         rows.append(row)
         _strict_json(output / "records" / row["run_id"] / "physical_evaluation.json", row)
 
     counts = Counter(row["physical"]["status"] for row in rows)
+    counts_v2 = Counter(
+        row["physical_v2"]["status"]
+        for row in rows
+        if row.get("physical_v2") is not None
+    )
     spot_checks = _spot_checks(rows, min(max(spot_check_count, 0), 8))
     summary = {
         "protocol": (
@@ -245,7 +297,13 @@ def run(
         "reference_cache": str(reference_path),
         "reference_cache_sha256": sha256(reference_path),
         "threshold_version": threshold_version,
+        "decision_profile": decision_profile,
+        "threshold_version_v2": threshold_version_v2
+        if thresholds_v2 is not None
+        else None,
+        "decision_profile_v2": decision_profile_v2 if thresholds_v2 is not None else None,
         "physical_status_counts": dict(sorted(counts.items())),
+        "physical_v2_status_counts": dict(sorted(counts_v2.items())),
         "records": rows,
         "spot_check_count": len(spot_checks),
         "s2_allowed": False,
@@ -275,6 +333,7 @@ def main() -> None:
     parser.add_argument("--m7-root", type=Path, default=DEFAULT_M7_ROOT)
     parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE)
     parser.add_argument("--thresholds", type=Path)
+    parser.add_argument("--thresholds-v2", type=Path)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--spot-check-count", type=int, default=8)
     parser.add_argument("--expected-count", type=int, default=84)
@@ -284,6 +343,7 @@ def main() -> None:
         source_paths=sources,
         reference_path=args.reference,
         thresholds_path=args.thresholds,
+        thresholds_v2_path=args.thresholds_v2,
         output=args.output,
         spot_check_count=args.spot_check_count,
         expected_count=args.expected_count,

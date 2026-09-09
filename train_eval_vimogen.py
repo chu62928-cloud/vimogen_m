@@ -266,6 +266,14 @@ def sample_data(loader, sampler, start_epoch, start_iter):
 
 def main(args):
     is_training = args.mode == 'train'
+    scale_cfg_for_determinism = args.get('m1_m7_guidance', {})
+    if bool(scale_cfg_for_determinism.get('deterministic', False)):
+        # M2 repeated-batch and singleton audits require the same CUDA
+        # reduction path.  Keep this opt-in so historical protocols retain
+        # their original runtime behavior.
+        torch.use_deterministic_algorithms(True)
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cudnn.deterministic = True
 
     train_target = args.experiment.get('train_target', ['transformer'])
     train_transformer = 'transformer' in train_target
@@ -1856,16 +1864,19 @@ def main(args):
                             'std': condition_std,
                         }
                         strict_zero_bypass = (
-                            scale_method_version == 'v2'
-                            and scale_method in {'M2', 'M3', 'M4'}
+                            scale_method in {'M1', 'M2', 'M3', 'M4', 'M5', 'M6'}
                             and float(scale_target_delta_deg) == 0.0
                         )
                         if strict_zero_bypass:
-                            bypass_protocol = {
-                                'M2': M2_V2_PROTOCOL,
-                                'M3': 'vimogen_m3_projflow_local_c0_v2',
-                                'M4': 'vimogen_m4_pcfm_terminal_only_c0_v2',
-                            }[scale_method]
+                            bypass_protocol = (
+                                {
+                                    'M2': M2_V2_PROTOCOL,
+                                    'M3': 'vimogen_m3_projflow_local_c0_v2',
+                                    'M4': 'vimogen_m4_pcfm_terminal_only_c0_v2',
+                                }.get(scale_method)
+                                if scale_method_version == 'v2'
+                                else None
+                            ) or 'vimogen_m1_m7_zero_dose_identity_v1'
                             scale_result = FlowSampleResult(
                                 initial_noise=m0_result.initial_noise,
                                 raw=baseline_norm,
@@ -1879,7 +1890,7 @@ def main(args):
                                 guidance_summary={
                                     'protocol': bypass_protocol,
                                     'method': scale_method,
-                                    'method_version': 'v2',
+                                    'method_version': scale_method_version,
                                     'zero_dose_bypass': True,
                                     'identity_source': 'paired_m0_authority_norm',
                                 },

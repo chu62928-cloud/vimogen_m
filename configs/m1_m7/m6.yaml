@@ -1,7 +1,7 @@
 method: M6
 implementation: lyaguide
 constraint_pack: C0
-candidate_scale: 0.05
+candidate_scale: 0.5
 delta: 0.1
 gradient_clip_rms: 1.0
 sigma_min: 0.0662879
