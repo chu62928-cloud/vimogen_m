@@ -1,15 +1,15 @@
 # ViMoGen骨盆姿态控制 Project Memory
 
-## 2026-09-19 14:32：新版 S1 开发结果已核验，准备提交 GitHub
+## 2026-09-19：新版 S1 开发结果已核验并推送 GitHub
 
-- VERIFIED：分支 `codex/pelvis-m1-m7-scale-experiments`、当前 HEAD `d2228b1`；本轮新增相对角几何、M1–M7 接口、开发矩阵、M4 前后审计、M2 一致性审计、足底接触评价和固定侧视渲染。推送前需只暂存本轮相关文件并复核差异；工作区存在其他阶段未跟踪文件，不能使用 `git add .`。
+- VERIFIED/GITHUB：分支 `codex/pelvis-m1-m7-scale-experiments` 的相对角实验代码、`result.md` 和 `README.md` 已由提交 `500e79ce2e2793f88fa82ed6213b7bb8d0a39bfe` 推送；`git ls-remote` 与本地提交哈希一致。本轮只提交了 42 个相关文件，其他阶段未跟踪文件保持原状。此提交用于归档当前部分结果，不代表服务器历史产物均由此 Git 提交生成。
 - VERIFIED/DEVELOPMENT：服务器 `results/phase9/pelvis_m1_m7/local_pelvis_s1/development_audit_attempt_02.json` 与本地 `local_inspection/` 副本记录 M1/M3/M4/M5/M6/M7 各 3 强度×−5/0/+5°，共 `54/54` 有效开发槽位，配对 M0 哈希一致。非零剂量相对角命中：M1 `6/6`、M3 `0/6`、M4 最终 `6/6`、M5 `1/6`、M6 `4/6`、M7 `6/6`。M2 未纳入此数。
 - VERIFIED/M4：`m4_terminal_audit_attempt_01/summary.json` 将采样端点与末端校正分开：六条非零剂量采样端点 `0/6`，末端 `6/6`；采样端点 MAE 约 `4.87–4.92°`。不得把 M4 的末端编辑命中称为生成期引导成功。
 - VERIFIED/LIMITATION：已命中相对角的 M1 中心 +5°，相对角响应 `+5.116°`，骨盆世界角 `−0.718°`、胸廓旋转 P95 `4.973°`；M6 中心分别 `+4.471°/−0.522°/4.390°`，M7 中心约 `+5°/0°/5°`。S1 单目标主要由胸廓代偿，不是骨盆实际前倾。用户补充规则：单条相对角未过门便停止该条下游成败分析；只对过门者检查姿态/接触。接触运行器已据此过滤。
 - VERIFIED/TESTS：服务器相对角、冻结接触、批量不变量、统一接口及侧视渲染专项合并回归 `37 passed in 25.99s`；此前 S1 几何与评价预检 `28 passed`。本地相关代码静态编译和 `git diff --check` 通过。M1 +5° 固定相机网格视频 `100` 帧、`20 fps`，编码与三个静态帧已检查，但动态、标志叠加与用户终验仍待办。
 - IN PROGRESS：M2 新版相对角的重复批量与批量—单样本四臂审计在服务器 `m2_invariance_attempt_01`；截至 2026-09-19 14:26，`batch_a` 与 `batch_repeat` 两臂完成，单样本臂尚未完成。不得把首次清单相对路径导致的失败当成方法失败。真实 SMPL-X 接触指标代码已实现，但服务器真实动作评价尚未运行。
 - PENDING：两动作×两种子×七剂量 `196` 槽位、七方法全量侧视视频、冻结接触真实动作评价、用户终验与 S2 运行均未完成。更新后的 `README.md`/`result.md` 只能称开发阶段负面语义发现，不能称论文阳性或完整任务通过。
-- IMMEDIATE NEXT：先检查服务器 `m2_invariance_attempt_01/invariance_audit.json` 或 `progress.json`；再检查本地暂存清单、运行针对性测试、提交并推送当前实验分支；推送完成后记录提交哈希和远端状态。
+- IMMEDIATE NEXT：先检查服务器 `m2_invariance_attempt_01/invariance_audit.json` 或 `progress.json`；若已完成，按审计结果更新结果账本。随后仅对通过相对角门的结果运行真实 SMPL-X 足底接触评价，并完成完整侧视视频审查。不要把未完成的 196 槽位验证写为通过。
 
 ## 2026-09-19：S1 开发矩阵完成，M2/M7 门控与侧视验收仍在推进
 
