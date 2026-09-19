@@ -8,7 +8,6 @@ from typing import Any, Mapping
 import torch
 
 from geometry.authoritative_motion import authoritative_motion
-from geometry.pelvis_angle import angle_error_deg
 from guidance.base import (
     ConstraintPack,
     GuidedSample,
@@ -17,6 +16,11 @@ from guidance.base import (
     RunTimer,
 )
 from guidance.m2_dflow_source import _rollout
+from guidance.sampling_common import (
+    control_angle_error_deg,
+    control_residual_stack_deg,
+    method_protocol,
+)
 from motion_rep.phase1 import MOTION_LAYOUT
 
 
@@ -90,16 +94,32 @@ class M2DFlowSourceOptimizationV2:
         request: GuidanceRequest,
         cfg: Mapping[str, Any] | None = None,
     ) -> GuidedSample:
-        if request.constraint_pack is not ConstraintPack.C0:
-            raise NotImplementedError("M2-v2 implements C0 only")
+        if request.constraint_pack not in {
+            ConstraintPack.C0,
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            raise NotImplementedError("M2-v2 implements C0, S1, and S2 only")
         config = M2V2Config.from_mapping(cfg)
+        if request.constraint_pack in {
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        } and (
+            config.content_weight != 0.0 or config.root_weight != 0.0
+        ):
+            raise ValueError(
+                "S1 relative-only M2 requires content_weight=0 and root_weight=0"
+            )
+        protocol = method_protocol(
+            request, method="m2_v2", legacy_protocol=PROTOCOL_NAME
+        )
         diagnostics = GuidanceDiagnostics()
         batch = request.baseline_motion.shape[0]
         self.selected_source_noise = request.base_noise.detach().float().clone()
         if float(request.target_dose_deg) == 0.0:
             diagnostics.extra.update(
                 {
-                    "protocol": PROTOCOL_NAME,
+                    "protocol": protocol,
                     "optimization_scope": "independent_per_sample",
                     "zero_dose_bypass": True,
                     "per_sample_best_iteration": [-1] * batch,
@@ -144,8 +164,11 @@ class M2DFlowSourceOptimizationV2:
                     optimizer.zero_grad(set_to_none=True)
                     motion = _rollout(vimogen, source, request)
                     physical = authoritative_motion(motion, valid_mask=valid).motion
-                    residual = angle_error_deg(physical, target)
-                    angle_loss = _masked_mean_per_sample(residual.square(), valid)
+                    residual = control_angle_error_deg(physical, request)
+                    residual_stack = control_residual_stack_deg(physical, request)
+                    angle_loss = _masked_mean_per_sample(
+                        residual_stack.square(), valid
+                    )
                     source_loss = (source - initial).square().flatten(1).mean(-1)
                     content_loss = _masked_mean_per_sample(
                         (physical - baseline).square(), valid
@@ -218,7 +241,7 @@ class M2DFlowSourceOptimizationV2:
                         )
                         source_hits += source_norms.gt(config.source_trust_radius).long()
 
-                final_residual = angle_error_deg(best_motion, target).abs()
+                final_residual = control_angle_error_deg(best_motion, request).abs()
                 per_sample_mae = _masked_mean_per_sample(final_residual, valid)
                 per_sample_p95 = torch.stack(
                     [
@@ -236,10 +259,14 @@ class M2DFlowSourceOptimizationV2:
                 diagnostics.rejected_steps = int((source_hits + step_hits).sum().cpu())
                 diagnostics.extra.update(
                     {
-                        "protocol": PROTOCOL_NAME,
+                        "protocol": protocol,
                         "optimized_variable": "initial_source_noise_only",
                         "optimization_scope": "independent_per_sample",
-                        "best_state_objective": "angle+source+content+root",
+                        "best_state_objective": (
+                            "relative_angle+source"
+                            if request.constraint_pack is ConstraintPack.S1_RELATIVE
+                            else "angle+source+content+root"
+                        ),
                         "target_redefined_during_optimization": False,
                         "zero_dose_bypass": False,
                         "per_sample_best_iteration": best_iteration.detach().cpu().tolist(),

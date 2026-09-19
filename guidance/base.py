@@ -49,6 +49,8 @@ class ConstraintPack(str, Enum):
     C1 = "C1"
     C2 = "C2"
     C3 = "C3"
+    S1_RELATIVE = "S1_RELATIVE"
+    S2_RELATIVE_WORLD = "S2_RELATIVE_WORLD"
 
 
 def _validate_motion(name: str, value: torch.Tensor) -> None:
@@ -82,6 +84,7 @@ class SharedEvidence:
     contact_evidence_version: str = "not_available"
     ground_version: str = "not_available"
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    target_world_pelvis_curve_deg: torch.Tensor | None = None
 
     def validate(self, shape: tuple[int, int]) -> None:
         _validate_prefix_mask(self.valid_mask, shape)
@@ -89,6 +92,11 @@ class SharedEvidence:
             raise ValueError("target_angle_curve_deg must match [B,T]")
         if not torch.isfinite(self.target_angle_curve_deg).all():
             raise ValueError("target_angle_curve_deg contains non-finite values")
+        if self.target_world_pelvis_curve_deg is not None:
+            if tuple(self.target_world_pelvis_curve_deg.shape) != shape:
+                raise ValueError("target_world_pelvis_curve_deg must match [B,T]")
+            if not torch.isfinite(self.target_world_pelvis_curve_deg).all():
+                raise ValueError("target_world_pelvis_curve_deg contains non-finite values")
         for name, mask in self.contact_masks.items():
             if mask.dtype is not torch.bool or tuple(mask.shape) != shape:
                 raise ValueError(f"contact mask {name!r} must be bool{shape}")
@@ -139,6 +147,11 @@ def slice_request(request: GuidanceRequest, index: int) -> GuidanceRequest:
     evidence = SharedEvidence(
         valid_mask=one(request.shared_evidence.valid_mask),
         target_angle_curve_deg=one(request.shared_evidence.target_angle_curve_deg),
+        target_world_pelvis_curve_deg=(
+            None
+            if request.shared_evidence.target_world_pelvis_curve_deg is None
+            else one(request.shared_evidence.target_world_pelvis_curve_deg)
+        ),
         contact_masks={
             name: one(mask) for name, mask in request.shared_evidence.contact_masks.items()
         },

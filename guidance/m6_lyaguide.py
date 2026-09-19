@@ -11,7 +11,8 @@ from guidance.base import ConstraintPack, GuidanceRequest, slice_batch_stat, sli
 from guidance.sampling_common import (
     authoritative_normalized,
     clip_rms,
-    masked_angle_loss,
+    masked_control_loss,
+    method_protocol,
     predicted_clean,
 )
 
@@ -51,9 +52,16 @@ class M6LyaGuideHook:
         std: torch.Tensor,
         config: M6Config | Mapping[str, Any] | None = None,
     ) -> None:
-        if request.constraint_pack is not ConstraintPack.C0:
-            raise NotImplementedError("M6 v1 implements C0 only")
+        if request.constraint_pack not in {
+            ConstraintPack.C0,
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            raise NotImplementedError("M6 implements C0, S1, and S2 only")
         self.request = request
+        self.protocol = method_protocol(
+            request, method="m6", legacy_protocol=PROTOCOL_NAME
+        )
         self.mean = mean.detach()
         self.std = std.detach()
         self.config = config if isinstance(config, M6Config) else M6Config.from_mapping(config)
@@ -79,7 +87,7 @@ class M6LyaGuideHook:
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         sigma_value = float(torch.as_tensor(sigma).detach().cpu())
         cfg = self.config
-        record: dict[str, Any] = {"protocol": PROTOCOL_NAME, "active": False, "sigma": sigma_value}
+        record: dict[str, Any] = {"protocol": self.protocol, "active": False, "sigma": sigma_value}
         if sigma_value < cfg.sigma_min or sigma_value > cfg.sigma_max:
             self.step_records.append(record)
             return velocity, record
@@ -87,11 +95,7 @@ class M6LyaGuideHook:
             state = x_sigma.detach().float().requires_grad_(True)
             clean = predicted_clean(state, velocity.detach(), sigma)
             physical, _ = authoritative_normalized(clean, valid_mask, self.mean, self.std)
-            loss, residual = masked_angle_loss(
-                physical,
-                self.request.shared_evidence.target_angle_curve_deg,
-                valid_mask,
-            )
+            loss, residual = masked_control_loss(physical, self.request, valid_mask)
             gradient = torch.autograd.grad(loss, state)[0]
             gradient = torch.nan_to_num(gradient) * valid_mask.unsqueeze(-1)
             gradient, gradient_rms = clip_rms(

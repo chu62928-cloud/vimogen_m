@@ -8,9 +8,20 @@ from typing import Any, Mapping
 import torch
 
 from geometry.authoritative_motion import authoritative_motion
+from geometry.local_pelvis import (
+    minimum_norm_relative_projection,
+    minimum_norm_s2_projection,
+    relative_angle_error_deg,
+)
 from geometry.pelvis_angle import pelvis_angle_curve_deg, wrap_angle_deg
 from guidance.base import ConstraintPack, GuidanceRequest, slice_batch_stat, slice_request
-from guidance.sampling_common import align_stat, masked_rms, normalized_from_physical, velocity_from_clean
+from guidance.sampling_common import (
+    align_stat,
+    masked_rms,
+    method_protocol,
+    normalized_from_physical,
+    velocity_from_clean,
+)
 from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe, encode_rot6d
 from motion_rep.sagittal_pelvis_angle import apply_person_right_axis_rotation
 
@@ -49,28 +60,50 @@ def _terminal_gn(
     target: torch.Tensor,
     valid_mask: torch.Tensor,
     config: M4Config,
+    constraint_pack: ConstraintPack = ConstraintPack.C0,
+    world_target: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, list[dict[str, float]]]:
     candidate = authoritative_motion(motion, valid_mask=valid_mask).motion
     records: list[dict[str, float]] = []
     for iteration in range(config.gn_iterations):
-        actual = pelvis_angle_curve_deg(candidate)
-        residual = wrap_angle_deg(target.to(actual.device) - actual)
-        # C0 has the analytic local Jacobian d(phi)/d(theta_right)=1.
-        step = (residual / (1.0 + config.damping)).clamp(
-            -config.trust_radius_deg, config.trust_radius_deg
-        )
-        step = torch.where(valid_mask, step, torch.zeros_like(step))
-        root = decode_rot6d_safe(candidate[..., MOTION_LAYOUT.root_rotation])
-        candidate = candidate.clone()
-        candidate[..., MOTION_LAYOUT.root_rotation] = encode_rot6d(
-            apply_person_right_axis_rotation(root, step)
-        )
-        candidate = authoritative_motion(candidate, valid_mask=valid_mask).motion
+        if constraint_pack in {
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            residual = -relative_angle_error_deg(candidate, target.to(candidate.device))
+            if constraint_pack is ConstraintPack.S2_RELATIVE_WORLD:
+                if world_target is None:
+                    raise ValueError("S2 terminal projection requires explicit world target")
+                candidate, audit = minimum_norm_s2_projection(
+                    candidate, target, world_target.to(candidate.device), valid_mask,
+                    damping=config.damping, max_step_deg=config.trust_radius_deg,
+                )
+            else:
+                candidate, audit = minimum_norm_relative_projection(
+                    candidate, target, valid_mask, damping=config.damping,
+                    max_step_deg=config.trust_radius_deg,
+                )
+            step_rms = float(audit["realized_step_rms_deg"])
+        else:
+            actual = pelvis_angle_curve_deg(candidate)
+            residual = wrap_angle_deg(target.to(actual.device) - actual)
+            # C0 has the analytic local Jacobian d(phi)/d(theta_right)=1.
+            step = (residual / (1.0 + config.damping)).clamp(
+                -config.trust_radius_deg, config.trust_radius_deg
+            )
+            step = torch.where(valid_mask, step, torch.zeros_like(step))
+            root = decode_rot6d_safe(candidate[..., MOTION_LAYOUT.root_rotation])
+            candidate = candidate.clone()
+            candidate[..., MOTION_LAYOUT.root_rotation] = encode_rot6d(
+                apply_person_right_axis_rotation(root, step)
+            )
+            candidate = authoritative_motion(candidate, valid_mask=valid_mask).motion
+            step_rms = float(masked_rms(step, valid_mask).cpu())
         records.append(
             {
                 "iteration": float(iteration),
                 "residual_mae_deg": float(residual[valid_mask].abs().mean().cpu()),
-                "step_rms_deg": float(masked_rms(step, valid_mask).cpu()),
+                "step_rms_deg": step_rms,
             }
         )
         if float(residual[valid_mask].abs().max().cpu()) <= config.terminal_tolerance_deg:
@@ -94,11 +127,18 @@ class M4PCFMHook:
         std: torch.Tensor,
         config: M4Config | Mapping[str, Any] | None = None,
     ) -> None:
-        if request.constraint_pack is not ConstraintPack.C0:
-            raise NotImplementedError("M4 v1 implements C0 only")
+        if request.constraint_pack not in {
+            ConstraintPack.C0,
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            raise NotImplementedError("M4 implements C0, S1, and S2 only")
         if not hasattr(runtime, "forward_shoot"):
             raise TypeError("M4 runtime must expose forward_shoot")
         self.request = request
+        self.protocol = method_protocol(
+            request, method="m4", legacy_protocol=PROTOCOL_NAME
+        )
         self.runtime = runtime
         self.mean = mean.detach()
         self.std = std.detach()
@@ -179,7 +219,8 @@ class M4PCFMHook:
             )
             corrected_physical, gn_records = _terminal_gn(
                 physical, self.request.shared_evidence.target_angle_curve_deg,
-                valid_mask, self.config,
+                valid_mask, self.config, self.request.constraint_pack,
+                self.request.shared_evidence.target_world_pelvis_curve_deg,
             )
             corrected_terminal = normalized_from_physical(corrected_physical, self.mean, self.std)
             propagated = terminal.float() + self.config.propagation_gain * (
@@ -217,6 +258,7 @@ class M4PCFMHook:
         ) + align_stat(mean, official_norm, "mean")
         projected, records = _terminal_gn(
             physical, self.request.shared_evidence.target_angle_curve_deg,
-            valid_mask, self.config,
+            valid_mask, self.config, self.request.constraint_pack,
+            self.request.shared_evidence.target_world_pelvis_curve_deg,
         )
         return normalized_from_physical(projected, self.mean, self.std), records

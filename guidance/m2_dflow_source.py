@@ -8,7 +8,6 @@ from typing import Any, Mapping
 import torch
 
 from geometry.authoritative_motion import authoritative_motion
-from geometry.pelvis_angle import angle_error_deg
 from guidance.base import (
     ConstraintPack,
     GuidedSample,
@@ -16,7 +15,11 @@ from guidance.base import (
     GuidanceRequest,
     RunTimer,
 )
-from guidance.sampling_common import masked_angle_loss
+from guidance.sampling_common import (
+    control_angle_error_deg,
+    masked_control_loss,
+    method_protocol,
+)
 
 
 METHOD_NAME = "M2_DFLOW_SOURCE_OPTIMIZATION"
@@ -65,9 +68,16 @@ class M2DFlowSourceOptimization:
         request: GuidanceRequest,
         cfg: Mapping[str, Any] | None = None,
     ) -> GuidedSample:
-        if request.constraint_pack is not ConstraintPack.C0:
-            raise NotImplementedError("M2 v1 implements C0 only")
+        if request.constraint_pack not in {
+            ConstraintPack.C0,
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            raise NotImplementedError("M2 implements C0, S1, and S2 only")
         config = M2Config.from_mapping(cfg)
+        protocol = method_protocol(
+            request, method="m2", legacy_protocol=PROTOCOL_NAME
+        )
         initial = request.base_noise.detach().float()
         source = initial.clone().requires_grad_(True)
         optimizer = torch.optim.Adam([source], lr=config.learning_rate)
@@ -85,7 +95,9 @@ class M2DFlowSourceOptimization:
                     optimizer.zero_grad(set_to_none=True)
                     motion = _rollout(vimogen, source, request)
                     physical = authoritative_motion(motion, valid_mask=valid).motion
-                    angle_loss, residual = masked_angle_loss(physical, target, valid)
+                    angle_loss, residual = masked_control_loss(
+                        physical, request, valid
+                    )
                     source_loss = (source - initial).square().mean()
                     objective = angle_loss + config.source_regularization * source_loss
                     if not torch.isfinite(objective):
@@ -123,7 +135,7 @@ class M2DFlowSourceOptimization:
                         break
                     optimizer.step()
                     diagnostics.solver_iterations += 1
-                final_residual = angle_error_deg(best_motion, target)[valid]
+                final_residual = control_angle_error_deg(best_motion, request)[valid]
                 update = best_source - initial
                 diagnostics.angle_residual_mae_deg = float(final_residual.abs().mean().cpu())
                 diagnostics.angle_residual_p95_deg = float(
@@ -134,7 +146,7 @@ class M2DFlowSourceOptimization:
                 diagnostics.smplx_forward_count = diagnostics.full_rollout_count
                 diagnostics.extra.update(
                     {
-                        "protocol": PROTOCOL_NAME,
+                        "protocol": protocol,
                         "optimized_variable": "initial_source_noise_only",
                         "target_redefined_during_optimization": False,
                         "iteration_history": history,

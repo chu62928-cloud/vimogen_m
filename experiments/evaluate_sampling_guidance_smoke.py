@@ -16,6 +16,10 @@ if str(ROOT) not in sys.path:
 
 from evaluation.content_metrics import evaluate_content_metrics
 from evaluation.control_metrics import evaluate_control_metrics
+from evaluation.local_pelvis_metrics import (
+    EVALUATOR_VERSION as LOCAL_EVALUATOR_VERSION,
+    evaluate_local_pelvis_metrics,
+)
 from guidance.base import ConstraintPack, mapping_sha256, tensor_sha256, write_run_record
 from motion_rep.pose_authority import authority_project
 from geometry.pelvis_angle import target_angle_curve_deg
@@ -73,6 +77,11 @@ def run(run_root: Path, output: Path) -> dict:
     valid = archive["motion_mask"].bool()
     before_norm = torch.load(artifact / "m0_authority_norm_batch.pt", map_location="cpu", weights_only=True).float()
     after_norm = torch.load(artifact / "g0_norm_batch.pt", map_location="cpu", weights_only=True).float()
+    source_noise = torch.load(
+        run_root / "m0_artifacts/batch_000/z0_replayed.pt",
+        map_location="cpu",
+        weights_only=True,
+    ).float()
     before = authority_project(
         before_norm, valid_mask=valid, mean=mean, std=std,
         input_standardized=True, output_standardized=False,
@@ -85,42 +94,83 @@ def run(run_root: Path, output: Path) -> dict:
     sample_ids = [str(x) for x in archive["sample_ids"]]
     output.mkdir(parents=True)
     rows = []
+    relative_task = meta.get("task", "legacy_c0") == "relative_pelvis_s1"
     for index, sample_id in enumerate(sample_ids):
         baseline = before[index:index + 1]
         candidate = after[index:index + 1]
         mask = valid[index:index + 1]
-        target = target_angle_curve_deg(baseline, float(meta["target_dose_deg"]))
-        control = evaluate_control_metrics(
-            candidate, baseline, target, mask,
-            target_dose_deg=float(meta["target_dose_deg"]),
-        )
+        if relative_task:
+            control = evaluate_local_pelvis_metrics(
+                candidate,
+                baseline,
+                mask,
+                target_dose_deg=float(meta["target_dose_deg"]),
+            )
+            target_pass = control["per_sequence"][0]["target_hit"]
+            final_mae = control["per_sequence"][0]["relative_angle_error_deg"]["mean"]
+            final_p95 = control["per_sequence"][0]["relative_angle_error_deg"]["p95"]
+        else:
+            target = target_angle_curve_deg(baseline, float(meta["target_dose_deg"]))
+            control = evaluate_control_metrics(
+                candidate, baseline, target, mask,
+                target_dose_deg=float(meta["target_dose_deg"]),
+            )
+            target_pass = control["summary"]["sequence_angle_pass_rate"] == 1.0
+            final_mae = control["per_sequence"][0]["angle_mae_deg"]
+            final_p95 = control["per_sequence"][0]["angle_p95_deg"]
         content = evaluate_content_metrics(candidate, baseline, mask)
-        run_id = f"{meta['method']}_s{meta['seed']}_p{sample_id}_d{float(meta['target_dose_deg']):+g}"
+        config_id = str(meta.get("config_id", "unlabeled"))
+        config_token = "" if config_id == "unlabeled" else f"_{config_id}"
+        run_id = (
+            f"{meta['method']}{config_token}_s{meta['seed']}_p{sample_id}_"
+            f"d{float(meta['target_dose_deg']):+g}"
+        )
         row_dir = output / run_id
         row_dir.mkdir()
         torch.save(candidate.cpu(), row_dir / "motion_physical.pt")
+        torch.save(baseline.cpu(), row_dir / "m0_physical.pt")
         diagnostics = _diag(
             summary, index, baseline, candidate, mask,
             float(meta.get("elapsed_seconds", 0.0)),
         )
         # Final metrics are authoritative; replace the provisional step value.
-        diagnostics["angle_residual_mae_deg"] = control["per_sequence"][0]["angle_mae_deg"]
-        diagnostics["angle_residual_p95_deg"] = control["per_sequence"][0]["angle_p95_deg"]
+        diagnostics["angle_residual_mae_deg"] = final_mae
+        diagnostics["angle_residual_p95_deg"] = final_p95
         record = {
             "run_id": run_id,
             "code_commit": meta["code_commit"],
             "vimogen_checkpoint_hash": meta.get("checkpoint_hash", "not_recorded_in_runner_metadata"),
-            "evaluator_version": "m1_m7_evaluator_v1",
+            "evaluator_version": (
+                LOCAL_EVALUATOR_VERSION if relative_task else "m1_m7_evaluator_v1"
+            ),
             "method_name": meta["method"],
             "method_config_hash": mapping_sha256(meta["settings"]),
+            "config_id": config_id,
+            "experiment_stage": meta.get("experiment_stage", "unspecified"),
+            "method_version": meta.get("method_version", "v1"),
+            "settings": meta["settings"],
             "prompt_id": sample_id,
             "seed": int(meta["seed"]),
             "target_dose_deg": float(meta["target_dose_deg"]),
-            "constraint_pack": ConstraintPack.C0,
+            "constraint_pack": (
+                ConstraintPack.S1_RELATIVE if relative_task else ConstraintPack.C0
+            ),
             "baseline_motion_id": f"current_environment_authority_m0_{tensor_sha256(baseline)[:16]}",
+            "source_m0_sha256": tensor_sha256(baseline),
+            "source_noise_sha256": tensor_sha256(source_noise[index : index + 1]),
             "contact_evidence_version": "pending_shared_fk_materialization",
             "ground_version": "pending_shared_fk_materialization",
-            "status": "COMPLETED" if control["summary"]["sequence_angle_pass_rate"] == 1.0 else "ANGLE_GATE_FAIL",
+            "status": "COMPLETED" if target_pass else "ANGLE_GATE_FAIL",
+            "zero_dose_identity": (
+                bool(torch.equal(candidate, baseline))
+                if float(meta["target_dose_deg"]) == 0.0
+                else None
+            ),
+            "zero_dose_max_abs": (
+                float((candidate - baseline).abs().max())
+                if float(meta["target_dose_deg"]) == 0.0
+                else None
+            ),
             "failure_reason": "",
             "all_metrics": {
                 "control": control,
@@ -142,7 +192,7 @@ def run(run_root: Path, output: Path) -> dict:
         "target_dose_deg": meta["target_dose_deg"],
         "sample_count": len(rows),
         "angle_gate_pass_count": sum(row["status"] == "COMPLETED" for row in rows),
-        "records": [str(output / f"{meta['method']}_s{meta['seed']}_p{row['prompt_id']}_d{float(meta['target_dose_deg']):+g}" / "run_record.json") for row in rows],
+        "records": [str(output / row["run_id"] / "run_record.json") for row in rows],
     }
     (output / "summary.json").write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return result

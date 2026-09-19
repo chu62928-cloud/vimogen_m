@@ -104,6 +104,7 @@ from sampling.absolute_mean_pelvis_guidance_v4 import (
 )
 from motion_rep.baselines import build_b0
 from motion_rep.pose_authority import authority_project
+from geometry.local_pelvis import target_relative_angle_curve_deg
 from geometry.pelvis_angle import target_angle_curve_deg
 from guidance.base import ConstraintPack, GuidanceRequest, SharedEvidence
 from guidance.m1_loss_guidance import M1Config as ScaleM1Config, M1LossGuidanceHook
@@ -677,6 +678,11 @@ def main(args):
             'm1_m7_guidance.method must be M1, M2, M3, M4, M5, or M6 in this runner'
         )
     scale_target_delta_deg = float(scale_cfg.get('target_delta_deg', 0.0))
+    scale_task = str(scale_cfg.get('task', 'legacy_c0')).lower()
+    if scale_enabled and scale_task not in {'legacy_c0', 'relative_pelvis_s1'}:
+        raise ValueError(
+            'm1_m7_guidance.task must be legacy_c0 or relative_pelvis_s1'
+        )
     if scale_enabled and not -10.0 <= scale_target_delta_deg <= 10.0:
         raise ValueError('m1_m7_guidance target_delta_deg must lie in [-10,10]')
     scale_artifact_dir = scale_cfg.get('artifact_dir', None) if scale_enabled else None
@@ -1840,18 +1846,30 @@ def main(args):
                                 sample_mask, as_tuple=False
                             ).flatten().tolist()
                         ]
+                        scale_pack = (
+                            ConstraintPack.S1_RELATIVE
+                            if scale_task == 'relative_pelvis_s1'
+                            else ConstraintPack.C0
+                        )
+                        scale_target_curve = (
+                            target_relative_angle_curve_deg(
+                                baseline_physical, scale_target_delta_deg
+                            )
+                            if scale_pack is ConstraintPack.S1_RELATIVE
+                            else target_angle_curve_deg(
+                                baseline_physical, scale_target_delta_deg
+                            )
+                        )
                         scale_request = GuidanceRequest(
                             prompt_id=','.join(current_ids),
                             seed=int(seed),
                             target_dose_deg=scale_target_delta_deg,
-                            constraint_pack=ConstraintPack.C0,
+                            constraint_pack=scale_pack,
                             base_noise=m0_result.initial_noise.detach().float(),
                             baseline_motion=baseline_physical,
                             shared_evidence=SharedEvidence(
                                 valid_mask=condition_valid,
-                                target_angle_curve_deg=target_angle_curve_deg(
-                                    baseline_physical, scale_target_delta_deg
-                                ),
+                                target_angle_curve_deg=scale_target_curve,
                                 contact_evidence_version='pending_shared_fk_materialization',
                                 ground_version='pending_shared_fk_materialization',
                                 metadata={'sample_ids': current_ids},
@@ -1926,6 +1944,7 @@ def main(args):
                                             cfg_scale=args.experiment.get('cfg_scale', 5.0),
                                             use_gradient_checkpointing=True,
                                         ),
+                                        batch_invariant=(scale_method_version == 'v2'),
                                     )
                                     # The differentiable sampler returns the
                                     # standardised representation.  M2's
@@ -1954,7 +1973,12 @@ def main(args):
                                     else M2DFlowSourceOptimization()
                                 )
                                 m2_protocol = (
-                                    M2_V2_PROTOCOL
+                                    'vimogen_local_pelvis_s1_m2_v2_v1'
+                                    if scale_pack is ConstraintPack.S1_RELATIVE
+                                    and scale_method_version == 'v2'
+                                    else 'vimogen_local_pelvis_s1_m2_v1'
+                                    if scale_pack is ConstraintPack.S1_RELATIVE
+                                    else M2_V2_PROTOCOL
                                     if scale_method_version == 'v2'
                                     else 'vimogen_m2_dflow_source_optimization_c0_v1'
                                 )

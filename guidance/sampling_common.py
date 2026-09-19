@@ -5,7 +5,12 @@ from __future__ import annotations
 import torch
 
 from geometry.authoritative_motion import authoritative_motion
+from geometry.local_pelvis import (
+    relative_angle_error_deg,
+    world_pelvis_angle_error_deg,
+)
 from geometry.pelvis_angle import angle_error_deg
+from guidance.base import ConstraintPack, GuidanceRequest
 
 
 def align_stat(value: torch.Tensor, motion: torch.Tensor, name: str) -> torch.Tensor:
@@ -84,6 +89,61 @@ def masked_angle_loss(
     if not selected.numel():
         raise ValueError("angle loss has no valid frames")
     return selected.square().mean(), residual
+
+
+def control_angle_error_deg(
+    physical_motion: torch.Tensor,
+    request: GuidanceRequest,
+) -> torch.Tensor:
+    target = request.shared_evidence.target_angle_curve_deg.to(physical_motion.device)
+    if request.constraint_pack in {
+        ConstraintPack.S1_RELATIVE,
+        ConstraintPack.S2_RELATIVE_WORLD,
+    }:
+        return relative_angle_error_deg(physical_motion, target)
+    return angle_error_deg(physical_motion, target)
+
+
+def control_residual_stack_deg(
+    physical_motion: torch.Tensor,
+    request: GuidanceRequest,
+) -> torch.Tensor:
+    relative_or_legacy = control_angle_error_deg(physical_motion, request)
+    if request.constraint_pack is not ConstraintPack.S2_RELATIVE_WORLD:
+        return relative_or_legacy.unsqueeze(-1)
+    world_target = request.shared_evidence.target_world_pelvis_curve_deg
+    if world_target is None:
+        raise ValueError("S2 requires target_world_pelvis_curve_deg")
+    world = world_pelvis_angle_error_deg(
+        physical_motion, world_target.to(physical_motion.device)
+    )
+    return torch.stack((relative_or_legacy, world), dim=-1)
+
+
+def masked_control_loss(
+    physical_motion: torch.Tensor,
+    request: GuidanceRequest,
+    valid_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    residual = control_angle_error_deg(physical_motion, request)
+    residual_stack = control_residual_stack_deg(physical_motion, request)
+    selected = residual_stack[valid_mask]
+    if not selected.numel():
+        raise ValueError("control loss has no valid frames")
+    return selected.square().mean(), residual
+
+
+def method_protocol(
+    request: GuidanceRequest,
+    *,
+    method: str,
+    legacy_protocol: str,
+) -> str:
+    if request.constraint_pack is ConstraintPack.S1_RELATIVE:
+        return f"vimogen_local_pelvis_s1_{method.lower()}_v1"
+    if request.constraint_pack is ConstraintPack.S2_RELATIVE_WORLD:
+        return f"vimogen_local_pelvis_s2_{method.lower()}_v1"
+    return legacy_protocol
 
 
 def masked_rms(value: torch.Tensor, valid_mask: torch.Tensor) -> torch.Tensor:

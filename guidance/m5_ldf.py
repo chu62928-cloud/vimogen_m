@@ -7,9 +7,15 @@ from typing import Any, Mapping
 
 import torch
 
-from geometry.pelvis_angle import angle_error_deg
 from guidance.base import ConstraintPack, GuidanceRequest, slice_batch_stat, slice_request
-from guidance.sampling_common import authoritative_normalized, clip_rms, predicted_clean
+from guidance.sampling_common import (
+    authoritative_normalized,
+    clip_rms,
+    control_angle_error_deg,
+    control_residual_stack_deg,
+    method_protocol,
+    predicted_clean,
+)
 
 
 METHOD_NAME = "M5_LAGRANGIAN_DUAL_FLOW"
@@ -48,13 +54,22 @@ class M5LagrangianDualFlowHook:
         self, request: GuidanceRequest, *, mean: torch.Tensor, std: torch.Tensor,
         config: M5Config | Mapping[str, Any] | None = None,
     ) -> None:
-        if request.constraint_pack is not ConstraintPack.C0:
-            raise NotImplementedError("M5 v1 implements equality-only C0")
+        if request.constraint_pack not in {
+            ConstraintPack.C0,
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            raise NotImplementedError("M5 implements equality-only C0/S1/S2")
         self.request = request
+        self.protocol = method_protocol(
+            request, method="m5", legacy_protocol=PROTOCOL_NAME
+        )
         self.mean = mean.detach()
         self.std = std.detach()
         self.config = config if isinstance(config, M5Config) else M5Config.from_mapping(config)
         self.dual = torch.zeros_like(request.shared_evidence.target_angle_curve_deg, dtype=torch.float32)
+        if request.constraint_pack is ConstraintPack.S2_RELATIVE_WORLD:
+            self.dual = self.dual.unsqueeze(-1).expand(-1, -1, 2).clone()
         self.step_records: list[dict[str, Any]] = []
 
     def slice(self, index: int) -> "M5LagrangianDualFlowHook":
@@ -75,7 +90,7 @@ class M5LagrangianDualFlowHook:
         sigma_value = float(torch.as_tensor(sigma).detach().cpu())
         next_value = float(torch.as_tensor(sigma_next).detach().cpu())
         cfg = self.config
-        record: dict[str, Any] = {"protocol": PROTOCOL_NAME, "active": False, "sigma": sigma_value}
+        record: dict[str, Any] = {"protocol": self.protocol, "active": False, "sigma": sigma_value}
         if sigma_value < cfg.sigma_min or sigma_value > cfg.sigma_max:
             self.step_records.append(record)
             return velocity, record
@@ -83,12 +98,13 @@ class M5LagrangianDualFlowHook:
             state = x_sigma.detach().float().requires_grad_(True)
             clean = predicted_clean(state, velocity.detach(), sigma)
             physical, _ = authoritative_normalized(clean, valid_mask, self.mean, self.std)
-            residual = angle_error_deg(
-                physical, self.request.shared_evidence.target_angle_curve_deg.to(physical.device)
-            )
+            residual = control_angle_error_deg(physical, self.request)
+            residual_stack = control_residual_stack_deg(physical, self.request)
             dual = self.dual.to(device=state.device)
-            multiplier = dual + cfg.penalty * residual.detach()
-            lagrangian = (multiplier[valid_mask] * residual[valid_mask]).mean()
+            multiplier = dual + cfg.penalty * residual_stack.detach()
+            lagrangian = (
+                multiplier[valid_mask] * residual_stack[valid_mask]
+            ).mean()
             gradient = torch.autograd.grad(lagrangian, state)[0]
             gradient = torch.nan_to_num(gradient) * valid_mask.unsqueeze(-1)
             gradient, gradient_rms = clip_rms(
@@ -99,7 +115,7 @@ class M5LagrangianDualFlowHook:
             corrected = velocity.float() + cfg.primal_gain * gradient
             corrected = torch.where(valid_mask.unsqueeze(-1), corrected, velocity.float())
             dt = abs(next_value - sigma_value)
-            updated_dual = dual + cfg.dual_gain * dt * residual.detach()
+            updated_dual = dual + cfg.dual_gain * dt * residual_stack.detach()
             flat = updated_dual[valid_mask]
             norm = torch.linalg.vector_norm(flat)
             scale = torch.clamp(

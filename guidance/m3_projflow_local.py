@@ -8,11 +8,17 @@ from typing import Any, Mapping
 import torch
 
 from geometry.authoritative_motion import authoritative_motion
+from geometry.local_pelvis import (
+    minimum_norm_relative_projection,
+    minimum_norm_s2_projection,
+    relative_angle_error_deg,
+)
 from geometry.pelvis_angle import pelvis_angle_curve_deg, wrap_angle_deg
 from guidance.base import ConstraintPack, GuidanceRequest, slice_batch_stat, slice_request
 from guidance.sampling_common import (
     authoritative_normalized,
     masked_rms,
+    method_protocol,
     normalized_from_physical,
     predicted_clean,
     velocity_from_clean,
@@ -55,9 +61,16 @@ class M3ProjFlowLocalHook:
         std: torch.Tensor,
         config: M3Config | Mapping[str, Any] | None = None,
     ) -> None:
-        if request.constraint_pack is not ConstraintPack.C0:
-            raise NotImplementedError("M3 v1 implements C0 only")
+        if request.constraint_pack not in {
+            ConstraintPack.C0,
+            ConstraintPack.S1_RELATIVE,
+            ConstraintPack.S2_RELATIVE_WORLD,
+        }:
+            raise NotImplementedError("M3 implements C0, S1, and S2 only")
         self.request = request
+        self.protocol = method_protocol(
+            request, method="m3", legacy_protocol=PROTOCOL_NAME
+        )
         self.mean = mean.detach()
         self.std = std.detach()
         self.config = config if isinstance(config, M3Config) else M3Config.from_mapping(config)
@@ -90,21 +103,49 @@ class M3ProjFlowLocalHook:
         with torch.no_grad(), torch.amp.autocast(device_type=x_sigma.device.type, enabled=False):
             clean = predicted_clean(x_sigma, velocity, sigma)
             physical, _ = authoritative_normalized(clean, valid_mask, self.mean, self.std)
-            actual = pelvis_angle_curve_deg(physical)
-            target = self.request.shared_evidence.target_angle_curve_deg.to(actual.device)
-            residual = wrap_angle_deg(target - actual)
-            # In C0, d(phi)/d(theta_right)=1. The damped scalar normal
-            # equation is the exact local linear projection.
-            increment_deg = (residual / (1.0 + cfg.damping)).clamp(
-                -cfg.max_step_deg, cfg.max_step_deg
-            )
-            increment_deg = torch.where(valid_mask, increment_deg, torch.zeros_like(increment_deg))
-            root = decode_rot6d_safe(physical[..., MOTION_LAYOUT.root_rotation])
-            edited = physical.clone()
-            edited[..., MOTION_LAYOUT.root_rotation] = encode_rot6d(
-                apply_person_right_axis_rotation(root, increment_deg)
-            )
-            projected = authoritative_motion(edited, valid_mask=valid_mask).motion
+            target = self.request.shared_evidence.target_angle_curve_deg.to(physical.device)
+            if self.request.constraint_pack in {
+                ConstraintPack.S1_RELATIVE,
+                ConstraintPack.S2_RELATIVE_WORLD,
+            }:
+                residual = -relative_angle_error_deg(physical, target)
+                if self.request.constraint_pack is ConstraintPack.S2_RELATIVE_WORLD:
+                    world_target = self.request.shared_evidence.target_world_pelvis_curve_deg
+                    if world_target is None:
+                        raise ValueError("S2 requires a world pelvis target")
+                    projected, projection_audit = minimum_norm_s2_projection(
+                        physical, target, world_target.to(physical.device), valid_mask,
+                        damping=cfg.damping, max_step_deg=cfg.max_step_deg,
+                    )
+                else:
+                    projected, projection_audit = minimum_norm_relative_projection(
+                        physical, target, valid_mask, damping=cfg.damping,
+                        max_step_deg=cfg.max_step_deg,
+                    )
+                increment_deg = torch.full_like(
+                    residual, float(projection_audit["realized_step_rms_deg"])
+                )
+            else:
+                actual = pelvis_angle_curve_deg(physical)
+                residual = wrap_angle_deg(target - actual)
+                # In C0, d(phi)/d(theta_right)=1. The damped scalar normal
+                # equation is the exact local linear projection.
+                increment_deg = (residual / (1.0 + cfg.damping)).clamp(
+                    -cfg.max_step_deg, cfg.max_step_deg
+                )
+                increment_deg = torch.where(valid_mask, increment_deg, torch.zeros_like(increment_deg))
+                root = decode_rot6d_safe(physical[..., MOTION_LAYOUT.root_rotation])
+                edited = physical.clone()
+                edited[..., MOTION_LAYOUT.root_rotation] = encode_rot6d(
+                    apply_person_right_axis_rotation(root, increment_deg)
+                )
+                projected = authoritative_motion(edited, valid_mask=valid_mask).motion
+                projection_audit = {
+                    "jacobian_rank": int(valid_mask.sum().item()),
+                    "requested_step_rms_deg": float(masked_rms(increment_deg, valid_mask).cpu()),
+                    "realized_step_rms_deg": float(masked_rms(increment_deg, valid_mask).cpu()),
+                    "direct_update_rms": 0.0,
+                }
             projected_norm = normalized_from_physical(projected, self.mean, self.std)
             corrected = velocity_from_clean(x_sigma, projected_norm, sigma)
             corrected = torch.where(valid_mask.unsqueeze(-1), corrected, velocity.float())
@@ -114,7 +155,10 @@ class M3ProjFlowLocalHook:
                 "angle_residual_mae_deg": float(residual[valid_mask].abs().mean().cpu()),
                 "projected_increment_rms_deg": float(masked_rms(increment_deg, valid_mask).cpu()),
                 "projected_increment_max_deg": float(increment_deg[valid_mask].abs().max().cpu()),
-                "jacobian_rank": int(valid_mask.sum().item()),
+                "jacobian_rank": int(projection_audit["jacobian_rank"]),
+                "requested_step_rms_deg": float(projection_audit["requested_step_rms_deg"]),
+                "realized_step_rms_deg": float(projection_audit["realized_step_rms_deg"]),
+                "direct_update_rms": float(projection_audit["direct_update_rms"]),
                 "solver_iterations": 1,
                 "nonfinite_count": int((~torch.isfinite(corrected)).sum().cpu()),
             }

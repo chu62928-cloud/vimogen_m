@@ -9,6 +9,7 @@ The historical sampler remains unchanged.
 from __future__ import annotations
 
 import contextlib
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 import math
 import time
@@ -95,6 +96,7 @@ def differentiable_generate(
     attend_to_text_mask: Optional[torch.Tensor],
     dtype: torch.dtype,
     config: DifferentiableSamplerConfig,
+    batch_invariant: bool = False,
 ) -> FlowSampleResult:
     """Run the official Euler/smoothing chain without detaching ``z0``."""
 
@@ -106,6 +108,40 @@ def differentiable_generate(
         raise ValueError("ref_motion must match initial_noise [B,T]")
     if ref_motion_mask.shape != initial_noise.shape[:2]:
         raise ValueError("ref_motion_mask must match initial_noise [B,T]")
+    if batch_invariant and initial_noise.shape[0] > 1:
+        results = [
+            differentiable_generate(
+                model=model,
+                scheduler=deepcopy(scheduler),
+                prompt_emb=prompt_emb[index : index + 1],
+                prompt_emb_null=prompt_emb_null[index : index + 1],
+                initial_noise=initial_noise[index : index + 1],
+                valid_mask=valid_mask[index : index + 1],
+                ref_motion=ref_motion[index : index + 1],
+                ref_motion_mask=ref_motion_mask[index : index + 1],
+                condition_on_text=condition_on_text,
+                attend_to_text_mask=(
+                    None
+                    if attend_to_text_mask is None
+                    else attend_to_text_mask[index : index + 1]
+                ),
+                dtype=dtype,
+                config=config,
+                batch_invariant=False,
+            )
+            for index in range(initial_noise.shape[0])
+        ]
+        first = results[0]
+        return FlowSampleResult(
+            initial_noise=torch.cat([result.initial_noise for result in results]),
+            raw=torch.cat([result.raw for result in results]),
+            official_pre_cast=torch.cat(
+                [result.official_pre_cast for result in results]
+            ),
+            official=torch.cat([result.official for result in results]),
+            sigmas=first.sigmas,
+            timesteps=first.timesteps,
+        )
 
     device = initial_noise.device
     xt = initial_noise

@@ -17,10 +17,15 @@ import time
 
 from omegaconf import OmegaConf
 
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+from experiments.candidate_scan_provenance import (  # noqa: E402
+    attempt_parent,
+    execution_code_fingerprint,
+    mapping_sha256,
+)
 
 PROTOCOL = ROOT / "results/phase9/pelvis_m1_m7/protocol_v1/manifest.json"
 DEFAULT_OUTPUT = ROOT / "results/phase9/pelvis_m1_m7/s0_sampling"
@@ -127,13 +132,20 @@ def load_checkout_module(module_name: str, source: Path):
 
 def validate_code_commit(declared: str, checkout_root: Path = ROOT) -> str:
     """Reject provenance labels that do not match the executing checkout."""
-    completed = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=checkout_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=checkout_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        # The scale checkout is sometimes transferred without its .git
+        # directory.  Keep provenance explicit rather than inventing a hash.
+        if declared.startswith("scale-local-pelvis-s1-"):
+            return declared
+        raise
     actual = completed.stdout.strip()
     if declared != actual:
         raise ValueError(
@@ -199,7 +211,7 @@ def build_config(args: argparse.Namespace, run_root: Path, settings: dict):
     config.experiment.auto_resume = False
     config.experiment.eval_steps = 1
     config.experiment.result_dir = str(run_root / "trainer")
-    config.dataloader.test_local_batch = 2
+    config.dataloader.test_local_batch = int(args.manifest_count)
     config.dataloader.num_workers = 4
     config.dataset.test_json_file_list = [str(args.manifest)]
     config.dataset.text_key = "prompt_motion_detailed"
@@ -220,6 +232,7 @@ def build_config(args: argparse.Namespace, run_root: Path, settings: dict):
         "enabled": True,
         "method": args.method,
         "method_version": args.method_version,
+        "task": args.task,
         "target_delta_deg": float(args.dose),
         "deterministic": bool(args.method == "M2" and args.method_version == "v2"),
         "trace_enabled": bool(args.trace),
@@ -241,6 +254,7 @@ def run(args: argparse.Namespace) -> dict:
     if not isinstance(manifest_items, list) or not manifest_items:
         raise ValueError("--manifest must contain a non-empty list")
     sample_ids = []
+    support_contexts = []
     for item in manifest_items:
         if not isinstance(item, dict):
             raise ValueError("manifest entries must be objects")
@@ -248,8 +262,16 @@ def run(args: argparse.Namespace) -> dict:
         if value is None:
             raise ValueError("manifest entry is missing sample_id/global_id/id")
         sample_ids.append(str(value))
+        support_contexts.append(
+            {
+                "sample_id": str(value),
+                "support_applicable": item.get("support_applicable"),
+                "support_context": item.get("support_context"),
+            }
+        )
     if len(set(sample_ids)) != len(sample_ids):
         raise ValueError("manifest contains duplicate sample IDs")
+    args.manifest_count = len(sample_ids)
     if args.method == "M2" and args.method_version == "v2":
         # Must be set before the runtime imports CUDA-backed model modules.
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
@@ -263,7 +285,12 @@ def run(args: argparse.Namespace) -> dict:
     )
     if args.settings_json:
         settings.update(json.loads(args.settings_json))
-    parent = args.output / args.method / f"seed_{args.seed:03d}" / f"dose_{args.dose:+g}"
+    if args.task == "relative_pelvis_s1" and args.method == "M2":
+        settings["content_weight"] = 0.0
+        settings["root_weight"] = 0.0
+    parent = attempt_parent(
+        args.output, args.method, args.config_id, args.seed, args.dose
+    )
     attempt = 1
     run_root = parent / f"attempt_{attempt:02d}"
     while run_root.exists():
@@ -273,15 +300,20 @@ def run(args: argparse.Namespace) -> dict:
     config = build_config(args, run_root, settings)
     OmegaConf.save(config, run_root / "resolved_config.yaml")
     checkpoint_path = resolve_checkpoint_path(args.runtime_root)
+    code_bundle_sha256, code_files = execution_code_fingerprint(args.method)
     record = {
         "status": "RUNNING",
         "scope": "S0_REAL_VIMOGEN_BATCH",
+        "experiment_stage": args.experiment_stage,
+        "config_id": args.config_id,
         "method": args.method,
         "method_version": args.method_version,
         "seed": args.seed,
         "target_dose_deg": args.dose,
+        "task": args.task,
         "sample_ids": sample_ids,
         "settings": settings,
+        "method_config_hash": mapping_sha256(settings),
         "code_commit": code_commit,
         "checkpoint_path": None if checkpoint_path is None else str(checkpoint_path),
         "checkpoint_hash": (
@@ -291,11 +323,27 @@ def run(args: argparse.Namespace) -> dict:
         ),
         "protocol": str(args.protocol),
         "protocol_sha256": sha256(args.protocol),
+        "base_config": str(args.base_config.resolve()),
+        "base_config_sha256": sha256(args.base_config),
+        "candidate_reference": (
+            None
+            if args.candidate_reference is None
+            else str(args.candidate_reference.resolve())
+        ),
+        "candidate_reference_sha256": (
+            None
+            if args.candidate_reference is None
+            else sha256(args.candidate_reference)
+        ),
         "runtime_root": None if args.runtime_root is None else str(args.runtime_root),
         "manifest": str(args.manifest),
         "manifest_sha256": sha256(args.manifest),
+        "manifest_count": len(sample_ids),
+        "support_contexts": support_contexts,
         "noise_cache": str(args.noise_cache),
         "run_root": str(run_root),
+        "code_bundle_sha256": code_bundle_sha256,
+        "code_files": code_files,
     }
     (run_root / "run_record.json").write_text(
         json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -341,6 +389,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", choices=tuple(DEFAULT_SETTINGS), required=True)
     parser.add_argument("--method-version", choices=("v1", "v2"), default="v1")
+    parser.add_argument(
+        "--task",
+        choices=("legacy_c0", "relative_pelvis_s1"),
+        default="legacy_c0",
+    )
     parser.add_argument("--dose", type=float, required=True)
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--code-commit", required=True)
@@ -351,8 +404,13 @@ def main() -> None:
     parser.add_argument("--noise-cache", type=Path, default=DEFAULT_NOISE)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--settings-json", default="")
+    parser.add_argument("--candidate-reference", type=Path)
+    parser.add_argument("--config-id", default="unlabeled")
+    parser.add_argument("--experiment-stage", default="unspecified")
     parser.add_argument("--trace", action="store_true")
     args = parser.parse_args()
+    if args.candidate_reference is not None and not args.candidate_reference.is_file():
+        parser.error("--candidate-reference must be an existing file")
     if args.method_version == "v2" and args.method not in {"M2", "M3", "M4"}:
         parser.error("--method-version v2 is currently valid only for M2/M3/M4")
     print(json.dumps(run(args), indent=2, ensure_ascii=False))

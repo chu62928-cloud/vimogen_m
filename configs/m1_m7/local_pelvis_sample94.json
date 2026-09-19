@@ -1,0 +1,13 @@
+[
+  {
+    "global_id": 94,
+    "id": 94,
+    "sample_id": 94,
+    "prompt": "a person walks forward in a straight line.",
+    "motion_duration": 3,
+    "motion_path": "data/mbench/wan2.2/94.pt",
+    "prompt_motion_detailed_wanvideot5_embed_path": "data/mbench/wanvideo_text_features/prompt_motion_detailed/94.pt",
+    "prompt_video_detailed_wanvideot5_embed_path": "data/mbench/wanvideo_text_features/prompt_video_detailed/94.pt",
+    "use_ref_motion": false
+  }
+]
