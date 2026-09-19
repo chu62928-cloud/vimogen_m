@@ -1,0 +1,83 @@
+protocol: vimogen_m1_m7_s1_bounded_tuning_v1
+max_equivalent_configs_per_method: 8
+screen:
+  seeds: [0]
+  sample_ids: ["94", "34122"]
+  doses_deg: [-2, 2]
+confirm:
+  seeds: [0, 42]
+  sample_ids: ["94", "34122"]
+  doses_deg: [-5, -2, 0, 2, 5]
+stress:
+  seeds: [0, 42]
+  sample_ids: ["94", "34122"]
+  doses_deg: [-10, 10]
+selection_order:
+  - angle_pass_count
+  - numerical_stability
+  - physical_v2_pass_count
+  - physical_v2_severity
+  - content_mpjpe
+  - root_deviation
+  - computational_cost
+method_grids:
+  M1:
+    values:
+      - {guidance_scale: 0.020, sigma_min: 0.0662879}
+      - {guidance_scale: 0.020, sigma_min: 0.15}
+      - {guidance_scale: 0.025, sigma_min: 0.0662879}
+      - {guidance_scale: 0.025, sigma_min: 0.15}
+      - {guidance_scale: 0.030, sigma_min: 0.0662879}
+      - {guidance_scale: 0.030, sigma_min: 0.15}
+      - {guidance_scale: 0.040, sigma_min: 0.0662879}
+      - {guidance_scale: 0.040, sigma_min: 0.15}
+  M2:
+    values:
+      - {learning_rate: 0.0025, content_weight: 0.01, root_weight: 0.05}
+      - {learning_rate: 0.0050, content_weight: 0.01, root_weight: 0.05}
+      - {learning_rate: 0.0025, content_weight: 0.05, root_weight: 0.25}
+      - {learning_rate: 0.0050, content_weight: 0.05, root_weight: 0.25}
+      - {learning_rate: 0.0025, content_weight: 0.10, root_weight: 0.50}
+      - {learning_rate: 0.0050, content_weight: 0.10, root_weight: 0.50}
+      - {learning_rate: 0.0050, content_weight: 0.05, root_weight: 0.25, source_trust_radius: 2.5, step_trust_radius: 1.0}
+      - {learning_rate: 0.0050, content_weight: 0.10, root_weight: 0.50, source_trust_radius: 2.5, step_trust_radius: 1.0}
+  M3:
+    values:
+      - {sigma_min: 0.10, sigma_max: 0.45, max_step_deg: 1.0, projection_stride: 2, max_projections: 1, max_endpoint_delta_rms: 0.05}
+      - {sigma_min: 0.10, sigma_max: 0.45, max_step_deg: 1.0, projection_stride: 2, max_projections: 2, max_endpoint_delta_rms: 0.05}
+      - {sigma_min: 0.10, sigma_max: 0.45, max_step_deg: 1.0, projection_stride: 2, max_projections: 4, max_endpoint_delta_rms: 0.05}
+      - {sigma_min: 0.10, sigma_max: 0.45, max_step_deg: 0.5, projection_stride: 2, max_projections: 2, max_endpoint_delta_rms: 0.05}
+      - {sigma_min: 0.10, sigma_max: 0.45, max_step_deg: 1.0, projection_stride: 2, max_projections: 2, max_endpoint_delta_rms: 0.025}
+      - {sigma_min: 0.0662879, sigma_max: 0.25, max_step_deg: 1.0, projection_stride: 2, max_projections: 1, max_endpoint_delta_rms: 0.05}
+      - {sigma_min: 0.0662879, sigma_max: 0.25, max_step_deg: 1.0, projection_stride: 2, max_projections: 2, max_endpoint_delta_rms: 0.05}
+      - {sigma_min: 0.0662879, sigma_max: 0.25, max_step_deg: 0.5, projection_stride: 2, max_projections: 2, max_endpoint_delta_rms: 0.025}
+  M4:
+    values:
+      - {shooting_sigmas: [], gn_iterations: 3, trust_radius_deg: 4.0, propagation_gain: 0.5}
+      - {shooting_sigmas: [], gn_iterations: 4, trust_radius_deg: 4.0, propagation_gain: 0.5}
+      - {shooting_sigmas: [], gn_iterations: 3, trust_radius_deg: 6.0, propagation_gain: 0.5}
+      - {shooting_sigmas: [], gn_iterations: 4, trust_radius_deg: 6.0, propagation_gain: 0.5}
+      - {shooting_sigmas: [0.15], gn_iterations: 3, trust_radius_deg: 4.0, propagation_gain: 0.25}
+      - {shooting_sigmas: [0.15], gn_iterations: 3, trust_radius_deg: 4.0, propagation_gain: 0.5}
+      - {shooting_sigmas: [0.35, 0.15], gn_iterations: 3, trust_radius_deg: 4.0, propagation_gain: 0.25}
+      - {shooting_sigmas: [0.35, 0.15], gn_iterations: 3, trust_radius_deg: 4.0, propagation_gain: 0.5}
+  M5:
+    values:
+      - {primal_gain: 0.5, sigma_min: 0.02}
+      - {primal_gain: 0.5, sigma_min: 0.10}
+      - {primal_gain: 1.0, sigma_min: 0.02}
+      - {primal_gain: 1.0, sigma_min: 0.10}
+      - {primal_gain: 2.0, sigma_min: 0.02}
+      - {primal_gain: 2.0, sigma_min: 0.10}
+      - {primal_gain: 4.0, sigma_min: 0.02}
+      - {primal_gain: 4.0, sigma_min: 0.10}
+  M6:
+    values:
+      - {candidate_scale: 0.5, sigma_min: 0.0662879}
+      - {candidate_scale: 0.5, sigma_min: 0.15}
+      - {candidate_scale: 0.6, sigma_min: 0.0662879}
+      - {candidate_scale: 0.6, sigma_min: 0.15}
+      - {candidate_scale: 0.7, sigma_min: 0.0662879}
+      - {candidate_scale: 0.7, sigma_min: 0.15}
+      - {candidate_scale: 0.8, sigma_min: 0.0662879}
+      - {candidate_scale: 0.8, sigma_min: 0.15}

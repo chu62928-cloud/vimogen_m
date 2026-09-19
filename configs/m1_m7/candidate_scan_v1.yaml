@@ -1,0 +1,91 @@
+protocol: vimogen_m1_m7_candidate_scan_v1
+status: PROPOSED_NOT_FROZEN
+historical_physical_v2_changed: false
+candidate_thresholds_frozen: false
+doses_deg: [-10, -5, -2, 0, 2, 5, 10]
+core_doses_deg: [-5, -2, 2, 5]
+zero_doses_deg: [0]
+robustness_doses_deg: [-10, 10]
+max_new_configs_per_method: 8
+initial_grid_configs_per_method: 6
+development_seeds: [0, 42, 2026]
+confirmation_seeds: [7, 123, 2027]
+methods:
+  M1:
+    method_version: v1
+    historical_center_config_id: config_03
+    primary_parameter: guidance_scale
+    secondary_parameter: gradient_clip_rms
+    center:
+      guidance_scale: 0.025
+      gradient_clip_rms: 1.0
+      sigma_min: 0.0662879
+      sigma_max: 0.65
+  M2:
+    status: BLOCKED_PENDING_INVARIANT
+    method_version: v2
+    primary_parameter: learning_rate
+    secondary_parameter: source_regularization
+    center:
+      learning_rate: 0.005
+      iterations: 8
+      source_regularization: 0.001
+      content_weight: 0.01
+      root_weight: 0.05
+      gradient_clip_norm: 10.0
+      source_trust_radius: 25.0
+      step_trust_radius: 5.0
+      early_stop_mae_deg: 1.0
+      early_stop_patience: 2
+  M3:
+    method_version: v2
+    historical_center_config_id: config_05
+    primary_parameter: max_step_deg
+    secondary_parameter: damping
+    center:
+      sigma_min: 0.10
+      sigma_max: 0.45
+      damping: 0.000001
+      max_step_deg: 1.0
+      projection_stride: 2
+      max_projections: 2
+      max_endpoint_delta_rms: 0.025
+  M4:
+    method_version: v2
+    historical_center_config_id: config_06
+    primary_parameter: trust_radius_deg
+    secondary_parameter: damping
+    center:
+      shooting_sigmas: [0.15]
+      gn_iterations: 3
+      damping: 0.00001
+      trust_radius_deg: 4.0
+      propagation_gain: 0.5
+      terminal_tolerance_deg: 0.0001
+  M5:
+    method_version: v1
+    historical_center_config_id: config_05
+    primary_parameter: penalty
+    secondary_parameter: dual_gain
+    center:
+      primal_gain: 2.0
+      penalty: 0.1
+      dual_gain: 1.0
+      max_dual_norm: 50.0
+      gradient_clip_rms: 1.0
+      sigma_min: 0.02
+  M6:
+    method_version: v1
+    historical_center_config_id: config_02
+    primary_parameter: candidate_scale
+    secondary_parameter: delta
+    center:
+      candidate_scale: 0.5
+      delta: 0.1
+      gradient_clip_rms: 1.0
+      sigma_min: 0.15
+      sigma_max: 0.65
+  M7:
+    status: POST_GENERATION_REFERENCE
+    method_version: v1
+    tune: false

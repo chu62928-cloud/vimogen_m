@@ -1,0 +1,19 @@
+\begin{table}[t]
+\centering
+\caption{Preliminary S0 pelvis-angle control accuracy. Values are median [Q1, Q3] over 12 sequences.}
+\label{tab:s0_control_preliminary}
+\begin{tabular}{lllrrrrrr}
+\toprule
+Method & Pack & Dose ($^\circ$) & MAE $\downarrow$ & P95 $\downarrow$ & Sign $\uparrow$ & Slope $\to1$ & Zero drift $\downarrow$ & Pass $\uparrow$ \\
+\midrule
+M1 & C0 & $-2/0/+2$ & 0.273 [0.148, 0.487] & 0.557 [0.346, 0.940] & 100.0\% & 0.788 & 0.113 [0.100, 0.129] & 12/12 \\
+M2 & C0 & $-2/0/+2$ & 0.757 [0.044, 0.984] & 1.308 [0.100, 2.187] & 100.0\% & 0.996 & 0.038 [0.037, 0.040] & 8/12 \\
+M3 & C0 & $-2/0/+2$ & 0.181 [0.173, 0.200] & 0.425 [0.384, 0.505] & 100.0\% & 0.950 & 0.173 [0.172, 0.180] & 12/12 \\
+M4 & C0 & $-2/0/+2$ & 0.000 [0.000, 0.000] & 0.000 [0.000, 0.000] & 100.0\% & 1.000 & 0.000 [0.000, 0.000] & 12/12 \\
+M5 & C0 & $-2/0/+2$ & 1.487 [0.054, 1.560] & 1.573 [0.196, 1.769] & 100.0\% & 0.230 & 0.045 [0.039, 0.052] & 4/12 \\
+M6 & C0 & $-2/0/+2$ & 0.467 [0.086, 0.501] & 0.600 [0.292, 0.979] & 100.0\% & 0.730 & 0.082 [0.069, 0.085] & 12/12 \\
+M7$^{\dagger}$ & C0 & $-2/0/+2$ & 0.000 [0.000, 0.000] & 0.000 [0.000, 0.000] & 100.0\% & 1.000 & 0.000 [0.000, 0.000] & 12/12 \\
+\bottomrule
+\end{tabular}
+\begin{flushleft}\footnotesize $^{\dagger}$Post-generation geometric-edit reference; not a generator-response method. Physical gates are pending marker materialization.\end{flushleft}
+\end{table}

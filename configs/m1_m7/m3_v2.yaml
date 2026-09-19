@@ -1,0 +1,16 @@
+method: M3
+method_version: v2
+implementation: sparse_trust_region_local_projection
+constraint_pack: C0
+sigma_min: 0.10
+sigma_max: 0.45
+damping: 1.0e-6
+max_step_deg: 1.0
+projection_stride: 2
+max_projections: 4
+max_endpoint_delta_rms: 0.05
+zero_dose_policy: strict_paired_m0_bypass
+forbidden:
+  - overwrite_m3_v1
+  - candidate_contact_reclassification
+  - tuning_from_s2

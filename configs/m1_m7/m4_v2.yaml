@@ -1,0 +1,15 @@
+method: M4
+method_version: v2
+implementation: terminal_only_gauss_newton
+constraint_pack: C0
+shooting_sigmas: []
+gn_iterations: 3
+damping: 1.0e-5
+trust_radius_deg: 4.0
+propagation_gain: 0.5
+terminal_tolerance_deg: 1.0e-4
+zero_dose_policy: strict_paired_m0_bypass
+forbidden:
+  - overwrite_m4_v1
+  - forward_shooting_in_terminal_only_arm
+  - tuning_from_s2

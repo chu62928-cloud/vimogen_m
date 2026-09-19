@@ -1,8 +1,12 @@
 """Regression tests for the shared motion-oriented video display frame."""
 
+from pathlib import Path
+
+import pytest
 import torch
 
 from scripts.render_absolute_mean_triptych import (
+    _load_motion,
     estimate_motion_heading,
     fixed_sagittal_side_camera,
 )
@@ -40,3 +44,17 @@ def test_camera_follows_negative_motion_and_keeps_motion_to_the_right() -> None:
     camera_points = torch.matmul(joints[:, :1], camera_r) + camera_t[:, None]
     screen_x = -camera_points[:, 0, 0]
     assert float(screen_x[-1] - screen_x[0]) > 0.0
+
+
+def test_motion_loader_accepts_single_sequence_batch(tmp_path: Path) -> None:
+    path = tmp_path / "motion.pt"
+    expected = torch.arange(3 * 276, dtype=torch.float32).reshape(1, 3, 276)
+    torch.save(expected, path)
+    assert torch.equal(_load_motion(path, "cpu"), expected[0])
+
+
+def test_motion_loader_rejects_multiple_sequence_batch(tmp_path: Path) -> None:
+    path = tmp_path / "motion.pt"
+    torch.save(torch.zeros(2, 3, 276), path)
+    with pytest.raises(ValueError, match=r"physical \[T,276\]"):
+        _load_motion(path, "cpu")

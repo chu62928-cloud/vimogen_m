@@ -1,0 +1,335 @@
+#!/usr/bin/env python3
+"""Run v3.1 contact windows or v3.2 full-sequence compensation."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import time
+import sys
+from dataclasses import asdict
+from typing import Any
+
+import torch
+from smplx import SMPLX
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from evaluation.pelvis_contact_compensation_v3 import PROTOCOL_NAME
+from motion_rep.smplx_utils import default_smpl_model_path
+from motion_rep.phase1 import MOTION_LAYOUT
+from sampling.pelvis_contact_compensation_v3 import PelvisCompensationConfig, PelvisContactCompensationSolver
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    if path.is_dir():
+        for child in sorted(item for item in path.rglob("*") if item.is_file()):
+            digest.update(child.relative_to(path).as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            with child.open("rb") as handle:
+                for block in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(block)
+    else:
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(block)
+    return digest.hexdigest()
+
+
+def _write_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _git_revision() -> str | None:
+    try:
+        return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+    except Exception:
+        return None
+
+
+def _next_attempt(parent: Path) -> Path:
+    parent.mkdir(parents=True, exist_ok=True)
+    index = 1
+    while (parent / f"attempt_{index:02d}").exists():
+        index += 1
+    result = parent / f"attempt_{index:02d}"
+    result.mkdir()
+    return result
+
+
+def _latest_v31_record(output_base: Path, sample_id: str, dose: float) -> dict[str, Any] | None:
+    """Read the newest v3.1 gate for a case, if one has been recorded."""
+
+    sign = "+" if dose >= 0 else ""
+    parent = output_base / "v3_1_window_feasibility" / f"sample_{sample_id}" / f"dose_{sign}{dose:g}deg"
+    candidates = sorted(parent.glob("attempt_*/run_record.json"), key=lambda path: path.stat().st_mtime)
+    if not candidates:
+        return None
+    return json.loads(candidates[-1].read_text(encoding="utf-8"))
+
+
+def _load_protocol(root: Path) -> tuple[dict[str, Any], dict[str, Any], torch.Tensor, torch.Tensor]:
+    protocol = json.loads((root / "protocol.json").read_text(encoding="utf-8"))
+    patches = json.loads((root / "foot_patches.json").read_text(encoding="utf-8"))
+    m0 = torch.load(root / "m0_physical.pt", map_location="cpu", weights_only=True).float()
+    valid = torch.load(root / "valid_mask.pt", map_location="cpu", weights_only=True).bool()
+    if m0.ndim != 3 or m0.shape[-1] != 276 or valid.shape != m0.shape[:2]:
+        raise ValueError("frozen M0 and valid mask have incompatible shapes")
+    return protocol, patches, m0, valid
+
+
+def _model_vertices(model: SMPLX, motion: torch.Tensor, device: torch.device) -> torch.Tensor:
+    from evaluation.relative_root_trunk_v2_1 import direct_smpl_parameters
+    with torch.inference_mode():
+        params = direct_smpl_parameters(motion.unsqueeze(0).to(device))
+        params = {key: value[0] for key, value in params.items()}
+        return model(**params, return_verts=True).vertices.detach().cpu()
+
+
+def _v31_initial_motion(results_root: Path, case: dict[str, Any], base: torch.Tensor, dose: float) -> torch.Tensor | None:
+    """Embed passed v3.1 window solutions as an initialization for v3.2."""
+
+    parent = results_root / "v3_1_window_feasibility" / f"sample_{case['sample_id']}" / f"dose_{'+' if dose >= 0 else ''}{dose:g}deg"
+    records = sorted(parent.glob("attempt_*/run_record.json"), key=lambda path: path.stat().st_mtime)
+    if not records:
+        return None
+    record = json.loads(records[-1].read_text(encoding="utf-8"))
+    if record.get("status") != "COMPLETED" or not record.get("v3_2_allowed", False):
+        return None
+    initial = base.clone()
+    for side in ("left", "right"):
+        side_info = record.get("sides", {}).get(side, {})
+        window = side_info.get("window", {})
+        path = side_info.get("motion_path")
+        if not path or not window.get("frames"):
+            continue
+        candidate_path = Path(path)
+        if not candidate_path.is_file():
+            continue
+        candidate = torch.load(candidate_path, map_location="cpu", weights_only=True).float()
+        start = int(window["window_start"])
+        end = int(window["window_end_exclusive"])
+        initial[start:end, MOTION_LAYOUT.body_pose] = candidate[:, MOTION_LAYOUT.body_pose]
+        initial[start:end, MOTION_LAYOUT.root_translation] = candidate[:, MOTION_LAYOUT.root_translation]
+    return initial
+
+
+def _run_case(
+    *,
+    phase: str,
+    case: dict[str, Any],
+    protocol_root: Path,
+    patches: dict[str, Any],
+    m0: torch.Tensor,
+    valid: torch.Tensor,
+    model: SMPLX,
+    device: torch.device,
+    dose: float,
+    output_root: Path,
+    results_root: Path,
+) -> dict[str, Any]:
+    case_id = str(case["sample_id"])
+    source_index = int(case["source_index"])
+    length = int(valid[source_index].sum().item())
+    base = m0[source_index, :length]
+    base_mask = valid[source_index, :length]
+    config = PelvisCompensationConfig()
+    if phase == "v3_1_window_feasibility":
+        sides = {}
+        for side in ("left", "right"):
+            side_root = output_root / side
+            side_root.mkdir(parents=True, exist_ok=True)
+            window = case["sides"][side]["stable_window"]
+            if window.get("status") != "PASS" or not window.get("frames"):
+                sides[side] = {"status": "NOT_EVALUABLE", "window": window}
+                continue
+            start = int(window["window_start"])
+            end = int(window["window_end_exclusive"])
+            stable_masks = {
+                name: torch.as_tensor(
+                    case["sides"][name]["evidence"]["valid_masks"]["flat_contact"],
+                    dtype=torch.bool,
+                )[start:end]
+                for name in ("left", "right")
+            }
+            solver = PelvisContactCompensationSolver(
+                base[start:end], model, patches,
+                valid_mask=torch.ones(end - start, dtype=torch.bool),
+                stable_masks=stable_masks,
+                config=config, device=device,
+            )
+            continuation = solver.solve_continuation((2.0, 5.0, float(dose)))
+            dose_records = []
+            for continuation_dose, result in zip((2.0, 5.0, float(dose)), continuation):
+                best_candidate = result["motion"]
+                dose_records.append({key: value for key, value in result.items() if key != "motion"})
+                torch.save(best_candidate, side_root / f"dose_{continuation_dose:+g}deg_best.pt")
+            selected = continuation[-1]["motion"] if bool(dose_records[-1].get("feasible", False)) else base[start:end].cpu()
+            sides[side] = {"status": dose_records[-1]["status"], "feasible": bool(dose_records[-1].get("feasible", False)), "window": window, "dose_records": dose_records, "motion_path": str(side_root / "candidate.pt")}
+            torch.save(selected, side_root / "candidate.pt")
+        infeasible = {
+            side: {
+                "status": value.get("status"),
+                "feasible": value.get("feasible"),
+                "window": value.get("window"),
+                "final_residuals": (
+                    value.get("dose_records", [{}])[-1].get("stages", [{}])[-1].get("final_residuals")
+                    if value.get("dose_records") else None
+                ),
+            }
+            for side, value in sides.items()
+            if value.get("status") not in ("PASS", "FEASIBLE")
+        }
+        return {
+            "phase": phase,
+            "sample_id": case_id,
+            "status": "STOP_V3_2" if infeasible else "COMPLETED",
+            "v3_2_allowed": not bool(infeasible),
+            "conflicts": infeasible,
+            "sides": sides,
+        }
+    stable_masks = {
+        name: torch.as_tensor(
+            case["sides"][name]["evidence"]["valid_masks"]["flat_contact"],
+            dtype=torch.bool,
+        )[:length]
+        for name in ("left", "right")
+    }
+    solver = PelvisContactCompensationSolver(
+        base, model, patches, valid_mask=base_mask, stable_masks=stable_masks,
+        config=config, device=device,
+    )
+    initial_motion = _v31_initial_motion(results_root, case, base, dose) if phase == "v3_2_full_sequence" else None
+    result = solver.solve(float(dose), initial_motion=initial_motion)
+    best_candidate = result["motion"]
+    feasible = bool(result.get("feasible", False))
+    if phase == "v3_1_walk_diagnostic":
+        if case_id != "94":
+            raise ValueError("the frozen walk diagnostic case is sample94")
+        torch.save(base.cpu(), output_root / "m0_physical.pt")
+        torch.save(base.cpu(), output_root / "selected_motion.pt")
+        torch.save(best_candidate, output_root / "diagnostic_motion.pt")
+        if not feasible:
+            torch.save(best_candidate, output_root / "best_infeasible_motion.pt")
+        return {
+            "phase": phase,
+            "sample_id": case_id,
+            "status": "DIAGNOSTIC_COMPLETED" if result.get("status") != "FAILED" else "DIAGNOSTIC_FAILED",
+            "solver_status": result["status"],
+            "feasible": feasible,
+            "eligible": False,
+            "diagnostic_only": True,
+            "can_unlock_v3_2": False,
+            "target_delta_deg": float(dose),
+            "frames": length,
+            "solver": {key: value for key, value in result.items() if key != "motion"},
+            "selected_motion": "selected_motion.pt",
+            "diagnostic_motion": "diagnostic_motion.pt",
+            "fallback_is_m0": True,
+        }
+    candidate = best_candidate if feasible else base.cpu()
+    torch.save(base.cpu(), output_root / "m0_physical.pt")
+    torch.save(candidate, output_root / "selected_motion.pt")
+    if not feasible:
+        torch.save(best_candidate, output_root / "best_infeasible_motion.pt")
+    return {
+        "phase": phase,
+        "sample_id": case_id,
+        "status": result["status"],
+        "feasible": feasible,
+        "target_delta_deg": float(dose),
+        "frames": length,
+        "solver": {key: value for key, value in result.items() if key != "motion"},
+        "selected_motion": "selected_motion.pt",
+        "fallback_is_m0": not feasible,
+    }
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--protocol-root", type=Path, required=True)
+    parser.add_argument(
+        "--phase",
+        choices=("v3_1_window_feasibility", "v3_1_walk_diagnostic", "v3_2_full_sequence"),
+        required=True,
+    )
+    parser.add_argument("--sample-id", default=None)
+    parser.add_argument("--target-delta-deg", type=float, default=10.0)
+    parser.add_argument("--output-root", type=Path, default=None)
+    parser.add_argument("--model-path", type=Path, default=None)
+    parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--source-revision", default=None, help="commit id when the server tree has no .git metadata")
+    args = parser.parse_args()
+    protocol, patches, m0, valid = _load_protocol(args.protocol_root)
+    if protocol.get("protocol") != PROTOCOL_NAME:
+        raise ValueError("protocol root is not a v3 pelvis contact protocol")
+    cases = protocol["cases"]
+    if args.sample_id is not None:
+        cases = [case for case in cases if str(case["sample_id"]) == str(args.sample_id)]
+    if not cases:
+        raise ValueError("no requested case in frozen protocol")
+    model_path = Path(args.model_path) if args.model_path is not None else Path(default_smpl_model_path("smplx", ROOT))
+    device = torch.device(args.device)
+    max_frames = int(valid.sum(dim=1).max().item())
+    model = SMPLX(model_path=str(model_path), gender="neutral", num_betas=10, batch_size=max_frames, use_pca=False).to(device)
+    output_base = args.output_root or (ROOT / "results/phase8/pelvis_contact_compensation_v3_0_1")
+    output_base = Path(output_base)
+    if args.phase == "v3_2_full_sequence":
+        strict_cases = [case for case in cases if str(case["sample_id"]) == "34122"]
+        for strict_case in strict_cases:
+            gate = _latest_v31_record(output_base, str(strict_case["sample_id"]), args.target_delta_deg)
+            if gate is None or gate.get("status") != "COMPLETED" or not gate.get("v3_2_allowed", False):
+                raise RuntimeError(
+                    "v3.2 is frozen until the sample-34122 v3.1 gate passes; "
+                    f"latest gate={gate.get('status') if gate else None}"
+                )
+    if args.phase == "v3_1_walk_diagnostic":
+        non_walk = [case for case in cases if str(case["sample_id"]) != "94"]
+        if non_walk:
+            raise ValueError("v3.1 walk diagnostic accepts only frozen sample94")
+    output_base = output_base / args.phase
+    records = []
+    for case in cases:
+        parent = output_base / f"sample_{case['sample_id']}" / f"dose_{args.target_delta_deg:+g}deg"
+        run_root = _next_attempt(parent)
+        record: dict[str, Any] = {
+            "status": "RUNNING",
+            "protocol": protocol["protocol"],
+            "phase": args.phase,
+            "sample_id": str(case["sample_id"]),
+            "seed": int(case.get("seed", 0)),
+            "target_delta_deg": float(args.target_delta_deg),
+            "run_root": str(run_root),
+            "protocol_root": str(args.protocol_root),
+            "protocol_sha256": _sha256(args.protocol_root / "protocol.json"),
+            "patch_sha256": protocol["foot_patches"]["sha256"],
+            "git_revision": _git_revision() or args.source_revision,
+            "model_path": str(model_path),
+            "model_sha256": _sha256(model_path) if model_path.exists() else None,
+            "solver_config": asdict(PelvisCompensationConfig()),
+        }
+        record_path = run_root / "run_record.json"
+        _write_json(record_path, record)
+        started = time.perf_counter()
+        try:
+            result = _run_case(phase=args.phase, case=case, protocol_root=args.protocol_root, patches=patches, m0=m0, valid=valid, model=model, device=device, dose=args.target_delta_deg, output_root=run_root, results_root=output_base.parent)
+            record.update(result)
+            record["status"] = result.get("status", "COMPLETED")
+        except Exception as exc:
+            record.update({"status": "FAILED", "error": repr(exc)})
+            raise
+        finally:
+            record["elapsed_seconds"] = time.perf_counter() - started
+            _write_json(record_path, record)
+        records.append(record)
+    print(json.dumps({"phase": args.phase, "runs": records}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

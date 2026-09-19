@@ -1,0 +1,27 @@
+protocol: vimogen_pelvis_m1_m7_scale_v1
+source_plan_sha256: 4402ccaa7abbd60f5a06da17fc3907ba77ffce0b3a41040ee8dfd205f4d8d88a
+algorithm_definitions_frozen: true
+authority:
+  direct_channels: [body_pose, root_rotation, root_translation]
+  derived_channels: [joints, joints_velocity, root_rotation_velocity, root_translation_velocity]
+  angle_evaluator: pelvis_angle_local_sagittal_v1
+constraint_packs:
+  C0: [pelvis_angle]
+  C1: [pelvis_angle, ground_nonpenetration]
+  C2: [pelvis_angle, ground_nonpenetration, frozen_contact]
+  C3: [pelvis_angle, ground_nonpenetration, frozen_contact, trunk, root_trajectory, joint_limits, temporal]
+doses_deg: [-10, -5, -2, 0, 2, 5, 10]
+core_doses_deg: [-5, -2, 2, 5]
+stress_doses_deg: [-10, 10]
+smoke:
+  sample_ids: [94, 34122]
+  seeds: [0, 42]
+  doses_deg: [-2, 0, 2]
+  constraint_pack: C0
+gates:
+  angle_mae_deg: 1.0
+  angle_p95_deg: 2.0
+  zero_dose_drift_deg: 0.0001
+tuning:
+  max_equivalent_configs_per_method: 8
+  selection_order: [angle_gate, numerical_stability, physical_side_effects, content_noninferiority, cost]

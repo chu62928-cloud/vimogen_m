@@ -1,0 +1,393 @@
+{
+  "status": "PRELIMINARY_S0_ONLY",
+  "sequence_count_per_method": 12,
+  "methods": [
+    {
+      "method": "M1",
+      "label": "M1 能量引导",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          0.2725060358643532,
+          0.14777679182589054,
+          0.4868077039718628
+        ],
+        "display": "0.273 [0.148, 0.487]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          0.5570321977138519,
+          0.3459886163473129,
+          0.93986776471138
+        ],
+        "display": "0.557 [0.346, 0.940]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 0.7878757789731029,
+      "dose_response_intercept_deg": 0.026749324596797304,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          0.1125171035528183,
+          0.09968174993991852,
+          0.1291517112404108
+        ],
+        "display": "0.113 [0.100, 0.129]"
+      },
+      "sequence_angle_pass_count": 12,
+      "sequence_angle_pass_rate": 1.0,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          8.42584203928709,
+          2.7456662501208484,
+          9.696174645796418
+        ],
+        "display": "8.4 [2.7, 9.7]",
+        "maximum": 11.024214327335358
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          4.535695072263479,
+          4.126418731175363,
+          4.963314742781222
+        ],
+        "display": "4.5 [4.1, 5.0]",
+        "maximum": 6.316629704087973
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    },
+    {
+      "method": "M2",
+      "label": "M2 源噪声优化",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          0.7570785582065582,
+          0.04380775522440672,
+          0.98387411236763
+        ],
+        "display": "0.757 [0.044, 0.984]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          1.3076204657554626,
+          0.10023819096386433,
+          2.1872963309288025
+        ],
+        "display": "1.308 [0.100, 2.187]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 0.9958834014832978,
+      "dose_response_intercept_deg": -0.20955031472840363,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          0.03767181187868118,
+          0.03686939552426338,
+          0.040006183087825775
+        ],
+        "display": "0.038 [0.037, 0.040]"
+      },
+      "sequence_angle_pass_count": 8,
+      "sequence_angle_pass_rate": 0.6666666666666666,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          33.77750143408775,
+          2.8817178099416196,
+          72.43140414357185
+        ],
+        "display": "33.8 [2.9, 72.4]",
+        "maximum": 552.6967644691467
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          39.303699508309364,
+          5.226310924626887,
+          105.77255114912987
+        ],
+        "display": "39.3 [5.2, 105.8]",
+        "maximum": 714.9915099143982
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    },
+    {
+      "method": "M3",
+      "label": "M3 局部投影",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          0.18133269995450974,
+          0.17324413731694221,
+          0.19957473501563072
+        ],
+        "display": "0.181 [0.173, 0.200]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          0.42456158995628357,
+          0.3844909071922302,
+          0.504701778292656
+        ],
+        "display": "0.425 [0.384, 0.505]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 0.95031850039959,
+      "dose_response_intercept_deg": 0.009052719615283299,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          0.17306632548570633,
+          0.17216774076223373,
+          0.17975420504808426
+        ],
+        "display": "0.173 [0.172, 0.180]"
+      },
+      "sequence_angle_pass_count": 12,
+      "sequence_angle_pass_rate": 1.0,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          34.52593646943569,
+          30.627127271145582,
+          63.594033010303974
+        ],
+        "display": "34.5 [30.6, 63.6]",
+        "maximum": 148.824542760849
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          50.8822500705719,
+          45.54755426943302,
+          93.0602177977562
+        ],
+        "display": "50.9 [45.5, 93.1]",
+        "maximum": 200.76769590377808
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    },
+    {
+      "method": "M4",
+      "label": "M4 前向射击",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          1.5258788721439487e-07,
+          1.1444091541079615e-07,
+          1.5258788721439487e-07
+        ],
+        "display": "0.000 [0.000, 0.000]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "display": "0.000 [0.000, 0.000]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 0.9999999925494198,
+      "dose_response_intercept_deg": -7.446234575518152e-08,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          3.91077242056781e-06,
+          3.7348641512835457e-06,
+          3.984253908129176e-06
+        ],
+        "display": "0.000 [0.000, 0.000]"
+      },
+      "sequence_angle_pass_count": 12,
+      "sequence_angle_pass_rate": 1.0,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          51.91721208393574,
+          45.75469717383385,
+          59.47704240679741
+        ],
+        "display": "51.9 [45.8, 59.5]",
+        "maximum": 75.66647976636887
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          88.53429183363914,
+          74.49851930141449,
+          95.78395821154118
+        ],
+        "display": "88.5 [74.5, 95.8]",
+        "maximum": 98.24121743440628
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    },
+    {
+      "method": "M5",
+      "label": "M5 原始—对偶流",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          1.4870019555091858,
+          0.05358520522713661,
+          1.5601221323013306
+        ],
+        "display": "1.487 [0.054, 1.560]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          1.5728431344032288,
+          0.19635123759508133,
+          1.7687066793441772
+        ],
+        "display": "1.573 [0.196, 1.769]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 0.22995261847972873,
+      "dose_response_intercept_deg": 0.01096067678493757,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          0.04523307643830776,
+          0.03915045037865639,
+          0.051844799891114235
+        ],
+        "display": "0.045 [0.039, 0.052]"
+      },
+      "sequence_angle_pass_count": 4,
+      "sequence_angle_pass_rate": 0.3333333333333333,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          3.571799024939537,
+          2.4726882111281157,
+          3.762108855880797
+        ],
+        "display": "3.6 [2.5, 3.8]",
+        "maximum": 3.9952038787305355
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          4.436609102413058,
+          3.871034365147352,
+          4.68727620318532
+        ],
+        "display": "4.4 [3.9, 4.7]",
+        "maximum": 5.680206697434187
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    },
+    {
+      "method": "M6",
+      "label": "M6 李雅普诺夫引导",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          0.4670017212629318,
+          0.08647521957755089,
+          0.5006998404860497
+        ],
+        "display": "0.467 [0.086, 0.501]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          0.5996501743793488,
+          0.29224830120801926,
+          0.9792208522558212
+        ],
+        "display": "0.600 [0.292, 0.979]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 0.7304907143116001,
+      "dose_response_intercept_deg": 0.06591292340696467,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          0.08238270506262779,
+          0.06870217248797417,
+          0.08545067720115185
+        ],
+        "display": "0.082 [0.069, 0.085]"
+      },
+      "sequence_angle_pass_count": 12,
+      "sequence_angle_pass_rate": 1.0,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          7.9599181190133095,
+          2.419478609226644,
+          9.500824846327305
+        ],
+        "display": "8.0 [2.4, 9.5]",
+        "maximum": 10.733037255704403
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          4.648151341825724,
+          4.119383287616074,
+          4.940308514051139
+        ],
+        "display": "4.6 [4.1, 4.9]",
+        "maximum": 5.231244023889303
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    },
+    {
+      "method": "M7",
+      "label": "M7 生成后几何编辑†",
+      "sequence_count": 12,
+      "angle_mae_deg": {
+        "median_q1_q3": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "display": "0.000 [0.000, 0.000]"
+      },
+      "angle_p95_deg": {
+        "median_q1_q3": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "display": "0.000 [0.000, 0.000]"
+      },
+      "sign_correct_rate": 1.0,
+      "dose_response_slope": 1.0000000000000002,
+      "dose_response_intercept_deg": -5.587936726156474e-10,
+      "zero_dose_drift_deg": {
+        "median_q1_q3": [
+          8.568167508826718e-09,
+          5.699694050065318e-09,
+          9.53674295089968e-09
+        ],
+        "display": "0.000 [0.000, 0.000]"
+      },
+      "sequence_angle_pass_count": 12,
+      "sequence_angle_pass_rate": 1.0,
+      "mpjpe_vs_m0_mm": {
+        "median_q1_q3": [
+          13.370378408581018,
+          4.058527958150648e-06,
+          13.527762377634645
+        ],
+        "display": "13.4 [0.0, 13.5]",
+        "maximum": 13.708311133086681
+      },
+      "root_translation_deviation_p95_mm": {
+        "median_q1_q3": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "display": "0.0 [0.0, 0.0]",
+        "maximum": 0.0
+      },
+      "physical_statuses": [
+        "PENDING_SHARED_FK_MARKER_MATERIALIZATION"
+      ]
+    }
+  ],
+  "physical_gate": "PENDING_SHARED_FK_MARKER_MATERIALIZATION",
+  "m7_claims_generator_response": false
+}

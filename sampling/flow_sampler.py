@@ -13,6 +13,8 @@ from typing import Optional
 
 import torch
 
+from motion_rep.phase1 import MOTION_LAYOUT, decode_rot6d_safe
+from motion_rep.pose_authority import _geodesic
 from utils import smooth_motion_rep
 
 
@@ -34,8 +36,8 @@ class FlowSampleResult:
     # M0/M1 callers leave this as None and retain bitwise-compatible outputs.
     reconciled: Optional[torch.Tensor] = None
     representation_protocol: Optional[str] = None
-    # Opt-in outputs for ``vimogen_absolute_mean_pelvis_v1``.  They remain
-    # None for every historical M0/M1 call.
+    # Opt-in authoritative outputs for absolute-pelvis and relative-root
+    # protocols.  They remain None for every historical M0/M1 call.
     g0: Optional[torch.Tensor] = None
     g1: Optional[torch.Tensor] = None
     guidance_summary: Optional[dict] = None
@@ -87,6 +89,73 @@ class FlowSampler:
                 f"got {tuple(ref_motion_mask.shape)} vs {tuple(initial_noise.shape[:2])}"
             )
 
+    @staticmethod
+    def _guidance_transfer_gain(
+        x_next_model: torch.Tensor,
+        x_next_guided: torch.Tensor,
+        motion_mean: torch.Tensor,
+        motion_std: torch.Tensor,
+        valid_mask: torch.Tensor,
+        accepted_alpha_rms_deg: float,
+    ) -> float | None:
+        """Measure root-rotation effect after one scheduler step."""
+
+        if accepted_alpha_rms_deg <= 1e-8:
+            return None
+        mean = motion_mean.to(device=x_next_guided.device, dtype=torch.float32)
+        std = motion_std.to(device=x_next_guided.device, dtype=torch.float32)
+        if mean.ndim == 1:
+            mean = mean[None, None, :]
+            std = std[None, None, :]
+        elif mean.ndim == 2:
+            mean = mean[:, None, :]
+            std = std[:, None, :]
+        model_phys = x_next_model.float() * std + mean
+        guided_phys = x_next_guided.float() * std + mean
+        model_root = decode_rot6d_safe(model_phys[..., MOTION_LAYOUT.root_rotation])
+        guided_root = decode_rot6d_safe(guided_phys[..., MOTION_LAYOUT.root_rotation])
+        delta_deg = _geodesic(guided_root, model_root) * (180.0 / torch.pi)
+        values = delta_deg[valid_mask]
+        if not values.numel() or not torch.isfinite(values).all():
+            return None
+        return float(values.mean().detach().cpu()) / float(accepted_alpha_rms_deg)
+
+    @staticmethod
+    def _counterfactual_model_state(
+        x_next_guided: torch.Tensor,
+        velocity_model: torch.Tensor,
+        velocity_guided: torch.Tensor,
+        sigma: torch.Tensor | float,
+        sigma_next: torch.Tensor | float,
+        *,
+        stochastic_sampling: bool = False,
+    ) -> torch.Tensor | None:
+        """Recover the same-step unguided Euler state without stepping twice.
+
+        ``FlowMatchEulerDiscreteScheduler.step`` mutates its internal step
+        index.  Calling it once for the guided velocity and again for the
+        counterfactual model velocity would therefore skip a scheduler step.
+        For the deterministic sampler used by ViMoGen, both states share the
+        same Euler increment and differ only by ``dt * (v_model-v_guided)``.
+        Stochastic schedulers are intentionally unsupported for this
+        diagnostic because the second call would draw a different noise.
+        """
+
+        if stochastic_sampling:
+            return None
+        sigma_value = torch.as_tensor(
+            sigma, dtype=torch.float32, device=x_next_guided.device
+        )
+        sigma_next_value = torch.as_tensor(
+            sigma_next, dtype=torch.float32, device=x_next_guided.device
+        )
+        dt = sigma_next_value - sigma_value
+        while dt.ndim < x_next_guided.ndim:
+            dt = dt.unsqueeze(-1)
+        return x_next_guided.float() + dt * (
+            velocity_model.float() - velocity_guided.float()
+        )
+
     @torch.no_grad()
     def generate(
         self,
@@ -105,6 +174,9 @@ class FlowSampler:
         batch_invariant: bool = False,
         m1_guidance=None,
         absolute_mean_guidance=None,
+        relative_root_forward_guidance=None,
+        pelvis_contact_projection=None,
+        unified_guidance_hook=None,
         trace_enabled: bool = False,
         reconciliation_config: Optional[dict] = None,
         motion_mean: Optional[torch.Tensor] = None,
@@ -119,11 +191,37 @@ class FlowSampler:
         self._validate_inputs(
             initial_noise, valid_mask, ref_motion, ref_motion_mask
         )
-        if m1_guidance is not None and absolute_mean_guidance is not None:
-            raise ValueError("m1_guidance and absolute_mean_guidance are mutually exclusive")
+        guidance_count = sum(
+            item is not None
+            for item in (
+                m1_guidance,
+                absolute_mean_guidance,
+                relative_root_forward_guidance,
+                pelvis_contact_projection,
+                unified_guidance_hook,
+            )
+        )
+        if guidance_count > 1:
+            raise ValueError(
+                "m1_guidance, absolute_mean_guidance, and "
+                "relative_root_forward_guidance, pelvis_contact_projection, "
+                "and unified_guidance_hook "
+                "are mutually exclusive"
+            )
+        if guidance_count and reconciliation_config and bool(reconciliation_config.get("enabled", False)):
+            raise ValueError(
+                "guided protocol owns the final reconciliation boundary; "
+                "do not also pass reconciliation_config"
+            )
         guidance_hook = (
             absolute_mean_guidance
             if absolute_mean_guidance is not None
+            else relative_root_forward_guidance
+            if relative_root_forward_guidance is not None
+            else pelvis_contact_projection
+            if pelvis_contact_projection is not None
+            else unified_guidance_hook
+            if unified_guidance_hook is not None
             else m1_guidance
         )
         if batch_invariant and initial_noise.shape[0] > 1:
@@ -163,6 +261,21 @@ class FlowSampler:
                             None if absolute_mean_guidance is None
                             else absolute_mean_guidance.slice(index)
                         ),
+                        relative_root_forward_guidance=(
+                            None if relative_root_forward_guidance is None
+                            else relative_root_forward_guidance.slice(index)
+                        ),
+                        pelvis_contact_projection=(
+                            None if pelvis_contact_projection is None
+                            else pelvis_contact_projection.slice(index)
+                        ),
+                        unified_guidance_hook=(
+                            None
+                            if unified_guidance_hook is None
+                            else unified_guidance_hook.slice(index)
+                            if hasattr(unified_guidance_hook, "slice")
+                            else unified_guidance_hook
+                        ),
                         trace_enabled=trace_enabled,
                         reconciliation_config=reconciliation_config,
                         motion_mean=(None if motion_mean is None else motion_mean[index:index + 1]),
@@ -182,7 +295,11 @@ class FlowSampler:
                 timesteps=per_sample[-1].timesteps,
                 trace=(
                     {
-                        key: torch.cat([result.trace[key] for result in per_sample], dim=1)
+                        key: (
+                            torch.stack([result.trace[key] for result in per_sample], dim=1)
+                            if per_sample[0].trace[key].ndim == 1
+                            else torch.cat([result.trace[key] for result in per_sample], dim=1)
+                        )
                         for key in per_sample[0].trace
                     }
                     if trace_enabled and per_sample and per_sample[0].trace is not None
@@ -273,8 +390,26 @@ class FlowSampler:
 
             iterator = tqdm(timesteps, desc="M0 generation")
         trace_records: list[dict[str, torch.Tensor]] = []
+        guidance_step_records: list[dict] = []
         for timestep in iterator:
             x_sigma_trace = xt.detach().clone() if trace_enabled else None
+            timestep_id = torch.argmin(
+                (self.scheduler.timesteps.to(device) - timestep).abs()
+            )
+            sigma_step = self.scheduler.sigmas[timestep_id].to(device=device)
+            next_index = int(timestep_id.detach().cpu()) + 1
+            if next_index >= len(self.scheduler.sigmas):
+                # FlowMatchScheduler uses an explicit terminal boundary
+                # rather than storing an extra sigma value.
+                terminal_sigma = 1.0 if bool(
+                    getattr(self.scheduler, "inverse_timesteps", False)
+                    or getattr(self.scheduler, "reverse_sigmas", False)
+                ) else 0.0
+                sigma_next_step = torch.as_tensor(
+                    terminal_sigma, dtype=sigma_step.dtype, device=device
+                )
+            else:
+                sigma_next_step = self.scheduler.sigmas[next_index].to(device=device)
             with autocast_ctx:
                 latent_model_input = torch.cat([xt] * 2, dim=0)
                 timestep_input = timestep.unsqueeze(0)
@@ -295,13 +430,11 @@ class FlowSampler:
                     )
                 else:
                     velocity = velocity_cond
+                velocity_model = velocity.detach().clone()
                 sigma = None
                 x0_hat = None
                 if trace_enabled:
-                    timestep_id = torch.argmin(
-                        (self.scheduler.timesteps.to(device) - timestep).abs()
-                    )
-                    sigma = self.scheduler.sigmas[timestep_id].to(device=device)
+                    sigma = sigma_step
                     x0_hat = (
                         x_sigma_trace.float()
                         - sigma.float() * velocity.float()
@@ -324,6 +457,10 @@ class FlowSampler:
                         # hook and does not alter the frozen M0 path.
                         "valid_mask": valid_mask.bool(),
                     }
+                    if bool(
+                        getattr(guidance_hook, "requires_sigma_next", False)
+                    ):
+                        guidance_kwargs["sigma_next"] = sigma_next_step
                     if trace_enabled:
                         guidance_kwargs["return_trace"] = True
                     velocity, guidance_diagnostics = guidance_hook.correct_velocity(
@@ -332,6 +469,48 @@ class FlowSampler:
                     if trace_enabled:
                         guidance_trace = guidance_diagnostics.get("trace")
                 x_next = self.scheduler.step(velocity, timestep, xt)
+                if (
+                    relative_root_forward_guidance is not None
+                    and guidance_diagnostics.get("accepted", False)
+                    and motion_mean is not None
+                    and motion_std is not None
+                ):
+                    x_next_model = self._counterfactual_model_state(
+                        x_next,
+                        velocity_model,
+                        velocity,
+                        sigma_step,
+                        sigma_next_step,
+                        stochastic_sampling=bool(
+                            getattr(
+                                getattr(self.scheduler, "config", None),
+                                "stochastic_sampling",
+                                False,
+                            )
+                        ),
+                    )
+                    if x_next_model is None:
+                        transfer_gain = None
+                    else:
+                        transfer_gain = self._guidance_transfer_gain(
+                            x_next_model,
+                            x_next,
+                            motion_mean,
+                            motion_std,
+                            valid_mask.bool(),
+                            float(guidance_diagnostics.get("accepted_alpha_rms_deg", 0.0)),
+                        )
+                    if transfer_gain is not None:
+                        guidance_diagnostics["transfer_gain"] = transfer_gain
+                if (
+                    relative_root_forward_guidance is not None
+                    or pelvis_contact_projection is not None
+                    or unified_guidance_hook is not None
+                ):
+                    guidance_step_records.append({
+                        key: value for key, value in guidance_diagnostics.items()
+                        if key != "trace" and not isinstance(value, torch.Tensor)
+                    })
                 if trace_enabled:
                     trace_records.append(
                         {
@@ -397,10 +576,78 @@ class FlowSampler:
                 **absolute_mean_guidance.protocol_record(),
                 "terminal_records": list(absolute_outputs.terminal_records),
             }
-        if reconciliation_config and bool(reconciliation_config.get("enabled", False)):
-            if absolute_mean_guidance is not None:
+        if relative_root_forward_guidance is not None:
+            relative_outputs = relative_root_forward_guidance.finalize_outputs(official.float())
+            g0 = relative_outputs.g0
+            reconciled = g0.to(dtype=dtype)
+            representation_protocol = relative_outputs.protocol
+            guidance_summary = {
+                **relative_root_forward_guidance.protocol_record(),
+                "final_projection_audits": list(relative_outputs.projection_audits),
+                "whole_body_audits": list(relative_outputs.whole_body_audits),
+                "metrics": relative_outputs.metrics,
+                "step_records": guidance_step_records,
+            }
+        if pelvis_contact_projection is not None:
+            projection_outputs = pelvis_contact_projection.finalize_outputs(
+                official.float(), valid_mask.bool()
+            )
+            g0 = projection_outputs.g0
+            reconciled = g0.to(dtype=dtype)
+            representation_protocol = projection_outputs.protocol
+            guidance_summary = {
+                **projection_outputs.summary,
+                "step_records": guidance_step_records,
+            }
+        if unified_guidance_hook is not None:
+            if motion_mean is None or motion_std is None:
                 raise ValueError(
-                    "absolute mean guidance owns the final reconciliation boundary; "
+                    "unified guidance finalization requires motion_mean and motion_std"
+                )
+            from motion_rep.pose_authority import authority_project
+
+            terminal_records = []
+            unified_official = official.float()
+            if hasattr(unified_guidance_hook, "finalize_output"):
+                unified_official, terminal_records = unified_guidance_hook.finalize_output(
+                    unified_official, valid_mask.bool()
+                )
+            unified_outputs = authority_project(
+                unified_official,
+                valid_mask=valid_mask.bool(),
+                mean=motion_mean.float(),
+                std=motion_std.float(),
+                input_standardized=True,
+                output_standardized=True,
+                output_dtype=torch.float32,
+            )
+            g0 = unified_outputs.motion
+            reconciled = g0.to(dtype=dtype)
+            representation_protocol = str(
+                getattr(
+                    unified_guidance_hook,
+                    "protocol",
+                    "m1_m7_unified_guidance_v1",
+                )
+            )
+            guidance_summary = {
+                "protocol": representation_protocol,
+                "method": str(
+                    getattr(unified_guidance_hook, "name", "unknown")
+                ),
+                "final_projection_audits": list(unified_outputs.audits),
+                "terminal_records": terminal_records,
+                "step_records": guidance_step_records,
+            }
+        if reconciliation_config and bool(reconciliation_config.get("enabled", False)):
+            if (
+                absolute_mean_guidance is not None
+                or relative_root_forward_guidance is not None
+                or pelvis_contact_projection is not None
+                or unified_guidance_hook is not None
+            ):
+                raise ValueError(
+                    "guided protocol owns the final reconciliation boundary; "
                     "do not also pass reconciliation_config"
                 )
             if motion_mean is None or motion_std is None:

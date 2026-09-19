@@ -140,6 +140,8 @@ def _load_motion(path: Path, device: str) -> torch.Tensor:
     motion = torch.load(path, map_location=device, weights_only=True)
     if isinstance(motion, dict):
         motion = motion["motion"]
+    if motion.ndim == 3 and motion.shape[0] == 1:
+        motion = motion[0]
     if motion.ndim != 2 or motion.shape[-1] != 276:
         raise ValueError(f"{path} must contain physical [T,276] motion")
     return motion.float()
@@ -148,7 +150,8 @@ def _load_motion(path: Path, device: str) -> torch.Tensor:
 @torch.no_grad()
 def render_sources(
     motions: dict[str, torch.Tensor], output_dir: Path, device: str, render_style: str = "mesh",
-    calibration: PelvisCalibration | None = None,
+    calibration: PelvisCalibration | None = None, fps: float = FPS,
+    annotate: bool = True, mesh_backend: str = "pytorch3d",
 ) -> dict[str, Path]:
     """Render all methods with the exact same fixed sagittal side camera."""
 
@@ -176,10 +179,12 @@ def render_sources(
         return _render_skeleton_sources(
             joints, root_rotations, camera_r, camera_t, output_dir,
             display_heading=display_heading,
-            calibration=calibration, audit_labels=audit_labels
+            calibration=calibration, audit_labels=audit_labels, fps=fps
         )
     if render_style != "mesh":
         raise ValueError(f"unsupported render_style {render_style!r}")
+    if mesh_backend not in {"pytorch3d", "pyrender_egl"}:
+        raise ValueError(f"unsupported mesh backend {mesh_backend!r}")
     model = SMPLX(
         model_path=_default_smpl_model_path("smplx"),
         gender="neutral",
@@ -187,9 +192,18 @@ def render_sources(
         batch_size=motions["M0"].shape[0],
         use_pca=False,
     ).to(device)
+    if mesh_backend == "pyrender_egl":
+        return _render_mesh_sources_pyrender(
+            model,
+            parameters,
+            camera_r,
+            camera_t,
+            output_dir,
+            fps=fps,
+        )
     faces = torch.from_numpy(model.faces).long().to(device)
     outputs = {}
-    for method in ("M0", "G0", "G1"):
+    for method in motions:
         vertices = model(**parameters[method]).vertices
         path = output_dir / f"{method.lower()}_fixed_sagittal_side.mp4"
         render_and_save(
@@ -201,10 +215,13 @@ def render_sources(
             height=PANEL_HEIGHT,
             focal=estimate_focal_length(PANEL_WIDTH, PANEL_HEIGHT),
             batch_size=24,
-            fps=FPS,
+            fps=fps,
             output_path=str(path),
             motion_name=method,
         )
+        if not annotate:
+            outputs[method] = path
+            continue
         annotated_path = output_dir / f"{method.lower()}_fixed_sagittal_side_annotated.mp4"
         _annotate_mesh_source(
             path,
@@ -216,8 +233,129 @@ def render_sources(
             calibration=calibration,
             display_heading=display_heading,
             audit_labels=audit_labels[method] if audit_labels is not None else None,
+            fps=fps,
         )
         outputs[method] = annotated_path
+    return outputs
+
+
+def _render_mesh_sources_pyrender(
+    model: SMPLX,
+    parameters: dict[str, dict[str, torch.Tensor]],
+    camera_r: torch.Tensor,
+    camera_t: torch.Tensor,
+    output_dir: Path,
+    *,
+    fps: float,
+) -> dict[str, Path]:
+    import os
+
+    os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+    import pyrender
+    import trimesh
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    faces = np.asarray(model.faces, dtype=np.int32)
+    camera_r_np = camera_r.detach().cpu().numpy()
+    camera_t_np = camera_t.detach().cpu().numpy()
+    focal = float(estimate_focal_length(PANEL_WIDTH, PANEL_HEIGHT))
+    renderer = pyrender.OffscreenRenderer(PANEL_WIDTH, PANEL_HEIGHT)
+    outputs: dict[str, Path] = {}
+    try:
+        for method, method_parameters in parameters.items():
+            vertices = model(**method_parameters).vertices.detach().cpu().numpy()
+            path = output_dir / f"{method.lower()}_fixed_sagittal_side.mp4"
+            command = [
+                "ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo",
+                "-vcodec", "rawvideo", "-pix_fmt", "bgr24", "-s",
+                f"{PANEL_WIDTH}x{PANEL_HEIGHT}", "-r", str(fps), "-i", "-",
+                "-an", "-vcodec", "libx264", "-crf", "18", "-preset", "medium",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(path),
+            ]
+            process = subprocess.Popen(command, stdin=subprocess.PIPE)
+            material = pyrender.MetallicRoughnessMaterial(
+                baseColorFactor=(
+                    [0.55, 0.58, 0.62, 1.0]
+                    if method == "M0"
+                    else [0.10, 0.55, 0.92, 1.0]
+                ),
+                metallicFactor=0.0,
+                roughnessFactor=0.82,
+            )
+            try:
+                for frame_index in range(vertices.shape[0]):
+                    camera_points = (
+                        vertices[frame_index] @ camera_r_np[frame_index]
+                        + camera_t_np[frame_index]
+                    )
+                    mesh_points = np.stack(
+                        (
+                            -camera_points[:, 0],
+                            camera_points[:, 1],
+                            -camera_points[:, 2],
+                        ),
+                        axis=-1,
+                    )
+                    triangle_mesh = trimesh.Trimesh(
+                        vertices=mesh_points, faces=faces, process=False
+                    )
+                    scene = pyrender.Scene(
+                        bg_color=np.array([245, 245, 245, 255], dtype=np.uint8),
+                        ambient_light=np.array([0.35, 0.35, 0.35]),
+                    )
+                    scene.add(
+                        pyrender.IntrinsicsCamera(
+                            fx=focal,
+                            fy=focal,
+                            cx=PANEL_WIDTH / 2.0,
+                            cy=PANEL_HEIGHT / 2.0,
+                            znear=0.01,
+                            zfar=100.0,
+                        ),
+                        pose=np.eye(4, dtype=np.float32),
+                    )
+                    scene.add(
+                        pyrender.DirectionalLight(color=np.ones(3), intensity=3.0),
+                        pose=np.eye(4, dtype=np.float32),
+                    )
+                    light_pose = np.eye(4, dtype=np.float32)
+                    light_pose[:3, :3] = np.array(
+                        [
+                            [0.82, 0.0, 0.57],
+                            [0.0, 1.0, 0.0],
+                            [-0.57, 0.0, 0.82],
+                        ],
+                        dtype=np.float32,
+                    )
+                    scene.add(
+                        pyrender.DirectionalLight(color=np.ones(3), intensity=2.0),
+                        pose=light_pose,
+                    )
+                    scene.add(
+                        pyrender.Mesh.from_trimesh(
+                            triangle_mesh, material=material, smooth=False
+                        )
+                    )
+                    color, _ = renderer.render(
+                        scene,
+                        flags=(
+                            pyrender.RenderFlags.RGBA
+                            | pyrender.RenderFlags.SKIP_CULL_FACES
+                        ),
+                    )
+                    frame = cv2.cvtColor(color[:, :, :3], cv2.COLOR_RGB2BGR)
+                    if process.stdin is None:
+                        raise RuntimeError("ffmpeg input pipe is unavailable")
+                    process.stdin.write(frame.tobytes())
+            finally:
+                if process.stdin is not None:
+                    process.stdin.close()
+                return_code = process.wait()
+            if return_code != 0:
+                raise RuntimeError(f"ffmpeg failed while rendering {path}")
+            outputs[method] = path
+    finally:
+        renderer.delete()
     return outputs
 
 
@@ -230,6 +368,7 @@ def _render_skeleton_sources(
     display_heading: torch.Tensor,
     calibration: PelvisCalibration | None = None,
     audit_labels: dict[str, np.ndarray] | None = None,
+    fps: float = FPS,
 ) -> dict[str, Path]:
     """Render joints plus an explicit, non-exaggerated pelvis-angle marker.
 
@@ -240,7 +379,7 @@ def _render_skeleton_sources(
 
     output_dir.mkdir(parents=True, exist_ok=True)
     outputs: dict[str, Path] = {}
-    for method in ("M0", "G0", "G1"):
+    for method in joints:
         world = joints[method].float()
         projected, projected_heading, projected_sagittal, projected_motion, tilt_values = _pelvis_marker_projections(
             world, root_rotations[method], camera_r, camera_t,
@@ -250,7 +389,7 @@ def _render_skeleton_sources(
         command = [
             "ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo",
             "-vcodec", "rawvideo", "-pix_fmt", "bgr24", "-s",
-            f"{PANEL_WIDTH}x{PANEL_HEIGHT}", "-r", str(FPS), "-i", "-", "-an",
+            f"{PANEL_WIDTH}x{PANEL_HEIGHT}", "-r", str(fps), "-i", "-", "-an",
             "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
             str(path),
         ]
@@ -474,6 +613,7 @@ def _annotate_mesh_source(
     display_heading: torch.Tensor,
     calibration: PelvisCalibration | None = None,
     audit_labels: dict[str, np.ndarray] | None = None,
+    fps: float = FPS,
 ) -> None:
     """Overlay the same pelvis marker on a shaded mesh source video."""
 
@@ -487,7 +627,7 @@ def _annotate_mesh_source(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     command = [
         "ffmpeg", "-loglevel", "error", "-y", "-f", "rawvideo", "-vcodec", "rawvideo",
-        "-pix_fmt", "bgr24", "-s", f"{PANEL_WIDTH}x{PANEL_HEIGHT}", "-r", str(FPS),
+        "-pix_fmt", "bgr24", "-s", f"{PANEL_WIDTH}x{PANEL_HEIGHT}", "-r", str(fps),
         "-i", "-", "-an", "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-movflags", "+faststart",
         str(output_path),
     ]

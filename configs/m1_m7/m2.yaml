@@ -1,0 +1,11 @@
+method: M2
+implementation: dflow_source_noise_optimization
+constraint_pack: C0
+optimizer: adam
+learning_rate: 0.01
+iterations: 40
+source_regularization: 0.001
+early_stop_on_angle_gate: true
+forbidden:
+  - per_sampling_step_state_edit
+  - redefining_target_from_optimized_output
